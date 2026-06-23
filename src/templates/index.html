@@ -12,6 +12,21 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     [x-cloak] { display: none; }
+    /* Native date/month: whole field opens picker (showPicker); keep visible calendar icon. */
+    input[type="date"],
+    input[type="month"] {
+      cursor: pointer;
+    }
+    input[type="date"]::-webkit-calendar-picker-indicator,
+    input[type="month"]::-webkit-calendar-picker-indicator {
+      cursor: pointer;
+    }
+    label:has(> input[type="date"]),
+    label:has(> input[type="month"]),
+    label:has(input[type="date"]),
+    label:has(input[type="month"]) {
+      cursor: pointer;
+    }
     .tab-active  { border-bottom: 3px solid #f59e0b; color: #d97706; }
     .tab-inactive{ border-bottom: 3px solid transparent; color: #6b7280; }
     .bar { transition: height 0.4s ease; }
@@ -6001,12 +6016,32 @@ function bootForCurrentTab() {
   }
 }
 
+function initDatePickerClickTargets() {
+  document.querySelectorAll('input[type="date"], input[type="month"]').forEach((el) => {
+    const openPicker = () => {
+      if (typeof el.showPicker === 'function') {
+        try { el.showPicker(); } catch (_) { /* ignore if blocked */ }
+      }
+    };
+    el.addEventListener('click', openPicker);
+    const label = el.closest('label');
+    if (label) {
+      label.addEventListener('click', (ev) => {
+        if (ev.target === el) return;
+        ev.preventDefault();
+        openPicker();
+      });
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 initAccrualsDate();
 initDebugDate();
 initHistoryMonth();
+initDatePickerClickTargets();
 initDraggableCardGrids();
 bindEnergyCardsHeightSync();
 bindTimerPowerSelectWidthsSync();
