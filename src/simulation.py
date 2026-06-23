@@ -168,7 +168,7 @@ def run_simulation(
     actual_step0 = hour_in_progress(now, start_dt)
     today_hourly = live_metrics.get("today_hourly")
 
-  # Optimizer: Influx for completed hours only; forecast from plan_from_hour onward.
+    # Optimizer: Influx for completed hours only; forecast from plan_from_hour onward.
     pv_merged, load_merged = merge_today_hourly_profile(
         pv_today, load_today, today_hourly, until_hour=plan_from_hour,
     )

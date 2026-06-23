@@ -275,7 +275,6 @@ def _fetch_and_build() -> dict[str, Any]:
     for slot in quarter_hourly(tomorrow_str):
         series_15min.append({"day": "tomorrow", "date": tomorrow_str, **slot})
 
-    # Legacy full-day series (kept for backward-compat).
     series_30min = []
     for slot in half_hourly(today_str):
         series_30min.append({"day": "today", "date": today_str, **slot})

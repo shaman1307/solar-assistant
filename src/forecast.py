@@ -41,10 +41,8 @@ async def get_forecast(
     cfg: dict,
     *,
     today_pv_actual: list[float | None] | None = None,
-    pv_profiles: dict[str, list[float]] | None = None,
 ) -> dict[str, Any]:
     """Return hourly PV + load for today and tomorrow (cache + PV actuals)."""
-    del pv_profiles  # legacy callers; PV from day cache
     return await asyncio.to_thread(_assemble_forecast, cfg, today_pv_actual)
 
 

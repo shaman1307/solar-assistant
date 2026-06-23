@@ -133,5 +133,5 @@ async def api_hourly_sync_status() -> dict[str, Any]:
 
 @router.post("/api/rules/sync-hour")
 async def api_sync_hour() -> dict[str, Any]:
-    """Run hourly plan→SA sync immediately (same as :59 cron job)."""
+    """Run hourly plan→SA sync immediately (same as the :00 cron job)."""
     return await run_hourly_plan_sync()

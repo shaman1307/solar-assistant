@@ -6,6 +6,10 @@
 smart_mode_enabled: false
 debug_tab_enabled: false
 
+# Plan simulation cache refreshes every hour at :00 Europe/Warsaw. When
+# smart_mode_enabled is true, the same job also pushes the next-hour plan to
+# SA Timer Schedule slot 1 (see README — Smart energy planning).
+
 location:
   latitude: 54.50
   longitude: 18.50

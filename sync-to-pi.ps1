@@ -4,8 +4,6 @@
 #   .\sync-to-pi.ps1              # sync + graceful reload (default)
 #   .\sync-to-pi.ps1 -NoRestart   # sync files only (restart manually later)
 #   .\sync-to-pi.ps1 -InstallService  # also install smart.service unit file
-#
-# Use this script instead of uploadOnSave (disabled in sftp.json for Pi Zero).
 
 param(
     [switch]$NoRestart,

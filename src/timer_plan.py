@@ -1,5 +1,5 @@
 """
-Action labels and timer schedule compression (aligned with prompt.md / SA).
+Action labels and timer schedule compression (SolarAssistant timer slots).
 
 Actions:
   - Idle - Grid Usage for Load
@@ -27,16 +27,11 @@ ACTION_CHARGE_GRID = "Charging from Grid"
 ACTION_CHARGE_SOLAR = "Charging from PV"
 ACTION_DISCHARGE_LOAD = "Discharging to Load"
 ACTION_DISCHARGE_GRID = "Discharging to Grid and Load"
-ACTION_PV_EXPORT = "PV export to grid"  # legacy alias → ACTION_IDLE_PV
-
 # Minimum hourly grid export (kWh) to label "Discharging to Grid and Load" vs "Discharging to Load".
 GRID_EXPORT_ACTION_MIN_KWH = 0.5
 
 # SOC at or above this (%) allows "PV export to grid" (full battery spill).
 _PV_EXPORT_FULL_SOC_PCT = 99.9
-
-# Backward compatibility
-ACTION_FROM_GRID = ACTION_IDLE_GRID
 
 ACTION_CYCLE = [
     ACTION_DISCHARGE_LOAD,

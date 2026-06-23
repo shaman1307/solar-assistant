@@ -4,8 +4,8 @@
 ##############################################################################
 
 # Plan simulation cache (Energy arbitrage table + forecast/RCE/tariff) refreshes every
-# hour at :59 regardless of this flag. When true, the same job also pushes the
-# next-hour action to SA Timer Schedule (slot 1).
+# hour at :00 Europe/Warsaw regardless of this flag. When true, the same job also
+# pushes the next-hour action to SA Timer Schedule (slot 1).
 smart_mode_enabled: false
 
 # Show Debug tab in the web UI (saved in sa-config.local.yaml).

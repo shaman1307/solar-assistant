@@ -1,10 +1,10 @@
 """
 Balance automation scheduler.
 
-  - Nightly at 23:59 Europe/Warsaw: build Load+PV day cache for tomorrow and day-after.
+  - Nightly at 23:59 Europe/Warsaw: build Load+PV day cache for tomorrow and day-after,
+    then refresh charge-rate estimate in config (Δ).
   - Hourly at :00: refresh Plan Simulation (Energy arbitrage + RCE + buy tariff).
   - Same :00 tick: SA Timer Schedule when smart_mode_enabled.
-  - Nightly at 23:00: refresh charge-rate estimate in config (Δ).
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from .simulation import compute_balance_delta
 
 log = logging.getLogger(__name__)
 
-BALANCE_JOB_HOUR = 23
 CHARGE_SPREAD_HOURS = 8
 
 # Last hourly job outcome — readable without frontend (GET /api/hourly-sync/status).
@@ -84,14 +83,15 @@ async def _sync_sa_timer_if_smart(
 
 
 async def run_nightly_forecast_cache() -> dict[str, Any]:
-    """23:59 — weekday Load + Open-Meteo PV for D+1/D+2; reset overrides."""
+    """23:59 — weekday Load + Open-Meteo PV for D+1/D+2; then balance Δ."""
     cfg = load_config()
     try:
         result = await forecast_mod.run_nightly_forecast_cache(cfg)
         log.info("Nightly forecast cache OK at %s", result.get("computed_at"))
+        await _balance_job()
         return {"ok": True, "computed_at": result.get("computed_at")}
     except Exception as exc:
-        log.exception("Nightly forecast cache failed")
+        log.exception("Nightly job failed (forecast cache or balance Δ)")
         return {"ok": False, "error": str(exc)}
 
 
@@ -152,7 +152,7 @@ async def run_hourly_plan_sync() -> dict[str, Any]:
 
 
 async def _balance_job() -> None:
-    """Nightly: update estimated grid-charge rate from energy balance Δ."""
+    """After nightly forecast cache: update grid-charge rate from energy balance Δ."""
     log.info("Balance job starting …")
     cfg = load_config()
 
@@ -198,20 +198,8 @@ def create_scheduler(cfg: dict) -> AsyncIOScheduler:
         replace_existing=True,
         misfire_grace_time=120,
     )
-    scheduler.add_job(
-        _balance_job,
-        trigger=CronTrigger(
-            hour=BALANCE_JOB_HOUR,
-            minute=0,
-            timezone="Europe/Warsaw",
-        ),
-        id="balance_job",
-        replace_existing=True,
-        misfire_grace_time=300,
-    )
     log.info(
-        "Scheduler: forecast cache at 23:59; plan refresh at :00 (always); "
-        "SA timer at :00 when smart mode on; balance Δ at %02d:00 Europe/Warsaw.",
-        BALANCE_JOB_HOUR,
+        "Scheduler: forecast cache + balance Δ at 23:59; plan refresh at :00 (always); "
+        "SA timer at :00 when smart mode on — Europe/Warsaw.",
     )
     return scheduler
