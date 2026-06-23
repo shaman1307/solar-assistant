@@ -1,0 +1,34 @@
+{
+  "folders": [
+    {
+      "name": "solar-assistant",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+    "files.exclude": {
+      "**/__pycache__": true,
+      "**/.pytest_cache": true
+    },
+    "terminal.integrated.profiles.windows": {
+      "Local PowerShell": {
+        "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "icon": "terminal-powershell"
+      },
+      "SSH: Pi (solar-assistant)": {
+        "path": "C:\\Windows\\System32\\OpenSSH\\ssh.exe",
+        "args": ["-t", "solar-assistant", "cd ~/project; source ~/.venv/bin/activate; exec bash"],
+        "icon": "remote"
+      }
+    },
+    "terminal.integrated.defaultProfile.windows": "Local PowerShell"
+  },
+  "extensions": {
+    "recommendations": [
+      "ms-python.python",
+      "Natizyskunk.sftp"
+    ]
+  }
+}
+

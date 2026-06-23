@@ -1,0 +1,43 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets and machine-local config (never commit)
+.env
+.env.*
+sa-config.yaml
+sa-config.local.yaml
+
+# IDE / editor (paths and hosts are machine-specific)
+.cursor/
+.vscode/sftp.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Pi runtime marker (created by reload-smart.sh)
+.smart-deployed
+
+# Local debug dumps (curl / manual API captures)
+/dbg_*.json
+/debug*.json
+/pi_*.json
+/sim*.json
+/prod_sim.json
+/rce_check.json
+/tmp*.json
+/tmp_*.html
+/.tmp_*.json
+/_debug_*.json
+/_sim.json
+
+# Deploy staging (sync-to-pi.ps1)
+smart-deploy.tgz
+smart-deploy-stage/

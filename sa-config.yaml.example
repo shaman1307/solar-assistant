@@ -1,0 +1,105 @@
+##############################################################################
+# Solar Smart — example configuration.
+# Copy to sa-config.yaml on the Pi (or sa-config.local.yaml for Windows dev).
+##############################################################################
+
+smart_mode_enabled: false
+debug_tab_enabled: false
+
+location:
+  latitude: 54.50
+  longitude: 18.50
+
+solar:
+  azimuth: 187
+  system_loss_factor: 0.93
+  blocks:
+    - power_kwp: 1.5
+      tilt: 35
+    - power_kwp: 5.0
+      tilt: 25
+    - power_kwp: 2.5
+      tilt: 65
+
+inverter:
+  ac_capacity_kw: 8.0
+
+battery:
+  capacity_kwh: 43.0
+
+simulation:
+  min_soc_pct: 15
+  horizon_hours: 24
+  epsilon_kwh: 0.05
+  losses_pct:
+    grid_to_battery: 7.5
+    battery_to_load_or_grid: 7.5
+    pv_to_grid: 7.5
+
+grid:
+  g12:
+    tariff_name: "Energa G12"
+    peak_price_pln_kwh: 1.2444
+    offpeak_price_pln_kwh: 0.6229
+    peak_energy_only_pln_kwh: 0.7182
+    offpeak_energy_only_pln_kwh: 0.4678
+  feed_in_price_pln: 0.20
+
+sa:
+  host: "localhost"
+  password: "CHANGE_ME"
+  metrics:
+    battery_soc:       "battery_1/state_of_charge"
+    battery_power:     "battery_1/power"
+    pv_power:          "total/pv_power"
+    load_power:        "total/load_power"
+    grid_power:        "total/grid_power"
+    pv_energy_today:   "total/pv_energy"
+    load_energy_today: "total/load_energy"
+    grid_buy_energy:   "total/grid_energy_in"
+    grid_sell_energy:  "total/grid_energy_out"
+    battery_charged_today:    "total/battery_energy_in"
+    battery_discharged_today: "total/battery_energy_out"
+  settings:
+    charge_current_limit: "inverter_1/max_grid_charge_current"
+    grid_charge_switch:   "inverter_1/grid_charge"
+    grid_export_switch:   "inverter_1/timed_discharge"
+    work_mode:            "inverter_1/work_mode"
+  work_mode_options:
+    - "On-grid"
+    - "Limit power to UPS load"
+    - "Limit power to home load"
+    - "AC coupling"
+
+load:
+  hourly_profile_kwh:
+    - 0.50
+    - 0.50
+    - 0.48
+    - 0.38
+    - 0.38
+    - 0.40
+    - 0.40
+    - 0.60
+    - 0.80
+    - 0.70
+    - 0.60
+    - 0.60
+    - 0.70
+    - 0.70
+    - 0.60
+    - 0.60
+    - 0.70
+    - 0.90
+    - 1.00
+    - 1.90
+    - 1.80
+    - 1.70
+    - 0.60
+    - 0.50
+
+overrides:
+  today_pv_kwh: null
+  today_load_kwh: null
+  tomorrow_pv_kwh: null
+  tomorrow_load_kwh: null

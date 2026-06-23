@@ -1,0 +1,170 @@
+"""Inverter physics debug API — sim vs actual hourly replay."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from typing import Any
+
+from fastapi import APIRouter
+
+from .. import influxdb as influxdb_mod
+from .. import rce as rce_mod
+from ..config import load_config
+from .. import forecast as forecast_mod
+from ..debug_smart_plan import apply_smart_plan_for_day, hourly_rows_from_pv_load
+from ..g12_pricing import get_buy_price
+from ..inverter_sim import simulate_day_from_profile
+
+router = APIRouter()
+
+
+def _next_date(date_str: str) -> str:
+    return (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _enrich_rows(
+    rows: list[dict[str, Any]],
+    date_str: str,
+    rce_quarter_by_date: dict[str, list[float | None]],
+    cfg: dict,
+) -> list[dict[str, Any]]:
+    quarters = rce_quarter_by_date.get(date_str) or [None] * 96
+    base = datetime.strptime(date_str, "%Y-%m-%d")
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        h = row.get("hour")
+        buy_price: float | None = None
+        rce_q15: list[float | None] = [None] * 4
+        if h is not None and 0 <= int(h) < 24:
+            hi = int(h)
+            dt = base.replace(hour=hi)
+            buy_price = round(get_buy_price(dt, cfg)[0], 4)
+            rce_q15 = list(quarters[hi * 4:(hi + 1) * 4])
+        out.append({
+            **row,
+            "date": date_str,
+            "buy_price": buy_price,
+            "rce_q15": rce_q15,
+        })
+    return out
+
+
+def _day_payload(
+    date_str: str,
+    sim: dict[str, Any],
+    rce_quarter_by_date: dict[str, list[float | None]],
+    cfg: dict,
+) -> dict[str, Any]:
+    rows = _enrich_rows(sim.get("rows") or [], date_str, rce_quarter_by_date, cfg)
+    return {"date": date_str, **sim, "rows": rows}
+
+
+@router.get("/api/inverter-debug")
+async def api_inverter_debug(
+    date: str | None = None,
+    initial_soc_pct: float | None = None,
+) -> dict[str, Any]:
+    """Replay hourly PV/load with load-priority physics; compare to Influx accruals."""
+    if not date:
+        date = influxdb_mod.now_warsaw().strftime("%Y-%m-%d")
+
+    cfg = load_config()
+    accruals = await influxdb_mod.get_accruals_for_date(date)
+    if accruals.get("error"):
+        return {"error": accruals["error"], "date": date}
+
+    # For today's date: Influx has only completed-hours; fill the remaining PV/load
+    # from forecast so the day can be replayed end-to-end.
+    today_str = influxdb_mod.now_warsaw().strftime("%Y-%m-%d")
+    hourly = accruals.get("hourly") or {}
+    if date == today_str:
+        fc_day = await forecast_mod.get_horizon_day_profile(date, cfg)
+        pv_src = list(hourly.get("pv") or [])
+        load_src = list(hourly.get("load") or [])
+        pv = [pv_src[h] if h < len(pv_src) else None for h in range(24)]
+        load = [load_src[h] if h < len(load_src) else None for h in range(24)]
+        for h in range(24):
+            if pv[h] is None:
+                pv[h] = fc_day["pv"][h]
+            if load[h] is None:
+                load[h] = fc_day["load"][h]
+        hourly = dict(hourly)
+        hourly["pv"] = pv
+        hourly["load"] = load
+
+    day1 = simulate_day_from_profile(
+        hourly,
+        initial_soc_pct=initial_soc_pct,
+    )
+
+    next_date = _next_date(date)
+    forecast_date = _next_date(next_date)
+    rce_quarter_by_date = await rce_mod.get_quarter_rce_for_dates(date, next_date, forecast_date)
+
+    day1_payload = _day_payload(date, day1, rce_quarter_by_date, cfg)
+    days: list[dict[str, Any]] = [day1_payload]
+
+    accruals_next = await influxdb_mod.get_accruals_for_date(next_date)
+    day2_rows: list[dict[str, Any]] = []
+    hourly_next = accruals_next.get("hourly") if isinstance(accruals_next, dict) else None
+    has_influx_next = (
+        not accruals_next.get("error")
+        and isinstance(hourly_next, dict)
+        and any(v is not None for v in (hourly_next.get("pv") or []))
+        and any(v is not None for v in (hourly_next.get("load") or []))
+    )
+
+    if has_influx_next:
+        day2 = simulate_day_from_profile(
+            hourly_next or {},
+            initial_soc_kwh=day1.get("end_soc_kwh"),
+        )
+    else:
+        # Future day (e.g. tomorrow when user selects today): fall back to forecast,
+        # same mechanism as day-3 horizon profile.
+        next_fc = await forecast_mod.get_horizon_day_profile(next_date, cfg)
+        day2 = simulate_day_from_profile(
+            {"pv": next_fc["pv"], "load": next_fc["load"]},
+            initial_soc_kwh=day1.get("end_soc_kwh"),
+        )
+
+    days.append(_day_payload(next_date, day2, rce_quarter_by_date, cfg))
+    day2_rows = days[1]["rows"]
+
+    horizon_day = await forecast_mod.get_horizon_day_profile(forecast_date, cfg)
+    forecast = {
+        "date": horizon_day["date"],
+        "pv_total": horizon_day["pv_total"],
+        "load_total": horizon_day["load_total"],
+        "source": horizon_day["source"],
+    }
+    day3_rows = hourly_rows_from_pv_load(horizon_day["pv"], horizon_day["load"])
+
+    end_soc = apply_smart_plan_for_day(
+        day1_payload,
+        day2_rows,
+        date,
+        cfg,
+        rce_quarters=rce_quarter_by_date.get(date),
+    )
+
+    if len(days) > 1:
+        apply_smart_plan_for_day(
+            days[1],
+            day3_rows,
+            next_date,
+            cfg,
+            rce_quarters=rce_quarter_by_date.get(next_date),
+            initial_soc_kwh=end_soc,
+        )
+
+    return {
+        "date": date,
+        "date_next": next_date,
+        "date_forecast": forecast_date,
+        "mode": "load_priority",
+        "rules": False,
+        "forecast": forecast,
+        "days": days,
+        **{k: v for k, v in day1_payload.items() if k != "date"},
+    }

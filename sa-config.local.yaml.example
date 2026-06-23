@@ -1,0 +1,139 @@
+##############################################################################
+# Copy to sa-config.local.yaml for local development on Windows (gitignored).
+# Full standalone config — Pi keeps sa-config.yaml unchanged on deploy.
+##############################################################################
+
+# Plan simulation cache (Energy arbitrage table + forecast/RCE/tariff) refreshes every
+# hour at :59 regardless of this flag. When true, the same job also pushes the
+# next-hour action to SA Timer Schedule (slot 1).
+smart_mode_enabled: false
+
+# Show Debug tab in the web UI (saved in sa-config.local.yaml).
+debug_tab_enabled: true
+
+location:
+  latitude: 54.50
+  longitude: 18.50
+
+solar:
+  # Compass bearing of the array (N=0, S=180). 187 = South-South-West.
+  azimuth: 187
+  # Overall system performance ratio (1 - losses). 0.93 = 7% losses.
+  system_loss_factor: 0.93
+  # PV array blocks — total 9.0 kWp split into three strings.
+  blocks:
+    - power_kwp: 1.5
+      tilt: 35
+    - power_kwp: 5.0
+      tilt: 25
+    - power_kwp: 2.5
+      tilt: 65
+
+inverter:
+  # Maximum AC output capacity in kW.
+  ac_capacity_kw: 8.0
+
+battery:
+  # Usable battery capacity in kWh.
+  capacity_kwh: 43.0
+
+# Plan Simulation — energy balance model (losses, SOC floor, horizons).
+simulation:
+  # Minimum SOC (%) — planning floor and discharge stop threshold.
+  min_soc_pct: 15
+  horizon_hours: 24
+  # Treat flows below this as zero (kWh).
+  epsilon_kwh: 0.05
+  # One-way transfer losses (% of source energy). PV→battery is 1:1 (losses in meter data).
+  losses_pct:
+    grid_to_battery: 7.5
+    battery_to_load_or_grid: 7.5
+    pv_to_grid: 7.5
+
+grid:
+  # Buy tariff configuration.
+  # tariff_name: label shown in the UI (G11, G12, custom, etc.)
+  # Prices are ALL-IN BRUTTO PLN/kWh (energy + distribution + all fees + VAT 23%).
+  # Peak/offpeak zones follow Energa G12 weekday windows (see g12_pricing.py).
+  g12:
+    tariff_name: "Energa G12"
+    peak_price_pln_kwh: 1.2444      # Source: URE 2026-01-01 + Energa Operator distribution
+    offpeak_price_pln_kwh: 0.6229
+    peak_energy_only_pln_kwh: 0.7182   # Energa-Obrót energy component (brutto)
+    offpeak_energy_only_pln_kwh: 0.4678
+
+  # Fixed fallback feed-in price when live RCE is unavailable.
+  feed_in_price_pln: 0.20
+
+# SolarAssistant connection (local REST API via py-solar-assistant).
+# SA must have a web password set: SA → Configuration → Security → Password.
+# REST API on the same Pi (SolarAssistant default web port).
+sa:
+  host: "192.168.8.57"
+  password: "CHANGE_ME"
+  # REST API metric topics (MQTT-style topics from py-solar-assistant DeviceMetric.topic).
+  # Verified against SRNE 3-phase via GET /api/v1/metrics?discovery.
+  # NOTE: SA REST API provides live power (W) and daily energy totals when available.
+  #       Hourly history/charts still come from InfluxDB (see src/influxdb.py).
+  metrics:
+    battery_soc:       "battery_1/state_of_charge"
+    battery_power:     "battery_1/power"
+    pv_power:          "total/pv_power"
+    load_power:        "total/load_power"
+    grid_power:        "total/grid_power"
+    pv_energy_today:   "total/pv_energy"
+    load_energy_today: "total/load_energy"
+    grid_buy_energy:   "total/grid_energy_in"
+    grid_sell_energy:  "total/grid_energy_out"
+    battery_charged_today:    "total/battery_energy_in"
+    battery_discharged_today: "total/battery_energy_out"
+  # Settings topics for writing inverter rules (SRNE uses slot-based charging).
+  # grid_charge_switch controls whether timed charging from grid is active.
+  # Timer schedule slots are read automatically from inverter_1/*_slot_* topics.
+  settings:
+    charge_current_limit: "inverter_1/max_grid_charge_current"
+    grid_charge_switch:   "inverter_1/grid_charge"
+    grid_export_switch:   "inverter_1/timed_discharge"
+    work_mode:            "inverter_1/work_mode"
+  work_mode_options:
+    - "On-grid"
+    - "Limit power to UPS load"
+    - "Limit power to home load"
+    - "AC coupling"
+
+# Default hourly load profile (kWh per hour, index = hour of day 0-23).
+load:
+  hourly_profile_kwh:
+    - 0.40  # 00:00
+    - 0.30  # 01:00
+    - 0.28  # 02:00
+    - 0.28  # 03:00
+    - 0.28  # 04:00
+    - 0.30  # 05:00
+    - 0.40  # 06:00
+    - 0.60  # 07:00
+    - 0.80  # 08:00
+    - 0.70  # 09:00
+    - 0.60  # 10:00
+    - 0.60  # 11:00
+    - 0.70  # 12:00
+    - 0.70  # 13:00
+    - 0.60  # 14:00
+    - 0.60  # 15:00
+    - 0.70  # 16:00
+    - 0.90  # 17:00
+    - 1.00  # 18:00
+    - 0.90  # 19:00
+    - 0.80  # 20:00
+    - 0.70  # 21:00
+    - 0.60  # 22:00
+    - 0.50  # 23:00
+
+# Manual overrides — set to a number (kWh total) to override auto-calculated forecast.
+# Scaling: the hourly profile is proportionally scaled to match the override total.
+# Set to null to use the automatically fetched Open-Meteo / InfluxDB values.
+overrides:
+  today_pv_kwh: null
+  today_load_kwh: null
+  tomorrow_pv_kwh: null
+  tomorrow_load_kwh: null

@@ -1,0 +1,54 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run Local",
+      "type": "shell",
+      "command": "${workspaceFolder}\\scripts\\run-local.ps1",
+      "options": {
+        "shell": {
+          "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          "args": ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "showReuseMessage": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Sync to Pi (SFTP)",
+      "type": "shell",
+      "command": "${workspaceFolder}\\sync-to-pi.ps1",
+      "options": {
+        "shell": {
+          "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          "args": ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": false,
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run on Pi",
+      "type": "shell",
+      "command": "ssh",
+      "args": [
+        "solar-assistant",
+        "cd ~/project; ~/.venv/bin/python src/main.py"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

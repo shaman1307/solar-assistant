@@ -1,0 +1,5 @@
+{
+  "python.defaultInterpreterPath": "/home/solar-assistant/.venv/bin/python",
+  "python.terminal.activateEnvironment": true,
+  "python.terminal.activateEnvInCurrentTerminal": true
+}
