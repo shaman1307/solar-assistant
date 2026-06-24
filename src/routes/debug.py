@@ -9,6 +9,7 @@ from fastapi import APIRouter
 
 from .. import influxdb as influxdb_mod
 from .. import rce as rce_mod
+from .. import sa_client
 from ..config import load_config
 from .. import forecast as forecast_mod
 from ..debug_smart_plan import (
@@ -18,6 +19,7 @@ from ..debug_smart_plan import (
 )
 from ..g12_pricing import get_buy_price
 from ..inverter_sim import simulate_day_from_profile
+from ..simulation_config import plan_min_soc_pct
 
 router = APIRouter()
 
@@ -80,6 +82,8 @@ async def api_inverter_debug(
     # Today: completed hours from Influx; current hour and later from forecast.
     today_str = influxdb_mod.now_warsaw().strftime("%Y-%m-%d")
     hourly = accruals.get("hourly") or {}
+    plan_from_hour: int | None = None
+    live_soc_kwh: float | None = None
     if date == today_str:
         now = influxdb_mod.now_warsaw()
         plan_from_hour = now.replace(minute=0, second=0, microsecond=0).hour
@@ -93,6 +97,14 @@ async def api_inverter_debug(
         hourly = dict(hourly)
         hourly["pv"] = pv
         hourly["load"] = load
+        metrics = await sa_client.get_live_metrics(cfg)
+        battery_cap = float(cfg["battery"]["capacity_kwh"])
+        min_soc = plan_min_soc_pct(cfg)
+        live_soc_kwh = (
+            max(min_soc, min(100.0, float(metrics.get("battery_soc", 50.0))))
+            / 100.0
+            * battery_cap
+        )
 
     day1 = simulate_day_from_profile(
         hourly,
@@ -148,6 +160,8 @@ async def api_inverter_debug(
         date,
         cfg,
         rce_quarters=rce_quarter_by_date.get(date),
+        plan_from_hour=plan_from_hour,
+        live_soc_kwh=live_soc_kwh,
     )
 
     if len(days) > 1:

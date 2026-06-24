@@ -45,6 +45,8 @@ $files = @(
     "src\simulation_config.py",
     "src\plan_simulation.py",
     "src\scheduler.py",
+    "src\hour_boundary_scheduler.py",
+    "src\work_mode_scheduler.py",
     "src\sa_client.py",
     "src\templates\index.html",
     "src\static\app-icon.png",

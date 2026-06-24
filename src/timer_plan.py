@@ -14,6 +14,7 @@ Actions:
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from typing import Any
 
@@ -271,10 +272,13 @@ def _hour_q15_timer_energy(
     slots: list[dict[str, Any]],
     target_action: str,
     epsilon: float,
+    *,
+    hour_action: str | None = None,
 ) -> tuple[float, list[int]]:
     """Total kWh and active q15 indices (0..3) in the hour for one timer kind."""
     total = 0.0
     active: list[int] = []
+    hour_act = normalize_action(hour_action or "")
     for qi, slot in enumerate(slots):
         if target_action == ACTION_DISCHARGE_GRID:
             _, to_grid = _battery_discharge_split(slot, epsilon)
@@ -283,12 +287,18 @@ def _hour_q15_timer_energy(
             total += to_grid
         elif target_action == ACTION_CHARGE_GRID:
             act = normalize_action(slot.get("action") or "")
-            if act != ACTION_CHARGE_GRID:
-                continue
-            total += _slot_action_energy(slot, ACTION_CHARGE_GRID)
+            imp = float(slot.get("grid_import") or 0)
+            if act == ACTION_CHARGE_GRID:
+                total += _slot_action_energy(slot, ACTION_CHARGE_GRID)
+                active.append(qi)
+            elif hour_act == ACTION_CHARGE_GRID and imp > epsilon:
+                # Hour totals say grid charge, but per-q15 classify may be PV (g_imp <= pv).
+                total += _slot_action_energy(slot, ACTION_CHARGE_GRID)
+                active.append(qi)
         else:
             continue
-        active.append(qi)
+        if target_action == ACTION_DISCHARGE_GRID:
+            active.append(qi)
     return total, active
 
 
@@ -299,9 +309,12 @@ def _hour_timer_segment(
     cfg: dict,
     *,
     epsilon: float = 0.001,
+    hour_action: str | None = None,
 ) -> str | None:
     """One SA timer line for this clock hour from q15 energy (>=30 min, power = kWh / duration)."""
-    total_kwh, active_q = _hour_q15_timer_energy(slots, target_action, epsilon)
+    total_kwh, active_q = _hour_q15_timer_energy(
+        slots, target_action, epsilon, hour_action=hour_action,
+    )
     if not active_q or total_kwh <= epsilon:
         return None
 
@@ -313,11 +326,11 @@ def _hour_timer_segment(
     last_q = max(active_q)
     natural_from = hour_start + first_q * 15
     to_min = hour_start + (last_q + 1) * 15
-    if to_min - natural_from >= MIN_TIMER_BLOCK_MINUTES:
-        from_min = natural_from
-    else:
+    from_min = natural_from
+    if to_min - from_min < MIN_TIMER_BLOCK_MINUTES:
         from_min = max(to_min - MIN_TIMER_BLOCK_MINUTES, hour_start)
-
+    if to_min - from_min < MIN_TIMER_BLOCK_MINUTES:
+        to_min = min(hour_start + 60, from_min + MIN_TIMER_BLOCK_MINUTES)
     if to_min - from_min < MIN_TIMER_BLOCK_MINUTES:
         return None
 
@@ -347,6 +360,30 @@ def _hour_slot_totals(slots: list[dict[str, Any]]) -> dict[str, float]:
     }
 
 
+def _fallback_charge_grid_timer(
+    hour: int,
+    slots: list[dict[str, Any]],
+    cfg: dict,
+    *,
+    epsilon: float = 0.001,
+) -> str:
+    """Full clock-hour charge slot when q15 clip cannot reach SA minimum duration."""
+    totals = _hour_slot_totals(slots)
+    energy = totals["grid_import"] + totals["bat_charge"]
+    if energy <= epsilon:
+        energy = max(totals["grid_import"], totals["bat_charge"], epsilon)
+    ac_kw = float(cfg["inverter"]["ac_capacity_kw"])
+    hour_start = hour * 60
+    power_kw = round(min(energy, ac_kw), 2)
+    if power_kw <= 0:
+        power_kw = round(min(ac_kw, 1.0), 2)
+    cap = int(round(float(slots[-1].get("soc_pct", 80)))) if slots else 80
+    return (
+        f"Chg {_min_to_hhmm(hour_start)}-{_min_to_hhmm(hour_start + 60)} "
+        f"{power_kw}kW cap{cap}%"
+    )
+
+
 def build_hour_timer_schedule(
     hour: int,
     slots: list[dict[str, Any]],
@@ -361,32 +398,18 @@ def build_hour_timer_schedule(
     act = normalize_action(action if action is not None else classify_action(**totals))
     g_exp = float(grid_export if grid_export is not None else totals["grid_export"])
     if act == ACTION_CHARGE_GRID:
-        seg = _hour_timer_segment(hour, slots, ACTION_CHARGE_GRID, cfg, epsilon=epsilon)
-        return seg or ""
+        seg = _hour_timer_segment(
+            hour, slots, ACTION_CHARGE_GRID, cfg,
+            epsilon=epsilon, hour_action=act,
+        )
+        return seg or _fallback_charge_grid_timer(hour, slots, cfg, epsilon=epsilon)
     if act == ACTION_DISCHARGE_GRID and g_exp > 0:
-        seg = _hour_timer_segment(hour, slots, ACTION_DISCHARGE_GRID, cfg, epsilon=epsilon)
+        seg = _hour_timer_segment(
+            hour, slots, ACTION_DISCHARGE_GRID, cfg,
+            epsilon=epsilon, hour_action=act,
+        )
         return seg or ""
     return ""
-
-
-def summarize_hour_actions_for_sa(
-    slots: list[dict[str, Any]],
-    hour: int,
-    cfg: dict,
-    *,
-    epsilon: float = 0.001,
-) -> str:
-    """Dominant action; suppress SA grid charge without timer; keep PV spill in export label."""
-    energy = _hour_action_energies(slots, epsilon)
-    if _hour_timer_segment(hour, slots, ACTION_CHARGE_GRID, cfg, epsilon=epsilon) is None:
-        energy[ACTION_CHARGE_GRID] = 0.0
-    if _hour_timer_segment(hour, slots, ACTION_DISCHARGE_GRID, cfg, epsilon=epsilon) is None:
-        batt_exp = _battery_export_energy(slots, epsilon)
-        if batt_exp > epsilon:
-            energy[ACTION_DISCHARGE_GRID] = max(
-                0.0, energy[ACTION_DISCHARGE_GRID] - batt_exp,
-            )
-    return _top_hour_action(energy, epsilon)
 
 
 def _hour_from_row(row: dict) -> int:
@@ -666,6 +689,119 @@ def _hour_slot_clip(
     return _min_to_hhmm(clip_from), _min_to_hhmm(clip_to), clip_to - clip_from
 
 
+def hour_has_timer_schedule(rows: list[dict], hour: int) -> bool:
+    """True when Energy arbitrage row for *hour* has a non-empty Timer Schedule cell."""
+    row = next(
+        (r for r in rows if r.get("hour") == hour and r.get("start") != "TOTAL"),
+        None,
+    )
+    if not row:
+        return False
+    return bool(str(row.get("timer_schedule") or "").strip())
+
+
+_TIMER_SCHEDULE_SEG_RE = re.compile(
+    r"^(Chg|Dis)\s+(\d{1,2}:\d{2})-(\d{1,2}:\d{2})\s+([\d.]+)kW\s+cap(\d+)%",
+    re.IGNORECASE,
+)
+
+
+def _normalize_hhmm(time_str: str) -> str:
+    parts = str(time_str).strip().split(":")
+    if len(parts) != 2:
+        return time_str
+    return f"{int(parts[0]):02d}:{int(parts[1]):02d}"
+
+
+def parse_timer_schedule_segments(text: str) -> list[dict[str, Any]]:
+    """Parse Energy arbitrage Timer Schedule cell — e.g. Dis 19:30-20:00 6.51kW cap16%."""
+    segments: list[dict[str, Any]] = []
+    for part in (p.strip() for p in text.split("|")):
+        if not part:
+            continue
+        match = _TIMER_SCHEDULE_SEG_RE.match(part)
+        if not match:
+            continue
+        kind_raw, from_t, to_t, power_s, cap_s = match.groups()
+        kind = kind_raw.lower()
+        segments.append({
+            "kind": kind,
+            "from": _normalize_hhmm(from_t),
+            "to": _normalize_hhmm(to_t),
+            "power_kw": float(power_s),
+            "capacity_pct": int(cap_s),
+        })
+    return segments
+
+
+def build_sa_schedule_from_hour_row(
+    rows: list[dict],
+    hour: int,
+    cfg: dict,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """SA write payload from one Energy arbitrage hour row (Timer Schedule column)."""
+    row = next(
+        (r for r in rows if r.get("hour") == hour and r.get("start") != "TOTAL"),
+        None,
+    )
+    if not row:
+        return None
+    timer_txt = str(row.get("timer_schedule") or "").strip()
+    if not timer_txt:
+        return None
+
+    segments = parse_timer_schedule_segments(timer_txt)
+    if not segments:
+        return None
+
+    existing = existing or {}
+    ac_kw = float(cfg["inverter"]["ac_capacity_kw"])
+    charge_slots = _ensure_three_slots(existing.get("charge_slots", []), "charge")
+    discharge_slots = _ensure_three_slots(existing.get("discharge_slots", []), "discharge")
+    timed_charge = False
+    timed_discharge = False
+
+    for seg in segments:
+        if seg["kind"] == "chg":
+            timed_charge = True
+            tpl = charge_slots[0]
+            charge_slots[0] = {
+                "slot": 1,
+                "from": seg["from"],
+                "to": seg["to"],
+                "capacity_pct": seg["capacity_pct"],
+                "voltage_v": float(tpl.get("voltage_v", 57.6)),
+                "power_kw": round(min(float(seg["power_kw"]), ac_kw), 2),
+                "grid": True,
+                "generator": False,
+            }
+        elif seg["kind"] == "dis":
+            timed_discharge = True
+            tpl = discharge_slots[0]
+            discharge_slots[0] = {
+                "slot": 1,
+                "from": seg["from"],
+                "to": seg["to"],
+                "capacity_pct": seg["capacity_pct"],
+                "voltage_v": float(tpl.get("voltage_v", 42.0)),
+                "power_kw": round(min(float(seg["power_kw"]), ac_kw), 2),
+            }
+
+    if not timed_charge and not timed_discharge:
+        return None
+
+    return {
+        "target_hour": hour,
+        "planned_action": row.get("action"),
+        "timer_schedule": timer_txt,
+        "timed_charge_enabled": timed_charge,
+        "timed_discharge_enabled": timed_discharge,
+        "charge_slots": charge_slots,
+        "discharge_slots": discharge_slots,
+    }
+
+
 def format_hour_timer_schedule(hour: int, schedule: dict[str, Any]) -> str:
     """SA timer text for one clock hour — clipped range; omit if overlap < 30 min."""
     parts: list[str] = []
@@ -779,6 +915,11 @@ def build_hourly_schedule(
         None,
     )
     action = normalize_action(row.get("action", "")) if row else ACTION_IDLE_GRID
+    timer_txt = (row.get("timer_schedule") or "").strip() if row else ""
+    if timer_txt.startswith("Dis"):
+        action = ACTION_DISCHARGE_GRID
+    elif timer_txt.startswith("Chg"):
+        action = ACTION_CHARGE_GRID
     from_h = target_hour % 24
     to_h = (target_hour + 1) % 24
     min_soc = int(plan_min_soc_pct(cfg))
@@ -826,3 +967,47 @@ def build_hourly_schedule(
         "charge_slots": charge_slots,
         "discharge_slots": discharge_slots,
     }
+
+
+def _schedule_timed_enabled(schedule: dict[str, Any]) -> bool:
+    return bool(schedule.get("timed_charge_enabled") or schedule.get("timed_discharge_enabled"))
+
+
+def _slot_covers_minute(slot: dict[str, Any], minute_of_day: int) -> bool:
+    if not _slot_is_active(slot):
+        return False
+    start = _parse_hhmm_to_min(slot.get("from", "00:00"))
+    end = _parse_hhmm_to_min(slot.get("to", "00:00"))
+    return start is not None and end is not None and start <= minute_of_day < end
+
+
+def pick_sa_timer_schedule(
+    rows: list[dict],
+    *,
+    now_hour: int,
+    cfg: dict,
+    existing: dict[str, Any] | None = None,
+    proposed: dict[str, Any] | None = None,
+    now_minute: int | None = None,
+) -> dict[str, Any] | None:
+    """SA write payload: q15 block covering now, else timed current hour, else next hour."""
+    existing = existing or {}
+    minute = now_minute if now_minute is not None else now_hour * 60
+
+    if proposed and _schedule_timed_enabled(proposed):
+        discharge = (proposed.get("discharge_slots") or [{}])[0]
+        charge = (proposed.get("charge_slots") or [{}])[0]
+        if proposed.get("timed_discharge_enabled") and _slot_covers_minute(discharge, minute):
+            return proposed
+        if proposed.get("timed_charge_enabled") and _slot_covers_minute(charge, minute):
+            return proposed
+
+    current = build_hourly_schedule(rows, now_hour, cfg, existing)
+    if _schedule_timed_enabled(current):
+        return current
+
+    next_h = (now_hour + 1) % 24
+    upcoming = build_hourly_schedule(rows, next_h, cfg, existing)
+    if _schedule_timed_enabled(upcoming):
+        return upcoming
+    return None

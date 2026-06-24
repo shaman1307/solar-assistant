@@ -15,7 +15,6 @@ from .timer_plan import (
     build_hour_timer_schedule,
     derive_timer_schedule_q15,
     summarize_hour_actions_debug,
-    summarize_hour_actions_for_sa,
 )
 
 Q15_PER_HOUR = 4
@@ -314,6 +313,90 @@ def run_day_smart_q15_plan(
     }
 
 
+def _merge_smart_day_plans(
+    head: dict[str, Any],
+    tail: dict[str, Any],
+    *,
+    from_hour: int,
+    cfg: dict,
+) -> dict[str, Any]:
+    """Completed hours from head replay; current hour onward from live-SOC tail."""
+    from_hour = max(0, min(24, int(from_hour)))
+    q15_by_hour: dict[int, list[dict[str, Any]]] = {h: [] for h in range(24)}
+    head_q15 = head.get("q15_by_hour") or {}
+    tail_q15 = tail.get("q15_by_hour") or {}
+    for h in range(from_hour):
+        q15_by_hour[h] = list(head_q15.get(h) or [])
+    for h in range(from_hour, 24):
+        q15_by_hour[h] = list(tail_q15.get(h) or [])
+
+    q15_plan_rows: list[dict[str, Any]] = [
+        r for r in (head.get("q15_plan_rows") or [])
+        if int(r.get("hour", 0)) < from_hour
+    ]
+    q15_plan_rows.extend(
+        r for r in (tail.get("q15_plan_rows") or [])
+        if int(r.get("hour", 0)) >= from_hour
+    )
+
+    return {
+        "q15_by_hour": q15_by_hour,
+        "q15_plan_rows": q15_plan_rows,
+        "end_soc_kwh": tail["end_soc_kwh"],
+        "timer_schedule": derive_timer_schedule_q15(q15_plan_rows, cfg),
+        "epsilon": tail.get("epsilon", head.get("epsilon")),
+    }
+
+
+def run_today_smart_q15_plan(
+    *,
+    date_str: str,
+    pv_hourly: list[float],
+    load_hourly: list[float],
+    tomorrow_pv: list[float],
+    tomorrow_load: list[float],
+    cfg: dict,
+    rce_quarters: list[float | None] | None = None,
+    plan_from_hour: int,
+    day_start_soc_kwh: float,
+    live_soc_kwh: float,
+) -> dict[str, Any] | None:
+    """Today's smart plan: live SOC at plan_from_hour; earlier hours unchanged replay."""
+    plan_from_hour = max(0, min(23, int(plan_from_hour)))
+    common = dict(
+        date_str=date_str,
+        pv_hourly=pv_hourly,
+        load_hourly=load_hourly,
+        tomorrow_pv=tomorrow_pv,
+        tomorrow_load=tomorrow_load,
+        cfg=cfg,
+        rce_quarters=rce_quarters,
+    )
+
+    if plan_from_hour <= 0:
+        return run_day_smart_q15_plan(
+            **common,
+            initial_soc_kwh=live_soc_kwh,
+            from_hour=0,
+        )
+
+    head = run_day_smart_q15_plan(
+        **common,
+        initial_soc_kwh=day_start_soc_kwh,
+        from_hour=0,
+    )
+    tail = run_day_smart_q15_plan(
+        **common,
+        initial_soc_kwh=live_soc_kwh,
+        from_hour=plan_from_hour,
+    )
+    if tail is None:
+        return head
+    if head is None:
+        return tail
+    return _merge_smart_day_plans(head, tail, from_hour=plan_from_hour, cfg=cfg)
+
+
 def _slot_to_q15_plan_row(dt: datetime, hour: int, slot: dict[str, Any]) -> dict[str, Any]:
     return {
         "start": dt.strftime("%d-%m-%Y %H:%M"),
@@ -430,6 +513,8 @@ def apply_smart_plan_for_day(
     cfg: dict | None = None,
     rce_quarters: list[float | None] | None = None,
     initial_soc_kwh: float | None = None,
+    plan_from_hour: int | None = None,
+    live_soc_kwh: float | None = None,
 ) -> float | None:
     """Attach action, smart flows, and timer schedule to hourly rows (15-min optimizer).
 
@@ -450,16 +535,30 @@ def apply_smart_plan_for_day(
     else:
         start_soc = float(day.get("initial_soc_kwh") or plan_min_soc_kwh(cfg))
 
-    plan = run_day_smart_q15_plan(
-        date_str=date_str,
-        pv_hourly=pv1,
-        load_hourly=load1,
-        tomorrow_pv=pv2,
-        tomorrow_load=load2,
-        cfg=cfg,
-        rce_quarters=rce_quarters,
-        initial_soc_kwh=start_soc,
-    )
+    if plan_from_hour is not None and live_soc_kwh is not None:
+        plan = run_today_smart_q15_plan(
+            date_str=date_str,
+            pv_hourly=pv1,
+            load_hourly=load1,
+            tomorrow_pv=pv2,
+            tomorrow_load=load2,
+            cfg=cfg,
+            rce_quarters=rce_quarters,
+            plan_from_hour=plan_from_hour,
+            day_start_soc_kwh=start_soc,
+            live_soc_kwh=float(live_soc_kwh),
+        )
+    else:
+        plan = run_day_smart_q15_plan(
+            date_str=date_str,
+            pv_hourly=pv1,
+            load_hourly=load1,
+            tomorrow_pv=pv2,
+            tomorrow_load=load2,
+            cfg=cfg,
+            rce_quarters=rce_quarters,
+            initial_soc_kwh=start_soc,
+        )
     if plan is None:
         return None
 
@@ -503,13 +602,15 @@ def apply_smart_plan_for_day(
         hi = int(h)
         row["action"] = action_by_hour.get(hi, "")
         row["smart"] = smart_by_hour.get(hi)
+        slots = q15_by_hour.get(hi) or []
+        smart = smart_by_hour.get(hi) or {}
         row["timer_schedule"] = build_hour_timer_schedule(
             hi,
             slots,
             cfg,
             epsilon=epsilon,
             action=action_by_hour.get(hi, ""),
-            grid_export=grid_export,
+            grid_export=float(smart.get("grid_export") or 0),
         )
         row["rce_q15"] = rce_q15_by_hour.get(hi, [None] * Q15_PER_HOUR)
 

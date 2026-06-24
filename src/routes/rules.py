@@ -9,7 +9,15 @@ from fastapi import APIRouter
 from .. import sa_client
 from ..config import load_config, save_config
 from ..plan_simulation import build_plan_simulation, get_cached_plan
+from ..timer_plan import build_sa_schedule_from_hour_row, hour_has_timer_schedule
 from ..scheduler import get_last_hourly_sync, run_hourly_plan_sync
+from ..hour_boundary_scheduler import (
+    get_last_hour_boundary_sync,
+    run_hour_boundary_end,
+    run_hour_boundary_start,
+)
+from ..work_mode_scheduler import get_last_work_mode_sync
+from ..influxdb import now_warsaw
 
 router = APIRouter()
 
@@ -105,7 +113,31 @@ async def api_apply_plan() -> dict[str, Any]:
             force_refresh=False,
             invalidate_inputs=False,
         )
-    schedule = sim_result["next_hour_schedule"]
+    now = now_warsaw()
+    hour = now.hour
+    if not hour_has_timer_schedule(sim_result.get("rows") or [], hour):
+        return {
+            "ok": True,
+            "skipped": True,
+            "error": None,
+            "next_hour": sim_result["next_hour"],
+            "planned_action": None,
+        }
+    rules = await sa_client.get_rules(cfg)
+    schedule = build_sa_schedule_from_hour_row(
+        sim_result.get("rows") or [],
+        hour,
+        cfg,
+        existing=rules,
+    )
+    if not schedule:
+        return {
+            "ok": False,
+            "skipped": True,
+            "error": "Could not parse current hour Timer Schedule",
+            "next_hour": sim_result["next_hour"],
+            "planned_action": None,
+        }
     ok = await sa_client.apply_hourly_schedule_to_sa(cfg, schedule)
     return {
         "ok": ok,
@@ -135,3 +167,35 @@ async def api_hourly_sync_status() -> dict[str, Any]:
 async def api_sync_hour() -> dict[str, Any]:
     """Run hourly plan→SA sync immediately (same as the :00 cron job)."""
     return await run_hourly_plan_sync()
+
+
+@router.get("/api/work-mode-sync/status")
+async def api_work_mode_sync_status() -> dict[str, Any]:
+    """Last work-mode job result (:00 On-grid / :58 Limit home)."""
+    cfg = load_config()
+    return {
+        **get_last_work_mode_sync(),
+        "smart_mode_enabled_now": bool(cfg.get("smart_mode_enabled", False)),
+    }
+
+
+@router.get("/api/hour-boundary-sync/status")
+async def api_hour_boundary_sync_status() -> dict[str, Any]:
+    """Last :00/:58 hour-boundary SA sync (timer row + work mode)."""
+    cfg = load_config()
+    return {
+        **get_last_hour_boundary_sync(),
+        "smart_mode_enabled_now": bool(cfg.get("smart_mode_enabled", False)),
+    }
+
+
+@router.post("/api/rules/work-mode-start")
+async def api_work_mode_start() -> dict[str, Any]:
+    """Manual trigger — same as :00 hour-boundary start."""
+    return await run_hour_boundary_start()
+
+
+@router.post("/api/rules/work-mode-end")
+async def api_work_mode_end() -> dict[str, Any]:
+    """Manual trigger — same as :58 hour-boundary end."""
+    return await run_hour_boundary_end()

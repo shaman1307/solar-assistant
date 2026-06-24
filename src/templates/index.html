@@ -2429,8 +2429,7 @@
       <div class="tariff-rce-foot text-xs">
         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-sm inline-block opacity-55" style="background:#D9485F"></span><span id="lbl-g12-zone-peak" class="text-gray-400">G12 Peak</span></span>
         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-sm inline-block opacity-55" style="background:#2EAD84"></span><span id="lbl-g12-zone-offpeak" class="text-gray-400">G12 Off-peak</span></span>
-        <span class="flex items-center gap-1"><span class="inline-block w-2" style="border-top:2px solid #16a34a;margin-bottom:1px"></span><span class="text-gray-400">RCE ≥ G12 Off-peak</span></span>
-        <span class="flex items-center gap-1"><span class="inline-block w-2" style="border-top:2px solid #991b1b;margin-bottom:1px"></span><span class="text-gray-400">RCE &lt; G12 Off-peak</span></span>
+        <span class="flex items-center gap-1"><span class="inline-block w-2" style="border-top:2px solid #166534;margin-bottom:1px"></span><span class="text-gray-400">RCE</span></span>
       </div>
     </div>
   </section>
@@ -2561,16 +2560,13 @@ function buyTariffChartTitle(tariffName) {
 const CHART_COLORS = {
   peak: '#D9485F',
   offpeak: '#2EAD84',
-  rceLine: '#7f1d1d',
-  rceAboveOffpeak: '#16a34a',
-  rceBelowG12: '#991b1b',
+  rceLine: '#166534',
   empty: '#E5E9EF',
 };
 
 const TARIFF_RCE_SLOTS_PER_HOUR = 4;
 const ACR_PRICE_Y_MAX_PLN = 4;
 const CHART_G12_BG_OPACITY = 0.32;
-const CHART_RCE_BAR_OPACITY = 0.92;
 /** Energa G12 weekday peak windows (hour ranges, start inclusive, end exclusive). */
 const G12_PEAK_HOURS_WEEKDAY = [[6, 13], [15, 22]];
 
@@ -2586,17 +2582,6 @@ function g12OffpeakPricePln() {
     ?? buyTariffData?.offpeak_price_pln_kwh;
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? n : 0.6229;
-}
-
-/** RCE bar: green when sell price ≥ G12 off-peak buy, else yellow. */
-function combinedRceBarColor(rcePrice) {
-  if (rcePrice == null) return CHART_COLORS.empty;
-  return rcePrice >= g12OffpeakPricePln() ? CHART_COLORS.rceAboveOffpeak : CHART_COLORS.rceBelowG12;
-}
-
-function rceVsG12OffpeakLabel(rcePrice) {
-  if (rcePrice == null) return '';
-  return rcePrice >= g12OffpeakPricePln() ? 'RCE ≥ G12 Off-peak' : 'RCE < G12 Off-peak';
 }
 
 function g12ZoneBgColor(zone) {
@@ -3243,6 +3228,7 @@ async function loadMetrics() {
       set('m-bat-discharged', d.battery_discharged_today != null ? fmt(-Math.abs(d.battery_discharged_today), 2) : '—');
     }
     updateLiveFlow(d);
+    updateSimCurrentHourLiveSoc(d.battery_soc ?? d.soc);
     updateSaStatusBadge(d);
   } catch(e) { console.warn('metrics error', e); }
 }
@@ -5791,9 +5777,7 @@ async function saveSmartMode() {
     smartModeEnabled = !!result.enabled;
     if (enabled) {
       clearRulesManualEdit();
-      if (simData?.rows?.length) {
-        applyProposedSchedule(simData.next_hour_schedule || simData.proposed_schedule);
-      }
+      await refreshTimerFromSA({ silent: true, force: true });
     } else {
       await refreshTimerFromSA({ silent: true, force: true });
     }
@@ -6021,44 +6005,6 @@ async function applyTimedPower(kind) {
   }
 }
 
-function ensureThreeTimerSlots(slots) {
-  const bySlot = {};
-  (slots || []).forEach(s => { bySlot[Number(s.slot)] = s; });
-  return [1, 2, 3].map(n => {
-    const s = bySlot[n];
-    if (s) return { ...s, slot: n };
-    return {
-      slot: n, from: '00:00', to: '00:00', capacity_pct: 0, voltage_v: 0, power_kw: 0,
-      grid: false, generator: false,
-    };
-  });
-}
-
-function mergePlanSlotOne(existingSlots, planSlots) {
-  const existing = ensureThreeTimerSlots(existingSlots);
-  const plan = ensureThreeTimerSlots(planSlots);
-  return [plan[0], existing[1], existing[2]];
-}
-
-function applyProposedSchedule(schedule) {
-  if (!schedule || !isSmartModeEnabled()) return;
-  const chargeBase = rulesData?.charge_slots?.length
-    ? rulesData.charge_slots
-    : collectTimerSlots('charge', 3);
-  const dischargeBase = rulesData?.discharge_slots?.length
-    ? rulesData.discharge_slots
-    : collectTimerSlots('discharge', 3);
-  if (schedule.timed_charge_enabled !== null && schedule.timed_charge_enabled !== undefined) {
-    syncTimedPowerUi('charge', schedule.timed_charge_enabled);
-  }
-  if (schedule.timed_discharge_enabled !== null && schedule.timed_discharge_enabled !== undefined) {
-    syncTimedPowerUi('discharge', schedule.timed_discharge_enabled);
-  }
-  renderTimerSlots('charge-slots-body', mergePlanSlotOne(chargeBase, schedule.charge_slots), true);
-  renderTimerSlots('discharge-slots-body', mergePlanSlotOne(dischargeBase, schedule.discharge_slots), false);
-}
-
-
 function slotPowerW(s) {
   if (s.power_w != null && s.power_w !== '') return Math.round(Number(s.power_w));
   return Math.round((Number(s.power_kw) || 0) * 1000);
@@ -6209,10 +6155,6 @@ function renderSimulationView(data) {
     return;
   }
   renderSimulation(data);
-  // Auto-preview plan in slot 1 only when Smart mode is on and user is not editing / just wrote to SA.
-  if (isSmartModeEnabled() && !shouldSkipRulesRefresh() && !rulesManualEditPending) {
-    applyProposedSchedule(data.next_hour_schedule || data.proposed_schedule);
-  }
 }
 
 async function loadSimulation(forceRefresh = false, silent = false) {
@@ -6807,6 +6749,9 @@ function makeSimRow(r, isTotal, isTomorrowRemainder, isHistory) {
   const timerHtml = isTotal
     ? '<td></td>'
     : simTimerCell(r.timer_schedule);
+  const socCls = r.soc_live
+    ? 'text-violet-700 font-semibold sim-soc-live'
+    : 'text-gray-600';
   tr.innerHTML = `
     <td class="text-gray-600 whitespace-nowrap tabular-nums">${simRowTimeRange(r)}</td>
     <td class="text-right text-gray-600 tabular-nums">${fmt(r.production, 3)}</td>
@@ -6815,7 +6760,7 @@ function makeSimRow(r, isTotal, isTomorrowRemainder, isHistory) {
     <td class="text-right text-gray-600 tabular-nums">${fmt(r.bat_discharge, 3)}</td>
     <td class="text-right text-gray-600 tabular-nums">${fmt(r.grid_import ?? r.buy, 3)}</td>
     <td class="text-right text-gray-600 tabular-nums">${fmt(r.grid_export ?? r.feed_in, 3)}</td>
-    <td class="text-right text-gray-600 tabular-nums">${fmt(r.soc, 1)}</td>
+    <td class="text-right tabular-nums sim-soc-cell ${socCls}">${fmt(r.soc, 1)}</td>
     <td class="text-right text-gray-600 tabular-nums">${r.buy_price != null ? r.buy_price.toFixed(4) : '—'}</td>
     <td class="text-right text-gray-600 tabular-nums">${r.rce_price != null ? r.rce_price.toFixed(3) : '—'}</td>
     <td class="text-right tabular-nums ${energyCls}" title="${energyTitle}">${simEnergyFmt(energyCash)}</td>
@@ -6831,6 +6776,28 @@ function simTimerCell(timerText) {
   }
   const esc = String(timerText).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   return `<td class="text-amber-800 leading-snug sim-col-wrap">${esc}</td>`;
+}
+
+function updateSimCurrentHourLiveSoc(socPct) {
+  if (socPct == null || !Number.isFinite(Number(socPct)) || !simData) return;
+  const hour = simData.plan_from_hour;
+  const today = simData.today_date;
+  if (hour == null) return;
+  const planBody = document.getElementById('sim-body-plan');
+  if (!planBody || planBody.classList.contains('hidden')) return;
+  let tr = null;
+  if (today) {
+    tr = planBody.querySelector(`tr[data-sim-date="${today}"][data-sim-hour="${hour}"]`);
+  }
+  if (!tr) {
+    tr = planBody.querySelector(`tr[data-sim-hour="${hour}"]:not([data-sim-history="1"])`);
+  }
+  if (!tr) return;
+  const cell = tr.querySelector('.sim-soc-cell');
+  if (!cell) return;
+  cell.textContent = Number(socPct).toFixed(1);
+  cell.classList.add('sim-soc-live', 'text-violet-700', 'font-semibold');
+  cell.classList.remove('text-gray-600');
 }
 
 // ---------------------------------------------------------------------------

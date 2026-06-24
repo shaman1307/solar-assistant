@@ -31,6 +31,10 @@ _WORK_MODE_DEFAULT_OPTIONS = (
     "Limit power to home load",
     "AC coupling",
 )
+WORK_MODE_ON_GRID = "On-grid"
+WORK_MODE_LIMIT_HOME_LOAD = "Limit power to home load"
+WORK_MODE_VERIFY_TIMEOUT_S = 65.0
+WORK_MODE_VERIFY_INTERVAL_S = 5.0
 _SA_CLIENT_TIMEOUT_S = 35.0
 _SA_TIMEOUT_S = 30
 _SA_LOCK_WAIT_S = 2.0
@@ -463,17 +467,38 @@ async def set_grid_export(cfg: dict, *, enabled: bool) -> bool:
         return False
 
 
-async def set_work_mode(cfg: dict, mode: str) -> bool:
-    """Write inverter Work mode to SA."""
+async def set_work_mode(
+    cfg: dict,
+    mode: str,
+    *,
+    verify: bool = True,
+    verify_timeout_s: float = WORK_MODE_VERIFY_TIMEOUT_S,
+) -> bool:
+    """Write inverter Work mode to SA; poll until SA applies it (SRNE can take 30–60s)."""
     value = str(mode).strip()
     if not value:
         return False
     topic = _work_mode_topic(cfg)
     try:
         await _write_metrics(cfg, [(topic, value)], lock_wait_s=90.0)
-        log.info("Work mode set to %s", value)
-        invalidate_rules_cache()
-        return True
+        if not verify:
+            invalidate_rules_cache()
+            log.info("Work mode write sent — %s (no verify)", value)
+            return True
+
+        deadline = time.monotonic() + max(verify_timeout_s, WORK_MODE_VERIFY_INTERVAL_S)
+        while time.monotonic() < deadline:
+            await asyncio.sleep(WORK_MODE_VERIFY_INTERVAL_S)
+            invalidate_rules_cache()
+            rules = await get_rules(cfg, fresh=True)
+            after = rules.get("work_mode")
+            if after == value:
+                log.info("Work mode set to %s (SA confirmed)", value)
+                return True
+            log.info("Work mode pending — want %r, SA has %r", value, after)
+
+        log.error("Work mode verify timeout after %.0fs — wanted %r", verify_timeout_s, value)
+        return False
     except Exception as exc:
         log.error("Failed to set work mode: %r", exc)
         return False
@@ -514,8 +539,8 @@ async def set_timer_schedule(cfg: dict, schedule: dict[str, Any]) -> bool:
     charge_nums = tuple(int(s["slot"]) for s in schedule.get("charge_slots", []))
     discharge_nums = tuple(int(s["slot"]) for s in schedule.get("discharge_slots", []))
     if not charge_nums and not discharge_nums:
-        charge_nums = (1,)
-        discharge_nums = (1,)
+        log.info("Timer schedule write skipped — no charge/discharge slots in payload")
+        return True
     writes = _build_schedule_writes(
         schedule,
         charge_slot_nums=charge_nums,
@@ -539,12 +564,20 @@ async def set_timer_schedule(cfg: dict, schedule: dict[str, Any]) -> bool:
 
 
 async def apply_hourly_schedule_to_sa(cfg: dict, schedule: dict[str, Any]) -> bool:
-    """Auto-sync: write slot 1 only (charge + discharge), merged with fresh SA rows 2–3."""
-    slim = {
-        **schedule,
-        "charge_slots": [schedule.get("charge_slots", [{}])[0]],
-        "discharge_slots": [schedule.get("discharge_slots", [{}])[0]],
+    """Auto-sync: write slot 1 for enabled timed charge and/or discharge only."""
+    slim: dict[str, Any] = {
+        "timed_charge_enabled": bool(schedule.get("timed_charge_enabled")),
+        "timed_discharge_enabled": bool(schedule.get("timed_discharge_enabled")),
+        "charge_slots": [],
+        "discharge_slots": [],
     }
+    if slim["timed_charge_enabled"]:
+        slim["charge_slots"] = [schedule.get("charge_slots", [{}])[0]]
+    if slim["timed_discharge_enabled"]:
+        slim["discharge_slots"] = [schedule.get("discharge_slots", [{}])[0]]
+    if not slim["charge_slots"] and not slim["discharge_slots"]:
+        log.info("Hourly schedule apply skipped — no timed charge/discharge enabled")
+        return True
     ok = await set_timer_schedule(cfg, slim)
     if ok:
         log.info(

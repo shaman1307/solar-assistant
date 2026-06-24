@@ -17,6 +17,7 @@ from .debug_smart_plan import (
     collect_q15_schedule_rows,
     merge_today_hourly_profile,
     run_day_smart_q15_plan,
+    run_today_smart_q15_plan,
 )
 from .inverter_sim import _initial_soc_kwh
 from .plan_hourly_actuals import (
@@ -182,8 +183,7 @@ def run_simulation(
         day_start_soc = soc_kwh
 
     rce_today = quarters_by_date.get(today_str) or []
-    # Full-day replay from hour 0 (same inputs as debug apply_smart_plan_for_day).
-    smart_today = run_day_smart_q15_plan(
+    smart_today = run_today_smart_q15_plan(
         date_str=today_str,
         pv_hourly=pv_merged,
         load_hourly=load_merged,
@@ -191,8 +191,9 @@ def run_simulation(
         tomorrow_load=load_tomorrow,
         cfg=cfg,
         rce_quarters=rce_today if len(rce_today) >= Q15_PER_HOUR * 24 else None,
-        initial_soc_kwh=day_start_soc,
-        from_hour=0,
+        plan_from_hour=plan_from_hour,
+        day_start_soc_kwh=day_start_soc,
+        live_soc_kwh=soc_kwh,
     )
 
     hours_today_in_plan = max(0, 24 - plan_from_hour)
@@ -270,6 +271,9 @@ def run_simulation(
                 display_pv=disp_pv,
                 display_load=disp_load,
             )
+            if h == plan_from_hour:
+                row["soc"] = round(initial_soc_pct, 1)
+                row["soc_live"] = True
             all_rows.append(row)
             if row.get("export_planned"):
                 export_hours.add(h)
@@ -365,6 +369,7 @@ def run_simulation(
         "history_rows": history_rows,
         "has_history_rows": bool(history_rows),
         "plan_from_hour": plan_from_hour,
+        "live_soc_pct": round(initial_soc_pct, 1),
         "today_date": today_str,
         "plan_soc_q15": {
             "today": _soc_q15_from_q15_by_hour(smart_today),
