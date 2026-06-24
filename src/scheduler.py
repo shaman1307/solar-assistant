@@ -3,7 +3,7 @@ Balance automation scheduler.
 
   - Nightly at 23:59 Europe/Warsaw: build Load+PV day cache for tomorrow and day-after,
     then refresh charge-rate estimate in config (Δ).
-  - Hourly at :00: refresh Plan Simulation (Energy arbitrage + RCE + buy tariff).
+  - Hourly at :00: refresh Open-Meteo PV (remaining today + tomorrow), then Plan Simulation.
   - Same :00 tick: SA Timer Schedule when smart_mode_enabled.
 """
 
@@ -104,6 +104,8 @@ async def run_hourly_plan_sync() -> dict[str, Any]:
     ran_at = now_warsaw().strftime("%Y-%m-%d %H:%M:%S")
     status: dict[str, Any] = {
         "ran_at": ran_at,
+        "om_pv_refreshed": False,
+        "last_om_refresh": None,
         "plan_cache_refreshed": False,
         "plan_computed_at": None,
         "smart_mode_enabled": False,
@@ -122,6 +124,15 @@ async def run_hourly_plan_sync() -> dict[str, Any]:
         smart_on = _smart_mode_enabled(cfg)
         status["smart_mode_enabled"] = smart_on
         status["next_hour"] = next_hour
+
+        try:
+            om_cache = await forecast_mod.run_hourly_pv_refresh(cfg)
+            status["om_pv_refreshed"] = True
+            status["last_om_refresh"] = om_cache.get("last_om_refresh")
+        except Exception as exc:
+            status["om_pv_refreshed"] = False
+            status["last_om_refresh"] = None
+            log.warning("Hourly Open-Meteo PV refresh failed: %s", exc)
 
         sim_result = await _refresh_hourly_plan_cache(cfg)
         status["plan_cache_refreshed"] = True

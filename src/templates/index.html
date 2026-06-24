@@ -138,21 +138,21 @@
     .action-discharge   { color: #6d28d9; }
     .action-discharge-load { color: #4338ca; }
     .ov-control { user-select: none; }
-    .ov-scale-wrap { touch-action: pan-y; }
+    .ov-scale-wrap { touch-action: pan-y; min-height: 1.75rem; }
     .ov-range {
       -webkit-appearance: none;
       appearance: none;
       background: transparent;
-      height: 24px;
+      height: 28px;
       margin: 0;
     }
     .ov-range::-webkit-slider-runnable-track {
       background: transparent;
-      height: 24px;
+      height: 28px;
     }
     .ov-range::-moz-range-track {
       background: transparent;
-      height: 24px;
+      height: 28px;
       border: none;
     }
     .ov-range::-webkit-slider-thumb {
@@ -172,18 +172,77 @@
     .ov-thumb {
       position: absolute;
       top: 50%;
-      width: 10px;
-      height: 18px;
-      border-radius: 9999px;
-      border: 2px solid #374151;
+      min-width: 2.1rem;
+      height: 1.35rem;
+      padding: 0 0.2rem;
+      border-radius: 0.3rem;
+      border: none;
+      background: #fff;
       transform: translate(-50%, -50%);
       pointer-events: none;
       z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: #374151;
+      line-height: 1;
+      box-sizing: border-box;
+      white-space: nowrap;
     }
     .ov-thumb.amber { background: #fbbf24; }
     .ov-thumb.blue  { background: #60a5fa; }
+    .ov-scale-fill.amber { background: #fbbf24; }
+    .ov-scale-fill.blue  { background: #60a5fa; }
+    .ov-mark-plan {
+      z-index: 2;
+      width: 2px;
+      margin-left: -1px;
+      background: #6b7280;
+    }
+    .ov-scale-labels {
+      min-height: 1rem;
+    }
     .ov-control-main {
       min-width: 0;
+      display: grid;
+      grid-template-rows: auto auto auto auto;
+      gap: 0.25rem;
+    }
+    .ov-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 0.5rem;
+      width: 100%;
+      min-width: 0;
+      min-height: 2.5rem;
+    }
+    .ov-head-main {
+      display: flex;
+      align-items: baseline;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+    .ov-formula {
+      font-size: 10px;
+      font-weight: 600;
+      color: #374151;
+      font-variant-numeric: tabular-nums;
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      border-radius: 0.25rem;
+      padding: 0.125rem 0.375rem;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .ov-formula.ov-formula-warn {
+      background: #fef3c7;
+      border-color: #fcd34d;
+      color: #92400e;
     }
     .ov-stepper {
       display: flex;
@@ -221,6 +280,26 @@
       font-size: 0.75rem;
       text-align: center;
       padding: 0 0.25rem;
+    }
+    @media (max-width: 639px) {
+      /* Match EV Charging compact typography on phones. */
+      .ov-stepper {
+        gap: 0.12rem;
+      }
+      .ov-step-btn {
+        width: 1.35rem;
+        height: 1.35rem;
+        min-width: 1.35rem;
+        padding: 0;
+        font-size: var(--timer-slot-font, 0.75rem);
+      }
+      .ov-kwh-input {
+        min-width: 0;
+        height: auto;
+        font-size: var(--timer-slot-font, 0.75rem);
+        line-height: 1.1;
+        padding: 0.28em 0.06em;
+      }
     }
     .ov-kwh-input:focus {
       outline: none;
@@ -270,8 +349,8 @@
     }
     .timer-schedule-table {
       --timer-cb-size: 1rem;
-      --timer-cell-pad-x: 2px;
-      --timer-cell-pad-y: 4px;
+      --timer-cell-pad-x: 1px;
+      --timer-cell-pad-y: 2px;
       table-layout: auto;
       width: max-content;
       min-width: 100%;
@@ -280,6 +359,11 @@
     .timer-schedule-scroll {
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
+    }
+    #tab-dashboard {
+      --timer-slot-font: 0.6875rem;
+      --timer-head-font: 0.75rem;
+      container-type: inline-size;
     }
     .timer-schedule-card {
       padding: 1.25rem 5px;
@@ -573,6 +657,9 @@
       z-index: 25;
     }
     @media (max-width: 639px) {
+      .timer-schedule-scroll {
+        container-type: inline-size;
+      }
       .timer-schedule-table {
         table-layout: fixed;
         width: 100%;
@@ -591,8 +678,18 @@
         width: 100%;
         min-width: 0;
         max-width: none;
-        padding: 4px 2px;
-        font-size: 11px;
+        min-height: 0;
+        padding: 0.22em 0.05em;
+        font-size: var(--timer-slot-font);
+        line-height: 1.1;
+      }
+      .timer-schedule-table .timer-slot-apply-btn {
+        font-size: var(--timer-slot-font);
+      }
+      .timer-schedule-table thead th {
+        font-size: var(--timer-head-font, max(11px, var(--timer-slot-font, 0.75rem)));
+        padding-top: 0.2rem;
+        padding-bottom: 0.2rem;
       }
       .timer-schedule-table th.timer-col-min,
       .timer-schedule-table td.timer-col-min {
@@ -611,8 +708,13 @@
         background-color: #f3f4f6;
         box-shadow: -4px 0 6px -2px rgba(0, 0, 0, 0.08), inset 0 0 0 9999px #f3f4f6;
       }
-      .timer-schedule-table col.timer-col-grid-col { width: 2rem; }
-      .timer-schedule-table col.timer-col-sa-col { width: 2.75rem; }
+      .timer-schedule-table col.timer-col-data:nth-child(1),
+      .timer-schedule-table col.timer-col-data:nth-child(2) { width: 3rem; }
+      .timer-schedule-table col.timer-col-data:nth-child(3) { width: 2.25rem; }
+      .timer-schedule-table col.timer-col-data:nth-child(4) { width: 2.35rem; }
+      .timer-schedule-table col.timer-col-data:nth-child(5) { width: 2.5rem; }
+      .timer-schedule-table col.timer-col-grid-col { width: 1.75rem; }
+      .timer-schedule-table col.timer-col-sa-col { width: 2.5rem; }
       .timer-schedule-table td:not(.timer-col-min) {
         overflow: hidden;
       }
@@ -627,8 +729,13 @@
       .timer-schedule-scroll {
         overflow-x: hidden;
       }
-      .timer-schedule-table col.timer-col-grid-col { width: 2rem; }
-      .timer-schedule-table col.timer-col-sa-col { width: 2.75rem; }
+      .timer-schedule-table col.timer-col-data:nth-child(1),
+      .timer-schedule-table col.timer-col-data:nth-child(2) { width: 3rem; }
+      .timer-schedule-table col.timer-col-data:nth-child(3) { width: 2.25rem; }
+      .timer-schedule-table col.timer-col-data:nth-child(4) { width: 2.35rem; }
+      .timer-schedule-table col.timer-col-data:nth-child(5) { width: 2.5rem; }
+      .timer-schedule-table col.timer-col-grid-col { width: 1.75rem; }
+      .timer-schedule-table col.timer-col-sa-col { width: 2.5rem; }
       .timer-schedule-table .timer-col-data {
         min-width: 0;
       }
@@ -658,6 +765,14 @@
         box-shadow: none;
       }
     }
+    .timer-schedule-table thead th {
+      font-size: var(--timer-head-font, 0.75rem);
+      font-weight: 600;
+      line-height: 1.15;
+      letter-spacing: 0.02em;
+      padding-top: 0.25rem;
+      padding-bottom: 0.25rem;
+    }
     .timer-schedule-table th,
     .timer-schedule-table td {
       padding: var(--timer-cell-pad-y) var(--timer-cell-pad-x);
@@ -680,7 +795,7 @@
     .timer-schedule-table th.timer-col-sticky-grid,
     .timer-schedule-table td.timer-col-sticky-grid {
       position: sticky;
-      right: var(--timer-sticky-sa-w, 2.75rem);
+      right: var(--timer-sticky-sa-w, 2.5rem);
       z-index: 2;
       background: #ffffff;
       box-shadow: -4px 0 6px -2px rgba(0, 0, 0, 0.06);
@@ -704,20 +819,20 @@
     .timer-slot-apply-btn {
       display: inline-block;
       margin: 0;
-      padding: 0.25rem 0.375rem;
-      font-size: 10px;
+      padding: 0.2rem 0.25rem;
+      font-size: var(--timer-slot-font, 0.6875rem);
       line-height: 1.25;
       font-weight: 600;
       white-space: nowrap;
       border-radius: 0.25rem;
-      border: 1px solid #d1d5db;
+      border: none;
       background: transparent;
       color: #4b5563;
       cursor: pointer;
-      transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+      transition: background-color 0.15s ease, color 0.15s ease;
     }
     .timer-slot-apply-btn:hover:not(:disabled) {
-      border-color: #9ca3af;
+      background: #f3f4f6;
       color: #111827;
     }
     .timer-slot-apply-btn:disabled {
@@ -726,7 +841,7 @@
     }
     .timer-slot-apply-btn--busy {
       background: #f59e0b;
-      border-color: #f59e0b;
+      border: none;
       color: #111827;
       opacity: 1;
       cursor: wait;
@@ -734,13 +849,13 @@
     .timer-slot-input {
       width: 100%;
       min-width: 0;
-      min-height: 2rem;
-      padding: 4px 2px;
+      min-height: 1.35rem;
+      padding: 0.2rem 0.08rem;
       background: #ffffff;
       border: 1px solid #d1d5db;
       border-radius: 4px;
-      font-size: 11px;
-      line-height: 1.2;
+      font-size: var(--timer-slot-font, 0.75rem);
+      line-height: 1.1;
       color: #111827;
       text-align: center;
       box-sizing: border-box;
@@ -757,7 +872,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      min-height: 2rem;
+      min-height: 1.75rem;
     }
     /* Tariff / RCE combined chart */
     .rce-chart-section,
@@ -999,14 +1114,14 @@
     .flow-w {
       font-size: 18px;
       font-weight: 700;
-      color: #111827;
+      color: #374151;
       margin-top: 1px;
       font-variant-numeric: tabular-nums;
     }
     .flow-soc {
       font-size: 18px;
       font-weight: 700;
-      color: #2563eb;
+      color: #374151;
       margin-bottom: 1px;
       font-variant-numeric: tabular-nums;
     }
@@ -1076,6 +1191,33 @@
       gap: 0.75rem;
       min-width: 0;
     }
+    .power-management-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      min-width: 0;
+    }
+    .power-management-head .forecast-subsection-head {
+      margin-bottom: 0;
+    }
+    .power-management-head .fc-day-btn {
+      flex-shrink: 0;
+    }
+    .forecast-subsection-head {
+      font-size: 10px;
+      font-weight: 600;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.5rem;
+    }
+    .power-management-panel {
+      width: 100%;
+      padding-bottom: 0.75rem;
+      margin-bottom: 0.25rem;
+      border-bottom: 1px solid #e5e7eb;
+    }
     .fc-day-btn {
       min-width: 5.75rem;
       text-align: center;
@@ -1095,18 +1237,164 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 1rem 1.5rem;
       min-width: 0;
+      align-items: start;
     }
     @media (max-width: 639px) {
       .forecast-overrides-sliders {
         grid-template-columns: 1fr;
         gap: 2rem;
       }
+      .forecast-overrides-panel {
+        gap: 0.375rem;
+      }
+      .forecast-overrides-card {
+        padding-top: 0.75rem;
+      }
+      .power-management-panel {
+        padding-bottom: 0.5rem;
+        margin-bottom: 0.125rem;
+      }
+      .power-management-head {
+        margin-bottom: 0.375rem;
+      }
     }
     .forecast-overrides-chart #fc-chart-wrap {
       height: 260px;
     }
+    .forecast-overrides-chart .dash-chart-x {
+      font-size: 11px;
+      color: #6b7280;
+    }
+    .forecast-overrides-chart .dash-chart-x .fc-hour-label {
+      position: absolute;
+      bottom: 0;
+      text-align: left;
+      white-space: nowrap;
+      line-height: 1;
+    }
     .forecast-overrides-chart #fc-y-axis .dash-chart-axis-label {
       font-size: 10px;
+    }
+    .ev-charging-panel {
+      width: 100%;
+      border-top: 1px solid #e5e7eb;
+      border-bottom: 1px solid #e5e7eb;
+      padding: 0.75rem 0;
+      margin: 0.5rem 0 0.75rem;
+      container-type: inline-size;
+    }
+    .ev-charging-grid {
+      display: grid;
+      grid-template-columns: auto 3.25rem repeat(3, minmax(0, 1fr));
+      gap: 0.5rem 0.75rem;
+      align-items: center;
+      width: 100%;
+    }
+    .ev-charging-grid .ev-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #6b7280;
+      white-space: nowrap;
+    }
+    .ev-charging-grid input[type="time"],
+    .ev-power-stepper {
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+    .ev-charging-grid input[type="time"] {
+      font-size: 0.75rem;
+      border: 1px solid #d1d5db;
+      border-radius: 0.375rem;
+      padding: 0.35rem 0.5rem;
+      color: #111827;
+      background: #fff;
+    }
+    .ev-power-stepper {
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+    .ev-power-stepper input[type="number"] {
+      flex: 1;
+      min-width: 0;
+      width: 0;
+      text-align: center;
+      font-size: 0.75rem;
+      border: 1px solid #d1d5db;
+      border-radius: 0.375rem;
+      padding: 0.3rem 0.2rem;
+    }
+    .ev-power-stepper .ev-kw-label {
+      flex-shrink: 0;
+      font-size: 0.6875rem;
+      color: #6b7280;
+    }
+    .ev-power-stepper button {
+      width: 1.75rem;
+      height: 1.75rem;
+      border-radius: 0.375rem;
+      background: #e5e7eb;
+      color: #374151;
+      font-weight: 600;
+      line-height: 1;
+    }
+    .ev-power-stepper button:hover { background: #d1d5db; }
+    @media (max-width: 639px) {
+      .ev-charging-grid {
+        --ev-fit-font: clamp(7px, 2.35cqi, 11px);
+        grid-template-columns: auto 2.15rem minmax(0, 0.88fr) minmax(0, 0.88fr) minmax(5rem, 1.08fr);
+        gap: 0.24rem 0.28rem;
+      }
+      .ev-charging-grid .ev-label,
+      .ev-charging-grid input[type="time"],
+      .ev-charging-grid .ev-power-stepper input[type="number"],
+      .ev-charging-grid .ev-power-stepper button {
+        font-size: var(--ev-fit-font);
+      }
+      .ev-charging-grid .ev-power-stepper .ev-kw-label {
+        font-size: calc(var(--ev-fit-font) * 0.88);
+      }
+      .ev-charging-grid input[type="time"] {
+        padding: 0.28em 0.1em;
+        line-height: 1.1;
+      }
+      .ev-charging-grid input[type="time"]::-webkit-datetime-edit {
+        min-width: 0;
+        padding: 0;
+      }
+      .ev-charging-grid input[type="time"]::-webkit-calendar-picker-indicator {
+        margin: 0;
+        padding: 0;
+      }
+      .ev-charging-grid .ev-power-stepper {
+        gap: 0.12rem;
+      }
+      .ev-charging-grid .ev-power-stepper button {
+        width: 1.35rem;
+        height: 1.35rem;
+        min-width: 1.35rem;
+        flex-shrink: 0;
+        padding: 0;
+      }
+      .ev-charging-grid .ev-power-stepper input[type="number"] {
+        flex: 1 1 1.5rem;
+        min-width: 1.35rem;
+        width: auto;
+        padding: 0.28em 0.06em;
+        line-height: 1.1;
+      }
+    }
+    #fc-soc-bands .fc-soc-band {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      background: rgba(134, 239, 172, 0.35);
+      pointer-events: none;
+    }
+    #fc-y-axis-soc {
+      font-size: 10px;
+      color: #9ca3af;
     }
     .energy-overview-cards {
       display: grid;
@@ -1120,6 +1408,49 @@
       justify-content: flex-start;
       min-height: 0;
       padding: 0.375rem 0.5rem;
+      position: relative;
+      overflow: hidden;
+    }
+    .eo-plan-bg {
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .eo-plan-bg--amber { background: rgba(251, 191, 36, 0.14); }
+    .eo-plan-bg--blue  { background: rgba(96, 165, 250, 0.14); }
+    .eo-plan-fill {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 0;
+      border-radius: 0.75rem 0 0 0.75rem;
+      pointer-events: none;
+      z-index: 1;
+      transition: width 0.35s ease;
+    }
+    .eo-plan-fill--amber { background: rgba(251, 191, 36, 0.32); }
+    .eo-plan-fill--blue  { background: rgba(96, 165, 250, 0.32); }
+    .energy-metric-card-inner {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+      min-width: 0;
+    }
+    .eo-plan-value {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      font-size: 10px;
+      line-height: 1;
+      color: #6b7280;
+      font-variant-numeric: tabular-nums;
+      pointer-events: none;
     }
     .energy-metric-card-head {
       display: flex;
@@ -1151,6 +1482,9 @@
       text-align: center;
       width: 100%;
       min-height: 0;
+    }
+    .energy-overview-cards [data-card-id]:not([data-card-id="energy-cost"]):not([data-card-id="service-cost"]) .dash-card-value {
+      color: #374151;
     }
     @media (min-width: 768px) {
       .energy-overview-cards {
@@ -1273,46 +1607,56 @@
       </div>
       <div id="energy-overview-cards" class="energy-overview-cards dash-card-grid" data-card-grid="energy-overview">
         <div class="bg-white rounded-xl border border-gray-200 energy-metric-card" data-card-id="pv">
-          <div class="energy-metric-card-head">
-            <p class="text-xs text-gray-500">PV</p>
-            <span class="text-xs text-gray-500">kWh</span>
+          <div class="eo-plan-bg eo-plan-bg--amber" aria-hidden="true"></div>
+          <div class="eo-plan-fill eo-plan-fill--amber" aria-hidden="true"></div>
+          <div class="energy-metric-card-inner">
+            <div class="energy-metric-card-head">
+              <p class="text-xs text-gray-500">PV</p>
+              <span class="text-xs text-gray-500">kWh</span>
+            </div>
+            <p class="dash-card-value font-bold" id="m-pv-energy">—</p>
+            <span class="eo-plan-value" aria-hidden="true">—</span>
           </div>
-          <p class="dash-card-value font-bold text-amber-400" id="m-pv-energy">—</p>
         </div>
         <div class="bg-white rounded-xl border border-gray-200 energy-metric-card" data-card-id="load">
-          <div class="energy-metric-card-head">
-            <p class="text-xs text-gray-500">Load</p>
-            <span class="text-xs text-gray-500">kWh</span>
+          <div class="eo-plan-bg eo-plan-bg--blue" aria-hidden="true"></div>
+          <div class="eo-plan-fill eo-plan-fill--blue" aria-hidden="true"></div>
+          <div class="energy-metric-card-inner">
+            <div class="energy-metric-card-head">
+              <p class="text-xs text-gray-500">Consumption</p>
+              <span class="text-xs text-gray-500">kWh</span>
+            </div>
+            <p class="dash-card-value font-bold" id="m-load-energy">—</p>
+            <span class="eo-plan-value" aria-hidden="true">—</span>
           </div>
-          <p class="dash-card-value font-bold text-blue-400" id="m-load-energy">—</p>
         </div>
         <div class="bg-white rounded-xl border border-gray-200 energy-metric-card" data-card-id="grid-buy">
           <div class="energy-metric-card-head">
             <p class="text-xs text-gray-500">Grid Used</p>
             <span class="text-xs text-gray-500">kWh</span>
           </div>
-          <p class="dash-card-value font-bold text-red-400" id="m-grid-buy">—</p>
+          <p class="dash-card-value font-bold" id="m-grid-buy">—</p>
         </div>
         <div class="bg-white rounded-xl border border-gray-200 energy-metric-card" data-card-id="grid-sell">
           <div class="energy-metric-card-head">
             <p class="text-xs text-gray-500">Grid export</p>
             <span class="text-xs text-gray-500">kWh</span>
           </div>
-          <p class="dash-card-value font-bold text-green-400" id="m-grid-sell">—</p>
+          <p class="dash-card-value font-bold" id="m-grid-sell">—</p>
         </div>
         <div class="bg-white rounded-xl border border-gray-200 energy-metric-card" data-card-id="bat-charge">
           <div class="energy-metric-card-head">
             <p class="text-xs text-gray-500">Battery charged</p>
             <span class="text-xs text-gray-500">kWh</span>
           </div>
-          <p class="dash-card-value font-bold text-teal-400" id="m-bat-charged">—</p>
+          <p class="dash-card-value font-bold" id="m-bat-charged">—</p>
         </div>
         <div class="bg-white rounded-xl border border-gray-200 energy-metric-card" data-card-id="bat-discharge">
           <div class="energy-metric-card-head">
             <p class="text-xs text-gray-500">Battery discharged</p>
             <span class="text-xs text-gray-500">kWh</span>
           </div>
-          <p class="dash-card-value font-bold text-orange-400" id="m-bat-discharged">—</p>
+          <p class="dash-card-value font-bold" id="m-bat-discharged">—</p>
         </div>
         <div class="bg-white rounded-xl border border-gray-200 energy-metric-card" data-card-id="energy-cost">
           <div class="energy-metric-card-head">
@@ -1353,7 +1697,7 @@
       </div>
       <div class="flex flex-wrap gap-x-4 gap-y-1 mt-2 ml-12 mr-10 dash-chart-legend" style="font-size:11px">
         <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#f59e0b" stroke-width="1.5"/></svg><span class="text-gray-400">PV</span></span>
-        <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#60a5fa" stroke-width="1.5"/></svg><span class="text-gray-400">Load</span></span>
+        <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#60a5fa" stroke-width="1.5"/></svg><span class="text-gray-400">Consumption</span></span>
         <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#f87171" stroke-width="1.5" stroke-dasharray="6 4"/></svg><span class="text-gray-400">Grid Used</span></span>
         <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#4ade80" stroke-width="1.5" stroke-dasharray="6 4"/></svg><span class="text-gray-400">Grid export</span></span>
         <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#c084fc" stroke-width="1.5"/></svg><span class="text-gray-400">SOC (%)</span></span>
@@ -1438,6 +1782,16 @@
             <input name="battery.capacity_kwh" type="number" step="0.1" required
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
+        </div>
+      </fieldset>
+
+      <!-- EV charging -->
+      <fieldset class="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
+        <legend class="text-xs font-semibold text-gray-400 uppercase tracking-wider px-1">EV Power</legend>
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Max charging power (kW)</label>
+          <input name="ev.max_power_kw" type="number" step="0.1" min="0" required value="11"
+            class="w-full max-w-xs bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
         </div>
       </fieldset>
 
@@ -1602,7 +1956,7 @@
             <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Charge slots</span>
           </label>
           <div class="rounded-lg border border-gray-300 timer-schedule-scroll">
-            <table class="timer-schedule-table text-xs">
+            <table class="timer-schedule-table">
               <colgroup>
                 <col class="timer-col-data">
                 <col class="timer-col-data">
@@ -1614,13 +1968,13 @@
               </colgroup>
               <thead class="bg-gray-100 text-gray-400 uppercase">
                 <tr>
-                  <th class="py-2 font-semibold timer-col-data">From</th>
-                  <th class="py-2 font-semibold timer-col-data">To</th>
-                  <th class="py-2 font-semibold timer-col-data">Cap</th>
-                  <th class="py-2 font-semibold timer-col-data">Volt</th>
-                  <th class="py-2 font-semibold timer-col-data">W</th>
-                  <th class="py-2 font-semibold timer-col-min timer-col-sticky-grid">Grid</th>
-                  <th class="py-2 font-semibold timer-col-min timer-col-sticky-sa">SA</th>
+                  <th class="font-semibold timer-col-data">From</th>
+                  <th class="font-semibold timer-col-data">To</th>
+                  <th class="font-semibold timer-col-data">Cap</th>
+                  <th class="font-semibold timer-col-data">Volt</th>
+                  <th class="font-semibold timer-col-data">W</th>
+                  <th class="font-semibold timer-col-min timer-col-sticky-grid">Grid</th>
+                  <th class="font-semibold timer-col-min timer-col-sticky-sa">SA</th>
                 </tr>
               </thead>
               <tbody id="charge-slots-body" class="divide-y divide-gray-200 text-gray-600">
@@ -1638,7 +1992,7 @@
             <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Discharge slots</span>
           </label>
           <div class="rounded-lg border border-gray-300 timer-schedule-scroll">
-            <table class="timer-schedule-table text-xs">
+            <table class="timer-schedule-table">
               <colgroup>
                 <col class="timer-col-data">
                 <col class="timer-col-data">
@@ -1649,12 +2003,12 @@
               </colgroup>
               <thead class="bg-gray-100 text-gray-400 uppercase">
                 <tr>
-                  <th class="py-2 font-semibold timer-col-data">From</th>
-                  <th class="py-2 font-semibold timer-col-data">To</th>
-                  <th class="py-2 font-semibold timer-col-data">Cap</th>
-                  <th class="py-2 font-semibold timer-col-data">Volt</th>
-                  <th class="py-2 font-semibold timer-col-data">W</th>
-                  <th class="py-2 font-semibold timer-col-min timer-col-sticky-sa">SA</th>
+                  <th class="font-semibold timer-col-data">From</th>
+                  <th class="font-semibold timer-col-data">To</th>
+                  <th class="font-semibold timer-col-data">Cap</th>
+                  <th class="font-semibold timer-col-data">Volt</th>
+                  <th class="font-semibold timer-col-data">W</th>
+                  <th class="font-semibold timer-col-min timer-col-sticky-sa">SA</th>
                 </tr>
               </thead>
               <tbody id="discharge-slots-body" class="divide-y divide-gray-200 text-gray-600">
@@ -1679,35 +2033,38 @@
           class="fc-day-btn bg-gray-200 text-gray-600">Tomorrow</button>
       </div>
     </div>
-    <div class="bg-white rounded-xl border border-gray-200 p-4">
+    <div class="bg-white rounded-xl border border-gray-200 p-4 forecast-overrides-card">
       <div class="forecast-overrides-panel">
-        <div class="forecast-overrides-toolbar flex items-center justify-end gap-3">
-          <button type="button" id="fc-btn-reset" onclick="resetOverrides()"
-            class="fc-day-btn bg-gray-200 hover:bg-gray-300 text-gray-600 shrink-0">
-            Reset to 100%
-          </button>
-        </div>
-        <div class="forecast-overrides-sliders min-w-0">
+        <div class="power-management-panel">
+          <div class="power-management-head">
+            <div class="forecast-subsection-head">Power Management</div>
+            <button type="button" id="fc-btn-reset" onclick="resetOverrides()"
+              class="fc-day-btn bg-gray-200 hover:bg-gray-300 text-gray-600 shrink-0">
+              Reset to 100%
+            </button>
+          </div>
+          <div class="forecast-overrides-sliders min-w-0">
             <div class="ov-control" id="ov-ctrl-pv" data-metric="pv_kwh">
-              <div class="ov-control-main space-y-1">
-              <div class="flex items-baseline gap-2 flex-wrap leading-tight">
-                <label class="text-sm font-semibold text-gray-500">PV Total</label>
-                <span class="ov-kwh text-sm font-semibold text-amber-400">— kWh</span>
-                <span class="ov-pct text-xs text-gray-500">100%</span>
-              </div>
-              <div class="ov-scale-wrap relative h-6">
-                <div class="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 bg-gray-200 rounded-full overflow-hidden pointer-events-none">
-                  <div class="ov-scale-fill h-full rounded-full bg-amber-500/70" style="width:0"></div>
-                  <div class="ov-mark-100 absolute top-0 bottom-0 w-px bg-gray-500/80" style="left:50%"></div>
+              <div class="ov-control-main">
+              <div class="ov-head">
+                <div class="ov-head-main">
+                  <label class="text-sm font-semibold text-gray-500">PV Total</label>
+                  <span class="ov-kwh text-sm font-semibold text-amber-400">— kWh</span>
                 </div>
-                <div class="ov-thumb amber" style="left:50%"></div>
-                <input type="range" min="0" max="1000" value="500" step="1"
-                  class="ov-range absolute inset-x-0 top-0 w-full h-6 cursor-pointer z-10" />
+                <span class="ov-formula">—</span>
               </div>
-              <div class="relative h-4 text-[10px] text-gray-600 ov-scale-labels">
-                <span class="ov-lbl-0 absolute left-0">1%</span>
-                <span class="ov-lbl-100 absolute text-gray-400" style="left:50%;transform:translateX(-50%)">100% = — kWh</span>
-                <span class="ov-lbl-max absolute right-0">1000%</span>
+              <div class="ov-scale-wrap relative h-7">
+                <div class="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 bg-gray-200 rounded-full overflow-hidden pointer-events-none">
+                  <div class="ov-scale-fill amber h-full rounded-full" style="width:0"></div>
+                  <div class="ov-mark-plan absolute top-0 bottom-0 pointer-events-none" style="left:50%"></div>
+                </div>
+                <div class="ov-thumb amber" style="left:50%">100%</div>
+                <input type="range" min="0" max="1000" value="500" step="1"
+                  class="ov-range absolute inset-x-0 top-0 w-full h-7 cursor-pointer z-10" />
+              </div>
+              <div class="relative ov-scale-labels text-[10px] text-gray-600">
+                <span class="ov-lbl-0 absolute left-0 top-0">1%</span>
+                <span class="ov-lbl-max absolute right-0 top-0">1000%</span>
               </div>
               <div class="ov-stepper" title="±1 kWh per click">
                 <button type="button" class="ov-step-btn ov-step-minus" aria-label="Decrease PV forecast by 1 kWh">−</button>
@@ -1717,59 +2074,91 @@
               </div>
             </div>
             <div class="ov-control" id="ov-ctrl-load" data-metric="load_kwh">
-              <div class="ov-control-main space-y-1">
-              <div class="flex items-baseline gap-2 flex-wrap leading-tight">
-                <label class="text-sm font-semibold text-gray-500">Load Total</label>
-                <span class="ov-kwh text-sm font-semibold text-blue-400">— kWh</span>
-                <span class="ov-pct text-xs text-gray-500">100%</span>
-              </div>
-              <div class="ov-scale-wrap relative h-6">
-                <div class="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 bg-gray-200 rounded-full overflow-hidden pointer-events-none">
-                  <div class="ov-scale-fill h-full rounded-full bg-blue-500/70" style="width:0"></div>
-                  <div class="ov-mark-100 absolute top-0 bottom-0 w-px bg-gray-500/80" style="left:50%"></div>
+              <div class="ov-control-main">
+              <div class="ov-head">
+                <div class="ov-head-main">
+                  <label class="text-sm font-semibold text-gray-500">Consumption Total</label>
+                  <span class="ov-kwh text-sm font-semibold text-blue-400">— kWh</span>
                 </div>
-                <div class="ov-thumb blue" style="left:50%"></div>
-                <input type="range" min="0" max="1000" value="500" step="1"
-                  class="ov-range absolute inset-x-0 top-0 w-full h-6 cursor-pointer z-10" />
+                <span class="ov-formula">—</span>
               </div>
-              <div class="relative h-4 text-[10px] text-gray-600 ov-scale-labels">
-                <span class="ov-lbl-0 absolute left-0">1%</span>
-                <span class="ov-lbl-100 absolute text-gray-400" style="left:50%;transform:translateX(-50%)">100% = — kWh</span>
-                <span class="ov-lbl-max absolute right-0">1000%</span>
+              <div class="ov-scale-wrap relative h-7">
+                <div class="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 bg-gray-200 rounded-full overflow-hidden pointer-events-none">
+                  <div class="ov-scale-fill blue h-full rounded-full" style="width:0"></div>
+                  <div class="ov-mark-plan absolute top-0 bottom-0 pointer-events-none" style="left:50%"></div>
+                </div>
+                <div class="ov-thumb blue" style="left:50%">100%</div>
+                <input type="range" min="0" max="1000" value="500" step="1"
+                  class="ov-range absolute inset-x-0 top-0 w-full h-7 cursor-pointer z-10" />
+              </div>
+              <div class="relative ov-scale-labels text-[10px] text-gray-600">
+                <span class="ov-lbl-0 absolute left-0 top-0">1%</span>
+                <span class="ov-lbl-max absolute right-0 top-0">1000%</span>
               </div>
               <div class="ov-stepper" title="±4 kWh per click">
-                <button type="button" class="ov-step-btn ov-step-minus" aria-label="Decrease Load forecast by 4 kWh">−</button>
-                <input type="number" class="ov-kwh-input" min="0" step="0.01" inputmode="decimal" aria-label="Load forecast kWh" />
-                <button type="button" class="ov-step-btn ov-step-plus" aria-label="Increase Load forecast by 4 kWh">+</button>
+                <button type="button" class="ov-step-btn ov-step-minus" aria-label="Decrease Consumption forecast by 4 kWh">−</button>
+                <input type="number" class="ov-kwh-input" min="0" step="0.01" inputmode="decimal" aria-label="Consumption forecast kWh" />
+                <button type="button" class="ov-step-btn ov-step-plus" aria-label="Increase Consumption forecast by 4 kWh">+</button>
               </div>
               </div>
             </div>
+        </div>
+        </div>
+        <div class="ev-charging-panel">
+          <div class="forecast-subsection-head">EV Charging</div>
+          <div class="ev-charging-grid">
+            <input type="checkbox" id="ev-day-enabled" class="w-4 h-4 rounded border-gray-300" aria-label="Day charging enabled" />
+            <span class="ev-label">Day</span>
+            <input type="time" id="ev-day-start" value="11:00" step="900" />
+            <input type="time" id="ev-day-end" value="16:00" step="900" />
+            <div class="ev-power-stepper">
+              <button type="button" id="ev-day-minus" aria-label="Decrease day power">−</button>
+              <input type="number" id="ev-day-power" min="0" step="1" value="5" aria-label="Day charging power kW" />
+              <button type="button" id="ev-day-plus" aria-label="Increase day power">+</button>
+              <span class="text-xs text-gray-500 ev-kw-label">kW</span>
+            </div>
+            <input type="checkbox" id="ev-night-enabled" class="w-4 h-4 rounded border-gray-300" aria-label="Night charging enabled" />
+            <span class="ev-label">Night</span>
+            <input type="time" id="ev-night-start" value="02:00" step="900" />
+            <input type="time" id="ev-night-end" value="07:00" step="900" />
+            <div class="ev-power-stepper">
+              <button type="button" id="ev-night-minus" aria-label="Decrease night power">−</button>
+              <input type="number" id="ev-night-power" min="0" step="1" value="8" aria-label="Night charging power kW" />
+              <button type="button" id="ev-night-plus" aria-label="Increase night power">+</button>
+              <span class="text-xs text-gray-500 ev-kw-label">kW</span>
+            </div>
+          </div>
         </div>
         <div class="forecast-overrides-chart">
           <div class="relative" id="fc-chart-wrap">
             <div id="fc-chart-tooltip" class="dash-chart-tooltip hidden"></div>
             <div class="absolute left-0 top-0 bottom-6 w-6 flex flex-col justify-between items-end pr-0.5 pointer-events-none dash-chart-y" id="fc-y-axis"></div>
-            <div class="absolute left-6 right-0 top-0 bottom-6 overflow-hidden" id="fc-chart-area">
+            <div class="absolute right-0 top-0 bottom-6 w-8 flex flex-col justify-between items-start pl-0.5 pointer-events-none" id="fc-y-axis-soc"></div>
+            <div class="absolute left-6 right-8 top-0 bottom-6 overflow-hidden" id="fc-chart-area">
+              <div class="absolute inset-0" id="fc-soc-bands"></div>
               <svg viewBox="0 0 1000 100" preserveAspectRatio="none"
                    class="absolute inset-0 w-full h-full overflow-visible" id="fc-svg-load">
                 <polyline id="fc-pv-line"            fill="none" stroke="#f59e0b" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.9"/>
                 <polyline id="fc-pv-line-actual"     fill="none" stroke="#fbbf24" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-dasharray="6 4" opacity="0.95"/>
                 <polyline id="fc-load-line-forecast" fill="none" stroke="#60a5fa" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.85"/>
                 <polyline id="fc-load-line-actual"   fill="none" stroke="#93c5fd" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-dasharray="6 4" opacity="0.95"/>
+                <polyline id="fc-soc-line"           fill="none" stroke="#a855f7" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.9"/>
               </svg>
             </div>
-            <div class="absolute left-6 right-0 bottom-0 h-6 flex justify-between dash-chart-x overflow-hidden" id="fc-labels-pv"></div>
+            <div class="absolute left-6 right-8 bottom-0 h-6 dash-chart-x overflow-hidden" id="fc-labels-pv"></div>
           </div>
           <div class="flex flex-wrap gap-x-4 gap-y-1 mt-2 ml-6 dash-chart-legend" style="font-size:11px">
             <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#f59e0b" stroke-width="1.5"/></svg><span class="text-gray-400">PV forecast</span></span>
             <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6 4"/></svg><span class="text-gray-400">PV actual</span></span>
-            <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#60a5fa" stroke-width="1.5"/></svg><span class="text-gray-400">Load forecast</span></span>
-            <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="6 4"/></svg><span class="text-gray-400">Load actual</span></span>
+            <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#60a5fa" stroke-width="1.5"/></svg><span class="text-gray-400">Consumption forecast</span></span>
+            <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="6 4"/></svg><span class="text-gray-400">Consumption actual</span></span>
+            <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#a855f7" stroke-width="1.5"/></svg><span class="text-gray-400">SOC plan</span></span>
+            <span class="flex items-center gap-1"><span class="inline-block w-4 h-3 rounded-sm" style="background:rgba(134,239,172,0.45)"></span><span class="text-gray-400">SOC ≥ 90%</span></span>
           </div>
           <div id="fc-bars-pv" class="hidden"></div>
           <div class="flex flex-wrap items-center justify-center gap-x-6 gap-y-1 mt-3 w-full text-sm">
             <span><span class="text-gray-500">Forecast PV total:</span> <span class="font-bold text-amber-400" id="fc-pv-total">—</span></span>
-            <span><span class="text-gray-500">Forecast Load total:</span> <span class="font-bold text-blue-400" id="fc-load-total">—</span></span>
+            <span><span class="text-gray-500">Forecast Consumption total:</span> <span class="font-bold text-blue-400" id="fc-load-total">—</span></span>
           </div>
         </div>
       </div>
@@ -2086,18 +2475,82 @@ const DASH_CHART = {
 
 const CHART_SLOTS_10M = 144;
 const CHART_SLOTS_PER_HOUR = 6;
+const CHART_SLOTS_Q15 = 96;
+const CHART_SLOTS_PER_HOUR_Q15 = 4;
 
-/** Hourly kWh/h → 144 slots via linear interpolation between hour points. */
-function expandHourlyToSmooth10minKw(hourly) {
-  const out = new Array(CHART_SLOTS_10M).fill(null);
+/** 15-min kWh bucket → average kW over the slot. */
+function q15EnergyToDisplayKw(q15) {
+  if (!q15) return [];
+  return q15.map(v => {
+    if (v == null || v === '') return null;
+    return Math.round(Number(v) * 4 * 1000) / 1000;
+  });
+}
+
+/** 15-min series already in kW (Influx actuals) — use as-is. */
+function q15KwToDisplayKw(q15) {
+  if (!q15) return [];
+  return q15.map(v => {
+    if (v == null || v === '') return null;
+    return Math.round(Number(v) * 1000) / 1000;
+  });
+}
+
+function q15ToChartKw(q15, alreadyKw) {
+  return alreadyKw ? q15KwToDisplayKw(q15) : q15EnergyToDisplayKw(q15);
+}
+
+function chartSlotTitleQ15(slot, dateStr) {
+  const h = Math.floor(slot / CHART_SLOTS_PER_HOUR_Q15);
+  const m = (slot % CHART_SLOTS_PER_HOUR_Q15) * 15;
+  const h2 = m === 45 ? h + 1 : h;
+  const m2 = m === 45 ? 0 : m + 15;
+  const pad = n => String(n).padStart(2, '0');
+  return `${dateStr} ${pad(h)}:${pad(m)}–${pad(h2 % 24)}:${pad(m2)}`;
+}
+
+function buildSocYAxis(yAxisEl, chartAreaEl) {
+  if (!yAxisEl) return;
+  yAxisEl.innerHTML = '';
+  for (let i = 4; i >= 0; i--) {
+    const lbl = document.createElement('span');
+    lbl.textContent = String(i * 25);
+    yAxisEl.appendChild(lbl);
+  }
+}
+
+function socToY(soc, minP, maxP) {
+  if (soc == null) return null;
+  const range = maxP - minP || 1;
+  const t = Math.max(0, Math.min(100, Number(soc))) / 100;
+  return Math.max(2, Math.round(100 - ((minP + t * range - minP) / range) * 96));
+}
+
+function renderFcSocBands(container, socQ15, slotCount, minP, maxP) {
+  if (!container) return;
+  container.innerHTML = '';
+  for (let i = 0; i < slotCount; i++) {
+    const soc = socQ15?.[i];
+    if (soc == null || soc < 90) continue;
+    const band = document.createElement('div');
+    band.className = 'fc-soc-band';
+    band.style.left = `${(i / slotCount) * 100}%`;
+    band.style.width = `${(1 / slotCount) * 100}%`;
+    container.appendChild(band);
+  }
+}
+
+/** Hourly kWh/h → chart slots via linear interpolation between hour points. */
+function expandHourlyToSmoothKw(hourly, slotCount, slotsPerHour) {
+  const out = new Array(slotCount).fill(null);
   const val = (h) => {
     if (h < 0 || h >= 24) return null;
     const v = hourly[h];
     if (v == null || v === '') return null;
     return Number(v);
   };
-  for (let i = 0; i < CHART_SLOTS_10M; i++) {
-    const t = (i + 0.5) / CHART_SLOTS_PER_HOUR;
+  for (let i = 0; i < slotCount; i++) {
+    const t = (i + 0.5) / slotsPerHour;
     const h0 = Math.min(Math.floor(t), 23);
     const h1 = Math.min(h0 + 1, 23);
     const frac = t - h0;
@@ -2109,6 +2562,89 @@ function expandHourlyToSmooth10minKw(hourly) {
     else if (v1 == null) kw = v0;
     else kw = v0 + (v1 - v0) * frac;
     out[i] = Math.round(kw * 1000) / 1000;
+  }
+  return out;
+}
+
+function expandHourlyToSmooth10minKw(hourly) {
+  return expandHourlyToSmoothKw(hourly, CHART_SLOTS_10M, CHART_SLOTS_PER_HOUR);
+}
+
+function expandHourlyToSmoothQ15Kw(hourly) {
+  return expandHourlyToSmoothKw(hourly, CHART_SLOTS_Q15, CHART_SLOTS_PER_HOUR_Q15);
+}
+
+/** Consumption forecast: native q15 profile (steps, EV blocks); fallback to hourly interpolation. */
+function forecastLoadQ15ToKw(day) {
+  const q15 = day?.load_q15;
+  if (Array.isArray(q15) && q15.length >= CHART_SLOTS_Q15) {
+    return q15EnergyToDisplayKw(q15.slice(0, CHART_SLOTS_Q15));
+  }
+  return expandHourlyToSmoothQ15Kw(day.load || day.load_forecast || []);
+}
+
+/** Consumption actual: native q15 from API; fallback to resampled 10-min / hourly. */
+function actualLoadQ15ToKw(forecastData) {
+  const q15 = forecastData?.load_actual_q15;
+  if (Array.isArray(q15) && q15.some(v => v != null)) {
+    const slice = q15.slice(0, CHART_SLOTS_Q15);
+    while (slice.length < CHART_SLOTS_Q15) slice.push(null);
+    return q15ToChartKw(slice, !!forecastData.load_actual_q15_is_kw);
+  }
+  const live10 = forecastData?.series_10min;
+  if (live10?.load?.length) {
+    return expand10minToSmoothQ15Kw(live10.load);
+  }
+  return expandHourlyToSmoothQ15Kw(forecastData.load_actual_hourly || []);
+}
+
+/** Open-Meteo hourly kW — one polyline vertex per hour (straight segments, no q15 resampling). */
+function hourlyKnotLinePts(hourly, slotCount, slotsPerHour, toY) {
+  const pts = [];
+  const num = (h) => {
+    if (h < 0 || h >= 24) return null;
+    const v = hourly[h];
+    if (v == null || v === '') return null;
+    return Number(v);
+  };
+  for (let h = 0; h < 24; h++) {
+    const kw = num(h);
+    if (kw == null) continue;
+    const y = toY(kw);
+    if (y == null) continue;
+    const x = (h * slotsPerHour / slotCount * 1000).toFixed(1);
+    pts.push(`${x},${y}`);
+  }
+  const kwEnd = num(23);
+  if (kwEnd != null) {
+    const y = toY(kwEnd);
+    if (y != null) pts.push(`1000,${y}`);
+  }
+  return pts.join(' ');
+}
+
+/** 10-min mean kW → 96 q15 slots via linear interpolation (same method as hourly→10m). */
+function expand10minToSmoothQ15Kw(tenMin) {
+  const out = new Array(CHART_SLOTS_Q15).fill(null);
+  const val = (i) => {
+    if (i < 0 || i >= CHART_SLOTS_10M) return null;
+    const v = tenMin[i];
+    if (v == null || v === '') return null;
+    return Number(v);
+  };
+  for (let j = 0; j < CHART_SLOTS_Q15; j++) {
+    const t = (j + 0.5) * CHART_SLOTS_PER_HOUR / CHART_SLOTS_PER_HOUR_Q15;
+    const i0 = Math.min(Math.floor(t), CHART_SLOTS_10M - 1);
+    const i1 = Math.min(i0 + 1, CHART_SLOTS_10M - 1);
+    const frac = t - i0;
+    const v0 = val(i0);
+    const v1 = val(i1);
+    if (v0 == null && v1 == null) continue;
+    let kw;
+    if (v0 == null) kw = v1;
+    else if (v1 == null) kw = v0;
+    else kw = v0 + (v1 - v0) * frac;
+    out[j] = Math.round(kw * 1000) / 1000;
   }
   return out;
 }
@@ -2135,7 +2671,7 @@ function formatDashAxisK(val) {
 /** SolarAssistant-aligned labels (dashboard tab). */
 const SA_LABELS = {
   pv: 'PV',
-  load: 'Load',
+  load: 'Consumption',
   gridUsed: 'Grid Used',
   gridExport: 'Grid export',
   batCharge: 'Battery charged',
@@ -2143,9 +2679,9 @@ const SA_LABELS = {
   soc: 'SOC',
   pvForecast: 'PV forecast',
   pvActual: 'PV actual',
-  loadForecast: 'Load forecast',
+  loadForecast: 'Consumption forecast',
   loadAvg7d: 'Load (7d avg)',
-  loadActual: 'Load actual',
+  loadActual: 'Consumption actual',
 };
 
 function fmtChartKwh(v) {
@@ -2528,9 +3064,14 @@ async function loadForecast(force = false, options = {}) {
     const res = await fetch('api/forecast?_=' + Date.now());
     forecastData = await res.json();
     renderForecast();
+    const accrualsDate = document.getElementById('accruals-date')?.value || DEBUG_TODAY;
+    if (accrualData?.totals) {
+      updateEnergyPlanFill(accrualData.totals.pv, accrualData.totals.load, accrualsDate);
+    }
     if (syncSliders) {
       initOverrideSliders(forecastData.baseline, forecastData.overrides_saved);
     }
+    initEvChargingPanel(forecastData.ev_charging);
   } catch (e) { console.warn('forecast error', e); }
 }
 
@@ -2545,6 +3086,7 @@ function showForecastDay(day) {
     fcDayBase +
     (day === 'tomorrow' ? 'bg-amber-500 text-gray-950 font-semibold' : 'bg-gray-200 text-gray-600');
   applyOverrideSlidersForDay(day);
+  applyEvFormForDay(day);
   renderForecast();
 }
 
@@ -2553,62 +3095,75 @@ function renderForecast() {
   const day = forecastData[currentForecastDay];
   if (!day) return;
   const isToday = currentForecastDay === 'today';
-  const slotCount = CHART_SLOTS_10M;
+  const slotCount = CHART_SLOTS_Q15;
 
-  // Effective profiles (overrides scale day.load / day.pv in cache).
-  // load_forecast / pv_forecast on "today" may still be base — chart uses effective series.
-  const pvForecast = isToday
-    ? (day.pv_forecast || [])
+  // Forecast chart: smooth curve by interpolating hourly Open-Meteo to q15 centers.
+  const pvForecastHourly = isToday
+    ? (day.pv_forecast || day.pv || [])
     : (day.pv || day.pv_forecast || []);
-  const pvActualHourly = day.pv_actual || forecastData.pv_actual_hourly || [];
-  const loadForecast = day.load || day.load_forecast || [];
-  const loadActualHourly = forecastData.load_actual_hourly || [];
+  const pvForecastKw = expandHourlyToSmoothQ15Kw(pvForecastHourly);
+  const loadForecastKw = forecastLoadQ15ToKw(day);
 
-  const pvForecast10 = expandHourlyToSmooth10minKw(pvForecast);
-  const loadForecast10 = expandHourlyToSmooth10minKw(loadForecast);
-  let pvActual10 = null;
-  let loadActual10 = null;
+  let pvActualKw = null;
+  let loadActualKw = null;
   if (isToday) {
     const live10 = forecastData.series_10min;
     if (live10?.pv?.length) {
-      pvActual10 = live10.pv;
-      loadActual10 = live10.load;
+      pvActualKw = expand10minToSmoothQ15Kw(live10.pv);
     } else {
-      pvActual10 = expandHourlyToSmooth10minKw(pvActualHourly);
-      loadActual10 = expandHourlyToSmooth10minKw(loadActualHourly);
+      const pvActualHourly = day.pv_actual || forecastData.pv_actual_hourly || [];
+      pvActualKw = expandHourlyToSmoothQ15Kw(pvActualHourly);
     }
+    loadActualKw = actualLoadQ15ToKw(forecastData);
   }
 
+  const planSocQ15 = (forecastData.plan_soc_q15?.[currentForecastDay]?.some(v => v != null)
+    ? forecastData.plan_soc_q15[currentForecastDay]
+    : null) || simData?.plan_soc_q15?.[currentForecastDay] || [];
+
   const fcYEl = document.getElementById('fc-y-axis');
+  const fcSocYEl = document.getElementById('fc-y-axis-soc');
   const fcAEl = document.getElementById('fc-chart-area');
   const allVals = [
-    ...pvForecast10,
-    ...(pvActual10 || []),
-    ...loadForecast10,
-    ...(loadActual10 || []),
+    ...pvForecastKw,
+    ...(pvActualKw || []),
+    ...loadForecastKw,
+    ...(loadActualKw || []),
   ].filter(v => v != null && v > 0);
   const { minP: fcMin, maxP: fcMax } = buildDashboardYAxis(fcYEl, fcAEl, allVals, 4, true);
+  buildSocYAxis(fcSocYEl, fcAEl);
 
   function fcToY(v) {
     return v != null ? Math.max(2, Math.round(100 - ((v - fcMin) / (fcMax - fcMin || 1)) * 96)) : null;
+  }
+  function fcSocToY(soc) {
+    if (soc == null) return null;
+    const t = Math.max(0, Math.min(100, Number(soc))) / 100;
+    return Math.max(2, Math.round(100 - t * 96));
   }
 
   const pvLine         = document.getElementById('fc-pv-line');
   const pvLineActual   = document.getElementById('fc-pv-line-actual');
   const lineForecast   = document.getElementById('fc-load-line-forecast');
   const lineActual     = document.getElementById('fc-load-line-actual');
-  if (pvLine)       pvLine.setAttribute('points',         dashLinePts(pvForecast10, slotCount, fcToY));
-  if (pvLineActual) pvLineActual.setAttribute('points',   isToday && pvActual10 ? dashLinePts(pvActual10, slotCount, fcToY) : '');
-  if (lineForecast) lineForecast.setAttribute('points',   dashLinePts(loadForecast10, slotCount, fcToY));
-  if (lineActual)   lineActual.setAttribute('points',     isToday && loadActual10 ? dashLinePts(loadActual10, slotCount, fcToY) : '');
+  const socLine        = document.getElementById('fc-soc-line');
+  if (pvLine)       pvLine.setAttribute('points',         dashLinePts(pvForecastKw, slotCount, fcToY));
+  if (pvLineActual) pvLineActual.setAttribute('points',   isToday && pvActualKw ? dashLinePts(pvActualKw, slotCount, fcToY) : '');
+  if (lineForecast) lineForecast.setAttribute('points',   dashLinePts(loadForecastKw, slotCount, fcToY));
+  if (lineActual)   lineActual.setAttribute('points',     isToday && loadActualKw ? dashLinePts(loadActualKw, slotCount, fcToY) : '');
+  if (socLine)      socLine.setAttribute('points',       dashLinePts(planSocQ15, slotCount, fcSocToY));
+
+  renderFcSocBands(document.getElementById('fc-soc-bands'), planSocQ15, slotCount, fcMin, fcMax);
 
   const labels = document.getElementById('fc-labels-pv');
   if (labels) {
     labels.innerHTML = '';
-    for (let h = 0; h < 24; h++) {
+    const xStep = window.matchMedia('(max-width: 767px)').matches ? 4 : 2;
+    for (let h = 0; h < 24; h += xStep) {
       const lbl = document.createElement('span');
-      lbl.style.cssText = 'flex:1;text-align:center;overflow:hidden;';
-      lbl.textContent = h % 4 === 0 ? String(h).padStart(2,'0') : '';
+      lbl.className = 'fc-hour-label';
+      lbl.style.left = `${(h / 24) * 100}%`;
+      lbl.textContent = String(h).padStart(2, '0');
       labels.appendChild(lbl);
     }
   }
@@ -2623,13 +3178,19 @@ function renderForecast() {
     : new Date(Date.now() + 86400000).toISOString().slice(0, 10);
   bindDashChartHover(fcAEl, fcTip, fcWrap, (slot) => {
     let html = '';
-    if (pvForecast10[slot] != null) html += tooltipRowLine('#f59e0b', false, SA_LABELS.pvForecast, fmtChartK(pvForecast10[slot]));
-    if (isToday && pvActual10?.[slot] != null) html += tooltipRowLine('#fbbf24', true, SA_LABELS.pvActual, fmtChartK(pvActual10[slot]));
-    if (loadForecast10[slot] != null) html += tooltipRowLine('#60a5fa', false, SA_LABELS.loadForecast, fmtChartK(loadForecast10[slot]));
-    if (isToday && loadActual10?.[slot] != null) html += tooltipRowLine('#93c5fd', true, SA_LABELS.loadActual, fmtChartK(loadActual10[slot]));
+    if (pvForecastKw[slot] != null) html += tooltipRowLine('#f59e0b', false, SA_LABELS.pvForecast, fmtChartK(pvForecastKw[slot]));
+    if (isToday && pvActualKw?.[slot] != null) html += tooltipRowLine('#fbbf24', true, SA_LABELS.pvActual, fmtChartK(pvActualKw[slot]));
+    if (loadForecastKw[slot] != null) html += tooltipRowLine('#60a5fa', false, SA_LABELS.loadForecast, fmtChartK(loadForecastKw[slot]));
+    if (isToday && loadActualKw?.[slot] != null) html += tooltipRowLine('#93c5fd', true, SA_LABELS.loadActual, fmtChartK(loadActualKw[slot]));
+    if (planSocQ15[slot] != null) html += tooltipRowLine('#a855f7', false, SA_LABELS.soc, fmtChartSoc(planSocQ15[slot]));
     if (!html) return '';
-    return `<div class="tt-time">${chartSlotTitle(slot, fcDate)}</div>${html}`;
+    return `<div class="tt-time">${chartSlotTitleQ15(slot, fcDate)}</div>${html}`;
   }, slotCount);
+
+  const accrualsDate = document.getElementById('accruals-date')?.value || DEBUG_TODAY;
+  if (accrualData?.totals) {
+    updateEnergyPlanFill(accrualData.totals.pv, accrualData.totals.load, accrualsDate);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2703,6 +3264,53 @@ function ovKwhLimits(baseline) {
 function ovClampKwh(baseline, kwh) {
   const { min, max } = ovKwhLimits(baseline);
   return Math.max(min, Math.min(max, kwh));
+}
+
+function formatOvFormulaPart(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '0.00';
+  return v.toFixed(2);
+}
+
+function formatOvEvKwh(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return null;
+  return Math.abs(v - Math.round(v)) < 0.005 ? String(Math.round(v)) : v.toFixed(2);
+}
+
+function formatOvFormula(baseline, pct, evKwh = 0) {
+  let text = `${formatOvFormulaPart(baseline)} * ${pct}%`;
+  const ev = formatOvEvKwh(evKwh);
+  if (ev) text += ` + ${ev}`;
+  return text;
+}
+
+function updateOvFormula(el, baseline, pct, evKwh, displayKwh) {
+  const formulaEl = el.querySelector('.ov-formula');
+  if (!formulaEl) return;
+  const isLoad = el.dataset.metric === 'load_kwh';
+  const ev = isLoad ? evKwh : 0;
+  const fromPct = ovPctToKwh(baseline, pct);
+  formulaEl.textContent = formatOvFormula(baseline, pct, ev);
+  const formulaTotal = Math.round((fromPct + ev) * 100) / 100;
+  const day = forecastData?.[currentForecastDay];
+  const apiTotal = isLoad ? day?.load_total : day?.pv_total;
+  const mismatchSlider = Math.abs(formulaTotal - displayKwh) > 0.05;
+  const mismatchApi = apiTotal != null && Math.abs(Number(apiTotal) - displayKwh) > 0.15;
+  const warn = mismatchSlider || mismatchApi;
+  formulaEl.classList.toggle('ov-formula-warn', warn);
+  if (warn) {
+    const parts = [];
+    if (mismatchSlider) {
+      parts.push(`Slider total ${displayKwh.toFixed(2)} kWh vs formula ${formulaTotal.toFixed(2)} kWh`);
+    }
+    if (mismatchApi) {
+      parts.push(`Forecast cache total ${Number(apiTotal).toFixed(2)} kWh`);
+    }
+    formulaEl.title = parts.join('; ');
+  } else {
+    formulaEl.title = '';
+  }
 }
 
 function ovCurrentKwh(el) {
@@ -2819,24 +3427,34 @@ function updateOvControl(el, opts = {}) {
   const range = el.querySelector('.ov-range');
   const pos = parseInt(range.value, 10) / 10;
   const pct = ovPosValueToPct(parseInt(range.value, 10));
-  const kwh = opts.exactKwh != null
+  const baseKwh = opts.exactKwh != null
     ? opts.exactKwh
     : ovPctToKwh(baseline, pct);
+  const isLoad = el.dataset.metric === 'load_kwh';
+  const evKwh = isLoad ? evLoadKwhFromSession(readEvFormSession()) : 0;
+  const displayKwh = isLoad ? baseKwh + evKwh : baseKwh;
+  const planKwh = isLoad ? baseline + evKwh : baseline;
 
-  el.querySelector('.ov-kwh').textContent = kwh.toFixed(2) + ' kWh';
-  el.querySelector('.ov-pct').textContent = pct + '%';
-  el.querySelector('.ov-lbl-100').textContent =
-    '100% = ' + baseline.toFixed(2) + ' kWh';
+  el.querySelector('.ov-kwh').textContent = displayKwh.toFixed(2) + ' kWh';
+  updateOvFormula(el, baseline, pct, evKwh, displayKwh);
 
   const fill = el.querySelector('.ov-scale-fill');
-  if (fill) fill.style.width = pos + '%';
+  if (fill) {
+    const fillPct = planKwh > 0
+      ? Math.min(100, (displayKwh / planKwh) * OV_POS_SPLIT)
+      : 0;
+    fill.style.width = fillPct + '%';
+  }
 
   const thumb = el.querySelector('.ov-thumb');
-  if (thumb) thumb.style.left = pos + '%';
+  if (thumb) {
+    thumb.style.left = pos + '%';
+    thumb.textContent = pct + '%';
+  }
 
   const input = el.querySelector('.ov-kwh-input');
   if (input && document.activeElement !== input) {
-    input.value = kwh.toFixed(2);
+    input.value = baseKwh.toFixed(2);
   }
 }
 
@@ -2887,6 +3505,7 @@ function applyOverrideSlidersForDay(day) {
     el.querySelector('.ov-range').value = ovPctToPosValue(pct);
     updateOvControl(el, saved != null ? { exactKwh: saved } : {});
   });
+  refreshLoadOvDisplay();
 }
 
 function initOverrideSliders(baseline, savedOverrides) {
@@ -2908,6 +3527,7 @@ function initOverrideSliders(baseline, savedOverrides) {
     }
   });
   applyOverrideSlidersForDay(currentForecastDay);
+  refreshLoadOvDisplay();
 }
 
 function readOverridePayload() {
@@ -2972,6 +3592,275 @@ async function saveOverrides() {
     console.warn('overrides save', e);
   } finally {
     ovSaveInFlight = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// EV Charging
+// ---------------------------------------------------------------------------
+let evChargingPayload = null;
+let evSaveTimer = null;
+let evSaveInFlight = false;
+let evPanelBound = false;
+
+function evMaxPowerKw() {
+  return Number(evChargingPayload?.max_power_kw ?? configData?.ev?.max_power_kw ?? 11);
+}
+
+function clampEvPowerKw(value) {
+  const max = evMaxPowerKw();
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  if (n > max) return max;
+  return Math.round(n);
+}
+
+function evDateForDay(dayLabel) {
+  if (!evChargingPayload) return null;
+  return evChargingPayload[dayLabel]?.date || null;
+}
+
+function parseEvTimeMin(value) {
+  const parts = String(value || '').split(':');
+  if (parts.length < 2) return null;
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  return h * 60 + m;
+}
+
+function evLoadKwhFromSession(session) {
+  if (!session) return 0;
+  let total = 0;
+  for (const key of ['day', 'night']) {
+    const slot = session[key];
+    if (!slot?.enabled) continue;
+    const start = parseEvTimeMin(slot.start);
+    const end = parseEvTimeMin(slot.end);
+    const pw = Number(slot.power_kw) || 0;
+    if (start != null && end != null && end > start && pw > 0) {
+      total += pw * (end - start) / 60;
+    }
+  }
+  return Math.round(total * 100) / 100;
+}
+
+function refreshLoadOvDisplay() {
+  const el = document.getElementById('ov-ctrl-load');
+  if (el) updateOvControl(el);
+}
+
+function applyEvFormForDay(dayLabel) {
+  if (!evChargingPayload) return;
+  const block = evChargingPayload[dayLabel];
+  const defaults = evChargingPayload.defaults || {};
+  const s = block?.session || defaults;
+  const setChecked = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.checked = !!v;
+  };
+  const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  setChecked('ev-day-enabled', !!s.day?.enabled);
+  setChecked('ev-night-enabled', !!s.night?.enabled);
+  setVal('ev-day-start', s.day?.start || '11:00');
+  setVal('ev-day-end', s.day?.end || '16:00');
+  setVal('ev-night-start', s.night?.start || '02:00');
+  setVal('ev-night-end', s.night?.end || '07:00');
+  setVal('ev-day-power', clampEvPowerKw(s.day?.power_kw ?? 5));
+  setVal('ev-night-power', clampEvPowerKw(s.night?.power_kw ?? 8));
+  refreshLoadOvDisplay();
+  fitCompactUiTypography();
+}
+
+function readEvFormSession() {
+  const g = id => document.getElementById(id);
+  return {
+    day: {
+      enabled: !!g('ev-day-enabled')?.checked,
+      start: g('ev-day-start')?.value || '11:00',
+      end: g('ev-day-end')?.value || '16:00',
+      power_kw: clampEvPowerKw(g('ev-day-power')?.value),
+    },
+    night: {
+      enabled: !!g('ev-night-enabled')?.checked,
+      start: g('ev-night-start')?.value || '02:00',
+      end: g('ev-night-end')?.value || '07:00',
+      power_kw: clampEvPowerKw(g('ev-night-power')?.value),
+    },
+  };
+}
+
+function nudgeEvPower(which, delta) {
+  const id = which === 'day' ? 'ev-day-power' : 'ev-night-power';
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.value = clampEvPowerKw(Number(el.value || 0) + delta);
+  refreshLoadOvDisplay();
+  scheduleEvSave();
+}
+
+function bindEvTimePicker(input) {
+  if (!input || input.dataset.pickerBound) return;
+  input.dataset.pickerBound = '1';
+  input.addEventListener('click', () => {
+    try { input.showPicker(); } catch (_) { /* ignore */ }
+  });
+}
+
+let evFitRaf = null;
+function evChargingOverflows(grid) {
+  if (grid.scrollWidth > grid.clientWidth + 1) return true;
+  for (const stepper of grid.querySelectorAll('.ev-power-stepper')) {
+    if (stepper.scrollWidth > stepper.clientWidth + 1) return true;
+  }
+  for (const el of grid.querySelectorAll('input[type="time"], .ev-power-stepper input[type="number"]')) {
+    if (el.scrollWidth > el.clientWidth + 1) return true;
+  }
+  return false;
+}
+
+function timerSlotsOverflow() {
+  let overflow = false;
+  document.querySelectorAll('.timer-slot-input').forEach(el => {
+    if (el.scrollWidth > el.clientWidth + 1) overflow = true;
+  });
+  return overflow;
+}
+
+function applyTimerMobileZoom(grid) {
+  document.querySelectorAll('.timer-schedule-scroll').forEach(scroll => {
+    const slot = scroll.querySelector('.timer-slot-input');
+    const evInput = grid?.querySelector('input[type="time"]');
+    if (!slot || !evInput) {
+      scroll.style.removeProperty('zoom');
+      return;
+    }
+    const slotPx = parseFloat(getComputedStyle(slot).fontSize);
+    const evPx = parseFloat(getComputedStyle(evInput).fontSize);
+    if (slotPx > evPx + 0.5 && evPx > 0) {
+      scroll.style.zoom = String(evPx / slotPx);
+    } else {
+      scroll.style.removeProperty('zoom');
+    }
+  });
+}
+
+function fitCompactUiTypography() {
+  if (evFitRaf) cancelAnimationFrame(evFitRaf);
+  evFitRaf = requestAnimationFrame(() => {
+    evFitRaf = null;
+    const dash = document.getElementById('tab-dashboard');
+    const grid = document.querySelector('.ev-charging-grid');
+    const mobile = window.matchMedia('(max-width: 639px)').matches;
+
+    if (!mobile) {
+      grid?.style.removeProperty('--ev-fit-font');
+      dash?.style.removeProperty('--timer-slot-font');
+      dash?.style.removeProperty('--timer-head-font');
+      document.querySelectorAll('.timer-schedule-scroll').forEach(el => {
+        el.style.removeProperty('zoom');
+      });
+      return;
+    }
+
+    const minPx = 7;
+    let evSizePx = 11;
+
+    if (grid) {
+      const applyEv = () => grid.style.setProperty('--ev-fit-font', `${evSizePx}px`);
+      applyEv();
+      while (evSizePx > minPx && evChargingOverflows(grid)) {
+        evSizePx -= 0.5;
+        applyEv();
+      }
+    }
+
+    if (!dash) return;
+
+    let timerSizePx = evSizePx;
+    const applyTimer = () => {
+      dash.style.setProperty('--timer-slot-font', `${timerSizePx}px`);
+      dash.style.setProperty('--timer-head-font', `${Math.max(timerSizePx, 11)}px`);
+    };
+    applyTimer();
+    applyTimerMobileZoom(grid);
+
+    while (timerSizePx > minPx && timerSlotsOverflow()) {
+      timerSizePx -= 0.5;
+      applyTimer();
+      applyTimerMobileZoom(grid);
+    }
+  });
+}
+
+function initEvChargingPanel(payload) {
+  evChargingPayload = payload || evChargingPayload;
+  if (!evPanelBound) {
+    evPanelBound = true;
+    ['ev-day-enabled', 'ev-night-enabled'].forEach(id => {
+      document.getElementById(id)?.addEventListener('change', () => {
+        refreshLoadOvDisplay();
+        scheduleEvSave();
+      });
+    });
+    ['ev-day-start', 'ev-day-end', 'ev-night-start', 'ev-night-end'].forEach(id => {
+      const el = document.getElementById(id);
+      bindEvTimePicker(el);
+      el?.addEventListener('change', () => {
+        refreshLoadOvDisplay();
+        scheduleEvSave();
+      });
+    });
+    ['ev-day-power', 'ev-night-power'].forEach(id => {
+      document.getElementById(id)?.addEventListener('change', () => {
+        const el = document.getElementById(id);
+        if (el) el.value = clampEvPowerKw(el.value);
+        refreshLoadOvDisplay();
+        scheduleEvSave();
+      });
+    });
+    document.getElementById('ev-day-minus')?.addEventListener('click', () => nudgeEvPower('day', -1));
+    document.getElementById('ev-day-plus')?.addEventListener('click', () => nudgeEvPower('day', 1));
+    document.getElementById('ev-night-minus')?.addEventListener('click', () => nudgeEvPower('night', -1));
+    document.getElementById('ev-night-plus')?.addEventListener('click', () => nudgeEvPower('night', 1));
+    window.addEventListener('resize', fitCompactUiTypography);
+  }
+  applyEvFormForDay(currentForecastDay);
+}
+
+function scheduleEvSave() {
+  clearTimeout(evSaveTimer);
+  evSaveTimer = setTimeout(saveEvCharging, 400);
+}
+
+async function saveEvCharging() {
+  if (evSaveInFlight) {
+    scheduleEvSave();
+    return;
+  }
+  const date = evDateForDay(currentForecastDay);
+  if (!date) return;
+  evSaveInFlight = true;
+  try {
+    const session = readEvFormSession();
+    const res = await fetch('api/ev-charging', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ date, day: session.day, night: session.night }),
+    });
+    if (!res.ok) return;
+    simData = null;
+    await loadForecast(true, { syncSliders: false });
+    if (forecastData?.ev_charging) {
+      evChargingPayload = forecastData.ev_charging;
+      applyEvFormForDay(currentForecastDay);
+    }
+    await preloadSimulation();
+    renderForecast();
+  } catch (e) {
+    console.warn('ev charging save', e);
+  } finally {
+    evSaveInFlight = false;
   }
 }
 
@@ -4002,12 +4891,76 @@ function renderEnergyOverviewCosts(row) {
 function renderAccrualsCards(d) {
   if (!d || !d.totals) return;
   const t = d.totals;
+  const dateStr = d.date || document.getElementById('accruals-date')?.value || DEBUG_TODAY;
   set('m-pv-energy',      fmt(t.pv, 2));
   set('m-load-energy',    fmt(t.load, 2));
   set('m-grid-buy',       t.grid_buy != null ? fmt(-Math.abs(t.grid_buy), 2) : '—');
   set('m-grid-sell',      t.grid_sell != null ? fmt(Math.abs(t.grid_sell), 2) : '—');
   set('m-bat-charged',    fmt(t.bat_charge, 2));
   set('m-bat-discharged', t.bat_discharge != null ? fmt(-Math.abs(t.bat_discharge), 2) : '—');
+  updateEnergyPlanFill(t.pv, t.load, dateStr);
+}
+
+let eoPlanFillLatch = { pv: false, load: false };
+let eoPlanFillLatchDate = null;
+
+function eoForecastDayKeyForDate(dateStr) {
+  if (!dateStr || !forecastData) return null;
+  if (dateStr === DEBUG_TODAY) return 'today';
+  const tomorrow = new Date(DEBUG_TODAY + 'T12:00:00');
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (dateStr === tomorrow.toISOString().slice(0, 10)) return 'tomorrow';
+  return null;
+}
+
+function eoForecastPlanForDate(dateStr) {
+  const dayKey = eoForecastDayKeyForDate(dateStr);
+  if (!dayKey) return { pv: null, load: null };
+  const day = forecastData[dayKey];
+  return {
+    pv: day?.pv_total != null ? Number(day.pv_total) : null,
+    load: day?.load_total != null ? Number(day.load_total) : null,
+  };
+}
+
+function updateEnergyPlanFill(actualPv, actualLoad, dateStr) {
+  if (eoPlanFillLatchDate !== dateStr) {
+    eoPlanFillLatch = { pv: false, load: false };
+    eoPlanFillLatchDate = dateStr;
+  }
+  const plans = eoForecastPlanForDate(dateStr);
+  updateEnergyPlanFillOne('pv', actualPv, plans.pv);
+  updateEnergyPlanFillOne('load', actualLoad, plans.load);
+}
+
+function updateEnergyPlanFillOne(metric, actual, plan) {
+  const card = document.querySelector(`#energy-overview-cards [data-card-id="${metric}"]`);
+  if (!card) return;
+  const fill = card.querySelector('.eo-plan-fill');
+  const planEl = card.querySelector('.eo-plan-value');
+  const actualVal = Number(actual);
+  const planVal = Number(plan);
+
+  if (planEl) {
+    planEl.textContent = Number.isFinite(planVal) && planVal > 0
+      ? planVal.toFixed(2)
+      : '—';
+  }
+  if (!fill) return;
+
+  if (!Number.isFinite(planVal) || planVal <= 0 || !Number.isFinite(actualVal)) {
+    fill.style.width = '0%';
+    if (metric === 'pv' || metric === 'load') eoPlanFillLatch[metric] = false;
+    return;
+  }
+
+  const ratio = actualVal / planVal;
+  if (ratio >= 1) eoPlanFillLatch[metric] = true;
+
+  const fillPct = eoPlanFillLatch[metric]
+    ? 100
+    : Math.min(100, Math.max(0, ratio * 100));
+  fill.style.width = fillPct + '%';
 }
 
 function renderAccrualsChart(d) {
@@ -4572,6 +5525,7 @@ function renderTimerSlots(tbodyId, slots, isCharge) {
     );
     return `<tr class="divide-y divide-gray-200 text-gray-600">${row.join('')}</tr>`;
   }).join('');
+  fitCompactUiTypography();
 }
 
 function collectTimerSlots(kind, count) {
@@ -4678,6 +5632,7 @@ async function loadSimulation(forceRefresh = false, silent = false) {
     const res = await fetch('api/simulation' + q);
     simData = await res.json();
     renderSimulationBundle(simData);
+    if (forecastData) renderForecast();
   } catch(e) {
     if (bodyTotal) {
       bodyTotal.innerHTML = `<tr><td colspan="${SIM_TABLE_COLS}" class="px-3 py-6 text-center text-red-500">Failed to load simulation.</td></tr>`;
@@ -4696,6 +5651,7 @@ async function preloadSimulation() {
     }
     if (data.buy_tariff) buyTariffData = data.buy_tariff;
     if (currentTab === 'simulation') renderSimulationBundle(simData);
+    if (forecastData) renderForecast();
   } catch (e) {
     console.warn('simulation preload', e);
   }

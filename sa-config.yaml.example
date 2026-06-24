@@ -31,6 +31,9 @@ inverter:
 battery:
   capacity_kwh: 43.0
 
+ev:
+  max_power_kw: 11.0
+
 simulation:
   min_soc_pct: 15
   horizon_hours: 24

@@ -30,7 +30,10 @@ def load_config() -> dict:
     if cfg.pop("plan_overrides", None) is not None:
         with open(path, "w", encoding="utf-8") as fh:
             yaml.dump(cfg, fh, allow_unicode=True, default_flow_style=False)
-    return merge_simulation_defaults(cfg)
+    cfg = merge_simulation_defaults(cfg)
+    ev = cfg.setdefault("ev", {})
+    ev.setdefault("max_power_kw", 11.0)
+    return cfg
 
 
 def save_config(cfg: dict) -> None:

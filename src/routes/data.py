@@ -17,9 +17,12 @@ from ..plan_monthly_history import build_month_history
 from ..plan_simulation import (
     build_buy_tariff_payload,
     build_plan_simulation,
+    extract_plan_soc_q15,
     get_cached_buy_tariff,
+    get_cached_plan,
     get_cached_rce,
 )
+from .. import forecast_cache as fc
 
 router = APIRouter()
 
@@ -60,8 +63,23 @@ async def api_forecast() -> dict[str, Any]:
     )
     if isinstance(day_accruals, dict):
         forecast["series_10min"] = day_accruals.get("series_10min")
+        series_10 = day_accruals.get("series_10min") or {}
+        if series_10.get("pv"):
+            forecast["pv_actual_q15"] = fc.ten_min_kw_to_q15_kw(series_10["pv"])
+            forecast["pv_actual_q15_is_kw"] = True
+        if series_10.get("load"):
+            forecast["load_actual_q15"] = fc.ten_min_kw_to_q15_kw(series_10["load"])
+            forecast["load_actual_q15_is_kw"] = True
+    if hourly.get("pv") and "pv_actual_q15" not in forecast:
+        forecast["pv_actual_q15"] = fc.hourly_actual_to_q15(hourly.get("pv") or [])
+        forecast["pv_actual_q15_is_kw"] = False
+    if hourly.get("load") and "load_actual_q15" not in forecast:
+        forecast["load_actual_q15"] = fc.hourly_actual_to_q15(hourly.get("load") or [])
+        forecast["load_actual_q15_is_kw"] = False
     forecast["load_actual_hourly"] = hourly.get("load")
     forecast["pv_actual_hourly"] = hourly.get("pv")
+    plan = get_cached_plan()
+    forecast["plan_soc_q15"] = extract_plan_soc_q15(plan)
     return forecast
 
 

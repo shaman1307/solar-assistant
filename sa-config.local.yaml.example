@@ -37,6 +37,10 @@ battery:
   # Usable battery capacity in kWh.
   capacity_kwh: 43.0
 
+ev:
+  # Maximum EV charging power (kW) for Forecast Overrides panel.
+  max_power_kw: 11.0
+
 # Plan Simulation — energy balance model (losses, SOC floor, horizons).
 simulation:
   # Minimum SOC (%) — planning floor and discharge stop threshold.

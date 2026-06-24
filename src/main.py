@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .config import BASE_DIR, load_config
+from . import forecast as forecast_mod
 from .plan_simulation import build_plan_simulation
 from .routes import register_routes
 from .scheduler import create_scheduler
@@ -47,6 +48,7 @@ async def lifespan(app: FastAPI):
             log.info("Startup — waiting %.0fs before plan build", delay_s)
         await asyncio.sleep(delay_s)
         try:
+            await forecast_mod.run_hourly_pv_refresh(cfg)
             result = await build_plan_simulation(
                 cfg, force_refresh=False, invalidate_inputs=False,
             )

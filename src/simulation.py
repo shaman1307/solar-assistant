@@ -294,6 +294,22 @@ def run_simulation(
                 export_hours.add(h)
             remaining -= 1
 
+    def _soc_q15_from_q15_by_hour(plan: dict[str, Any] | None) -> list[float | None]:
+        out: list[float | None] = [None] * 96
+        if not plan:
+            return out
+        q15_by_hour = plan.get("q15_by_hour") or {}
+        for h in range(24):
+            slots = q15_by_hour.get(h) or []
+            for slot in slots:
+                q = int(slot.get("quarter", 0))
+                if not (0 <= q < 4):
+                    continue
+                idx = h * 4 + q
+                v = slot.get("soc_pct")
+                out[idx] = round(float(v), 1) if v is not None else None
+        return out
+
     schedule_from = (
         now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
         if actual_step0 else start_dt
@@ -345,6 +361,10 @@ def run_simulation(
         "has_history_rows": bool(history_rows),
         "plan_from_hour": plan_from_hour,
         "today_date": today_str,
+        "plan_soc_q15": {
+            "today": _soc_q15_from_q15_by_hour(smart_today),
+            "tomorrow": _soc_q15_from_q15_by_hour(smart_tomorrow),
+        },
         "totals": today_totals,
         "tomorrow_remainder_rows": tomorrow_remainder_rows,
         "has_tomorrow_remainder": bool(tomorrow_remainder_rows),

@@ -35,6 +35,56 @@ def invalidate_plan_cache() -> None:
     _cache = None
 
 
+def extract_plan_soc_hourly(plan: dict[str, Any] | None) -> dict[str, list[float | None]]:
+    """Hourly planned/actual SOC from Energy arbitrage cache (today + tomorrow)."""
+    today_str = now_warsaw().strftime("%Y-%m-%d")
+    tomorrow_str = (now_warsaw() + timedelta(days=1)).strftime("%Y-%m-%d")
+    out: dict[str, list[float | None]] = {
+        "today": [None] * 24,
+        "tomorrow": [None] * 24,
+    }
+    if not plan:
+        return out
+
+    def _date_key(row: dict) -> str | None:
+        return row.get("plan_date") or row.get("date")
+
+    for row in (plan.get("history_rows") or []) + (plan.get("rows") or []):
+        date_key = _date_key(row)
+        label = None
+        if date_key == today_str:
+            label = "today"
+        elif date_key == tomorrow_str:
+            label = "tomorrow"
+        if label is None:
+            continue
+        h = row.get("hour")
+        if h is None or not (0 <= int(h) < 24):
+            continue
+        soc = row.get("soc")
+        if soc is not None:
+            out[label][int(h)] = round(float(soc), 1)
+    return out
+
+
+def extract_plan_soc_q15(plan: dict[str, Any] | None) -> dict[str, list[float | None]]:
+    direct = (plan or {}).get("plan_soc_q15")
+    if isinstance(direct, dict) and any(k in direct for k in ("today", "tomorrow")):
+        return {
+            "today": list((direct.get("today") or [])[:96]) + [None] * max(0, 96 - len(direct.get("today") or [])),
+            "tomorrow": list((direct.get("tomorrow") or [])[:96]) + [None] * max(0, 96 - len(direct.get("tomorrow") or [])),
+        }
+    hourly = extract_plan_soc_hourly(plan)
+    q15_out: dict[str, list[float | None]] = {}
+    for label, series in hourly.items():
+        slots: list[float | None] = []
+        for h in range(24):
+            v = series[h]
+            slots.extend([v] * 4)
+        q15_out[label] = slots
+    return q15_out
+
+
 def _plan_cache_stale(cached: dict[str, Any]) -> bool:
     """True when the rolling window start (current hour) differs from cached plan."""
     now = now_warsaw()
@@ -195,6 +245,7 @@ async def build_plan_simulation(
         "forecast": forecast_bundle,
         "rce": rce_prices,
         "buy_tariff": build_buy_tariff_payload(cfg, sim["rows"]),
+        "plan_soc_q15": extract_plan_soc_q15(sim),
     }
 
     if store_cache:
