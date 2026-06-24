@@ -26,6 +26,7 @@ desktop.ini
 .smart-deployed
 
 # Local debug dumps (curl / manual API captures)
+assets/
 /dbg_*.json
 /debug*.json
 /pi_*.json
