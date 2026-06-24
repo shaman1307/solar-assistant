@@ -3,8 +3,8 @@ Balance automation scheduler.
 
   - Nightly at 23:59 Europe/Warsaw: build Load+PV day cache for tomorrow and day-after,
     then refresh charge-rate estimate in config (Δ).
-  - Hourly at :00: refresh Open-Meteo PV (remaining today + tomorrow), then Plan Simulation.
-  - Same :00 tick: SA Timer Schedule when smart_mode_enabled.
+  - Every :00/:15/:30/:45: refresh Open-Meteo PV (remaining today + tomorrow), then Plan Simulation.
+  - SA Timer Schedule write only at :00 when smart_mode_enabled.
 """
 
 from __future__ import annotations
@@ -48,9 +48,9 @@ def _smart_mode_enabled(cfg: dict) -> bool:
     return bool(cfg.get("smart_mode_enabled", False))
 
 
-async def _refresh_hourly_plan_cache(cfg: dict) -> dict[str, Any]:
+async def _refresh_plan_cache(cfg: dict) -> dict[str, Any]:
     """Recompute Energy arbitrage plan and store backend cache (always runs)."""
-    log.info("Hourly plan refresh — recompute simulation, RCE, forecast, buy tariff …")
+    log.info("Plan cache refresh — recompute simulation, RCE, forecast, buy tariff …")
     return await hourly_plan_refresh(cfg)
 
 
@@ -95,15 +95,20 @@ async def run_nightly_forecast_cache() -> dict[str, Any]:
         return {"ok": False, "error": str(exc)}
 
 
-async def run_hourly_plan_sync() -> dict[str, Any]:
-    """Hourly :00 job — refresh plan cache; SA timer write only if smart mode on."""
+async def run_quarter_plan_refresh(*, sync_sa: bool | None = None) -> dict[str, Any]:
+    """:00/:15/:30/:45 — refresh plan cache; SA timer write at :00 (or when sync_sa=True)."""
     global _last_hourly_sync
 
     from .influxdb import now_warsaw
 
-    ran_at = now_warsaw().strftime("%Y-%m-%d %H:%M:%S")
+    now = now_warsaw()
+    if sync_sa is None:
+        sync_sa = now.minute == 0
+
+    ran_at = now.strftime("%Y-%m-%d %H:%M:%S")
     status: dict[str, Any] = {
         "ran_at": ran_at,
+        "quarter_minute": now.minute,
         "om_pv_refreshed": False,
         "last_om_refresh": None,
         "plan_cache_refreshed": False,
@@ -119,7 +124,6 @@ async def run_hourly_plan_sync() -> dict[str, Any]:
 
     try:
         cfg = load_config()
-        now = now_warsaw()
         next_hour = (now.hour + 1) % 24
         smart_on = _smart_mode_enabled(cfg)
         status["smart_mode_enabled"] = smart_on
@@ -132,24 +136,29 @@ async def run_hourly_plan_sync() -> dict[str, Any]:
         except Exception as exc:
             status["om_pv_refreshed"] = False
             status["last_om_refresh"] = None
-            log.warning("Hourly Open-Meteo PV refresh failed: %s", exc)
+            log.warning("Open-Meteo PV refresh failed: %s", exc)
 
-        sim_result = await _refresh_hourly_plan_cache(cfg)
+        sim_result = await _refresh_plan_cache(cfg)
         status["plan_cache_refreshed"] = True
         status["plan_computed_at"] = sim_result.get("computed_at")
         schedule = sim_result["next_hour_schedule"]
         status["planned_action"] = schedule.get("planned_action")
         status["next_hour_schedule"] = schedule
 
-        if smart_on:
+        if sync_sa and smart_on:
             status["sa_sync_attempted"] = True
             sa_ok = await _sync_sa_timer_if_smart(cfg, sim_result, next_hour=next_hour)
             status["sa_sync_ok"] = sa_ok
             if sa_ok is False:
                 status["error"] = f"SA timer write failed for hour {next_hour:02d}"
+        elif sync_sa:
+            log.info(
+                "Plan cache updated %s — SA timer sync skipped (smart mode off)",
+                sim_result.get("computed_at"),
+            )
         else:
             log.info(
-                "Hourly plan cache updated %s — SA timer sync skipped (smart mode off)",
+                "Quarter plan cache updated %s — SA timer sync deferred to :00",
                 sim_result.get("computed_at"),
             )
 
@@ -158,8 +167,13 @@ async def run_hourly_plan_sync() -> dict[str, Any]:
     except Exception as exc:
         status["error"] = str(exc)
         _last_hourly_sync = status
-        log.exception("Hourly plan sync job failed")
+        log.exception("Quarter plan refresh failed")
         return status
+
+
+async def run_hourly_plan_sync() -> dict[str, Any]:
+    """Manual refresh; SA timer write only when smart_mode_enabled in config."""
+    return await run_quarter_plan_refresh(sync_sa=True)
 
 
 async def _balance_job() -> None:
@@ -203,14 +217,14 @@ def create_scheduler(cfg: dict) -> AsyncIOScheduler:
         misfire_grace_time=300,
     )
     scheduler.add_job(
-        run_hourly_plan_sync,
-        trigger=CronTrigger(minute=0, timezone="Europe/Warsaw"),
-        id="hourly_plan_sync",
+        run_quarter_plan_refresh,
+        trigger=CronTrigger(minute="0,15,30,45", timezone="Europe/Warsaw"),
+        id="quarter_plan_refresh",
         replace_existing=True,
         misfire_grace_time=120,
     )
     log.info(
-        "Scheduler: forecast cache + balance Δ at 23:59; plan refresh at :00 (always); "
+        "Scheduler: forecast cache + balance Δ at 23:59; plan refresh at :00/:15/:30/:45; "
         "SA timer at :00 when smart mode on — Europe/Warsaw.",
     )
     return scheduler

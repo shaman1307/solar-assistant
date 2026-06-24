@@ -1,8 +1,9 @@
 """
-Hourly Plan Simulation — shared build pipeline and in-memory cache.
+Plan Simulation — shared build pipeline and in-memory cache.
 
-Refreshed every hour (scheduler :00 Warsaw), regardless of smart_mode_enabled,
-with cached Load/PV forecast, Influx actuals for completed hours, and PSE RCE.
+Refreshed every 15 minutes (scheduler :00/:15/:30/:45 Warsaw), regardless of
+smart_mode_enabled, with cached Load/PV forecast, Influx actuals for completed
+hours, and PSE RCE.
 """
 
 from __future__ import annotations
@@ -255,8 +256,8 @@ async def build_plan_simulation(
 
 
 async def hourly_plan_refresh(cfg: dict) -> dict[str, Any]:
-    """Invalidate data caches, recompute plan, store result."""
-    log.info("Hourly Plan Simulation refresh …")
+    """Invalidate data caches, recompute plan, store result (scheduler every 15 min)."""
+    log.info("Plan Simulation refresh …")
     result = await build_plan_simulation(
         cfg,
         force_refresh=True,

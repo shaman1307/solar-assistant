@@ -643,6 +643,13 @@
         gap: 0.375rem 0.75rem;
         line-height: 1.25;
       }
+      /* Fit all hourly columns in chart width (avoid clipping tomorrow evening). */
+      #tariff-rce-columns {
+        gap: 1px;
+      }
+      .tariff-rce-col {
+        min-width: 0;
+      }
     }
     /* Dashboard card value typography (numbers only). */
     .dash-card-value {
@@ -909,6 +916,39 @@
     #tab-dashboard .dash-chart-legend line,
     #tab-simulation .dash-chart-legend line {
       vector-effect: non-scaling-stroke;
+    }
+    .dash-legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      border: none;
+      background: none;
+      padding: 0;
+      margin: 0;
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+      color: #9ca3af;
+    }
+    .dash-legend-item:hover {
+      color: #6b7280;
+    }
+    .dash-legend-item--muted {
+      color: #d1d5db;
+    }
+    .dash-legend-item--muted .dash-legend-line {
+      stroke: #d1d5db !important;
+    }
+    .dash-legend-item--muted .dash-legend-swatch {
+      background: #e5e7eb !important;
+      opacity: 1 !important;
+    }
+    .dash-legend-swatch {
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      opacity: 0.55;
+      flex-shrink: 0;
     }
     #tab-dashboard .dash-chart-tooltip,
     #tab-simulation .dash-chart-tooltip {
@@ -1258,6 +1298,69 @@
         margin-bottom: 0.375rem;
       }
     }
+    @media (max-width: 767px) {
+      #tab-dashboard,
+      #tab-simulation {
+        padding-left: 0.5rem;
+        padding-right: 0.5rem;
+      }
+      .dashboard-accruals-chart {
+        margin-left: -0.5rem;
+        margin-right: -0.5rem;
+        padding-left: 0;
+        padding-right: 0;
+        border-left: none;
+        border-right: none;
+        border-radius: 0;
+      }
+      .forecast-overrides-card {
+        padding-left: 0.5rem;
+        padding-right: 0.5rem;
+      }
+      .forecast-overrides-chart {
+        margin-left: -1rem;
+        margin-right: -1rem;
+      }
+      /* Plot area: wide but leave room for Y-axis labels */
+      #tab-dashboard .dash-chart-axis-label,
+      #tab-simulation .dash-chart-axis-label {
+        font-size: 10px;
+      }
+      #acr-chart-wrap #acr-y-axis {
+        width: 2.25rem;
+        padding-right: 0.125rem;
+      }
+      #acr-chart-wrap #acr-y-axis-soc {
+        width: 1.5rem;
+        padding-left: 0.125rem;
+      }
+      #acr-chart-wrap #acr-chart-area,
+      #acr-chart-wrap #acr-x-labels {
+        left: 2.25rem;
+        right: 1.5rem;
+      }
+      .energy-overview-chart .dash-chart-legend {
+        margin-left: 2.25rem;
+        margin-right: 1.5rem;
+      }
+      #fc-chart-wrap #fc-y-axis {
+        width: 1.75rem;
+        padding-right: 0.125rem;
+      }
+      #fc-chart-wrap #fc-y-axis-soc {
+        width: 1.5rem;
+        padding-left: 0.125rem;
+      }
+      #fc-chart-wrap #fc-chart-area,
+      #fc-chart-wrap #fc-labels-pv {
+        left: 1.75rem;
+        right: 1.5rem;
+      }
+      .forecast-overrides-chart .dash-chart-legend {
+        margin-left: 1.75rem;
+        margin-right: 1.5rem;
+      }
+    }
     .forecast-overrides-chart #fc-chart-wrap {
       height: 260px;
     }
@@ -1507,6 +1610,51 @@
         height: 440px;
       }
     }
+    #acr-price-bg {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+    }
+    #acr-price-columns {
+      gap: 1px;
+    }
+    .acr-price-col {
+      flex: 1 1 0;
+      min-width: 0;
+      height: 100%;
+    }
+    .acr-price-col-stack {
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+    .acr-price-g12-bar {
+      position: absolute;
+      left: 0;
+      right: 0;
+      width: 100%;
+      opacity: 0.14;
+      border-radius: 1px 1px 0 0;
+    }
+    #acr-price-spline {
+      overflow: visible;
+      z-index: 1;
+    }
+    #acr-svg {
+      z-index: 2;
+    }
+    #acr-chart-area .dash-grid-h,
+    #acr-chart-area .dash-grid-v {
+      z-index: 3;
+    }
+    .energy-overview-chart .dash-chart-x .acr-hour-label {
+      position: absolute;
+      bottom: 0;
+      text-align: left;
+      white-space: nowrap;
+      line-height: 1;
+    }
   </style>
 </head>
 <body class="bg-gray-100 text-gray-900 min-h-screen font-sans">
@@ -1684,6 +1832,10 @@
         <div class="absolute left-0 top-0 bottom-6 w-12 flex flex-col justify-between items-end pr-1.5 pointer-events-none dash-chart-y" id="acr-y-axis"></div>
         <div class="absolute right-0 top-0 bottom-6 w-10 flex flex-col justify-between items-start pl-1.5 pointer-events-none dash-chart-y-soc text-gray-500" id="acr-y-axis-soc"></div>
         <div class="absolute left-12 right-10 top-0 bottom-6 overflow-hidden" id="acr-chart-area">
+          <div class="absolute inset-0" id="acr-price-bg" aria-hidden="true">
+            <div class="absolute inset-0 flex min-w-0" id="acr-price-columns"></div>
+            <svg class="absolute inset-0 w-full h-full pointer-events-none" id="acr-price-spline"></svg>
+          </div>
           <svg viewBox="0 0 1000 100" preserveAspectRatio="none"
                class="absolute inset-0 w-full h-full" id="acr-svg">
             <polyline id="acr-line-pv"          fill="none" stroke="#f59e0b" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.9"/>
@@ -1693,15 +1845,9 @@
             <polyline id="acr-line-soc"          fill="none" stroke="#c084fc" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.95"/>
           </svg>
         </div>
-        <div class="absolute left-12 right-10 bottom-0 h-6 flex dash-chart-x overflow-hidden" id="acr-x-labels"></div>
+        <div class="absolute left-12 right-10 bottom-0 h-6 dash-chart-x overflow-hidden" id="acr-x-labels"></div>
       </div>
-      <div class="flex flex-wrap gap-x-4 gap-y-1 mt-2 ml-12 mr-10 dash-chart-legend" style="font-size:11px">
-        <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#f59e0b" stroke-width="1.5"/></svg><span class="text-gray-400">PV</span></span>
-        <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#60a5fa" stroke-width="1.5"/></svg><span class="text-gray-400">Consumption</span></span>
-        <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#f87171" stroke-width="1.5" stroke-dasharray="6 4"/></svg><span class="text-gray-400">Grid Used</span></span>
-        <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#4ade80" stroke-width="1.5" stroke-dasharray="6 4"/></svg><span class="text-gray-400">Grid export</span></span>
-        <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#c084fc" stroke-width="1.5"/></svg><span class="text-gray-400">SOC (%)</span></span>
-      </div>
+      <div class="flex flex-wrap gap-x-4 gap-y-1 mt-2 ml-12 mr-10 dash-chart-legend" id="acr-chart-legend" style="font-size:11px"></div>
     </div>
   </section>
 
@@ -2415,12 +2561,14 @@ function buyTariffChartTitle(tariffName) {
 const CHART_COLORS = {
   peak: '#D9485F',
   offpeak: '#2EAD84',
+  rceLine: '#7f1d1d',
   rceAboveOffpeak: '#16a34a',
   rceBelowG12: '#991b1b',
   empty: '#E5E9EF',
 };
 
 const TARIFF_RCE_SLOTS_PER_HOUR = 4;
+const ACR_PRICE_Y_MAX_PLN = 4;
 const CHART_G12_BG_OPACITY = 0.32;
 const CHART_RCE_BAR_OPACITY = 0.92;
 /** Energa G12 weekday peak windows (hour ranges, start inclusive, end exclusive). */
@@ -2868,6 +3016,7 @@ const RULES_UI_CACHE_KEY = 'rulesUiCache';
 const SA_RULES_WRITE_AT_KEY = 'saRulesWriteAt';
 let metricsPollTimer = null;
 const METRICS_POLL_MS = 30000;
+const QUARTER_REFRESH_MS = 15 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Page tab (set by server route: /, /rules, /conf)
@@ -2928,22 +3077,24 @@ async function saveDebugTabSetting() {
 }
 
 function showSimulationTab() {
-  if (shouldSkipRulesRefresh()) {
-    const cached = loadRulesUiCache();
-    if (cached) {
-      rulesData = cached;
-      renderRules(cached);
+  void (async () => {
+    if (shouldSkipRulesRefresh()) {
+      const cached = loadRulesUiCache();
+      if (cached) {
+        rulesData = cached;
+        renderRules(cached);
+      }
+    } else {
+      await refreshTimerFromSA({ silent: true });
     }
-  } else {
-    refreshTimerFromSA({ silent: true });
-  }
-  loadSmartMode();
-  if (forecastData) renderForecast();
-  if (simData && simData.rows && simData.rows.length && !simData.cache_miss) {
-    renderSimulationBundle(simData);
-    return;
-  }
-  loadSimulation(false);
+    await loadSmartMode();
+    if (forecastData) renderForecast();
+    if (simData && simData.rows && simData.rows.length && !simData.cache_miss) {
+      renderSimulationBundle(simData);
+      return;
+    }
+    loadSimulation(false);
+  })();
 }
 
 function renderSimulationBundle(data) {
@@ -2962,6 +3113,7 @@ function renderSimulationBundle(data) {
   }
   renderSimulationView(data);
   refreshEnergyOverviewPlanFill();
+  refreshAcrPriceBgIfDashboard();
 }
 
 function markSaRulesWrite() {
@@ -3114,6 +3266,8 @@ async function loadForecast(force = false, options = {}) {
     }
     if (syncSliders) {
       initOverrideSliders(forecastData.baseline, forecastData.overrides_saved);
+    } else {
+      refreshOverrideLabelsFromForecast();
     }
     initEvChargingPanel(forecastData.ev_charging);
   } catch (e) { console.warn('forecast error', e); }
@@ -3571,6 +3725,17 @@ function applyOverrideSlidersForDay(day) {
     updateOvControl(el, saved != null ? { exactKwh: saved } : {});
   });
   refreshLoadOvDisplay();
+}
+
+/** Keep slider positions; refresh OM baseline labels after periodic forecast fetch. */
+function refreshOverrideLabelsFromForecast() {
+  if (!forecastData?.baseline) return;
+  const pvEl = document.getElementById('ov-ctrl-pv');
+  if (pvEl && !pvEl.dataset.stepBound) {
+    initOverrideSliders(forecastData.baseline, forecastData.overrides_saved);
+    return;
+  }
+  applyOverrideSlidersForDay(currentForecastDay);
 }
 
 function initOverrideSliders(baseline, savedOverrides) {
@@ -4459,6 +4624,55 @@ function tariffBarHeight(price, minP, maxP) {
   return Math.max(2, Math.round(((price - minP) / range) * 92) + 4);
 }
 
+/** Price Y on Live System chart: 0 PLN = energy zero line, 4 PLN = SOC 100%. */
+function buildAcrPriceYScale(energyMinVal, energyMaxVal) {
+  const range = energyMaxVal - energyMinVal || 1;
+  const topEnergy0 = 2 + ((energyMaxVal - 0) / range) * 96;
+  const topSoc100 = Math.max(2, Math.round(100 - 96));
+  const baselineBottomPct = 100 - topEnergy0;
+  const ceilingBottomPct = 100 - topSoc100;
+  const spanBottom = ceilingBottomPct - baselineBottomPct;
+  const chartBottomPct = 2;
+  const spanBelowBaseline = Math.max(0, baselineBottomPct - chartBottomPct);
+
+  function priceToBarStyle(price) {
+    if (price == null || price <= 0) {
+      return { bottom: `${baselineBottomPct}%`, height: '0%' };
+    }
+    const t = Math.min(1, price / ACR_PRICE_Y_MAX_PLN);
+    return {
+      bottom: `${baselineBottomPct}%`,
+      height: `${t * spanBottom}%`,
+    };
+  }
+
+  function priceToPxY(price, height) {
+    const p = Number(price);
+    if (!Number.isFinite(p)) {
+      return height * (1 - baselineBottomPct / 100);
+    }
+    let fromBottomPct;
+    if (p >= 0) {
+      const t = Math.min(1, p / ACR_PRICE_Y_MAX_PLN);
+      fromBottomPct = baselineBottomPct + t * spanBottom;
+    } else {
+      const t = Math.max(-1, p / ACR_PRICE_Y_MAX_PLN);
+      fromBottomPct = baselineBottomPct + t * spanBelowBaseline;
+    }
+    return height * (1 - fromBottomPct / 100);
+  }
+
+  return {
+    minP: 0,
+    maxP: ACR_PRICE_Y_MAX_PLN,
+    priceToBarStyle,
+    priceToPxY,
+    offpeakPxY(height) {
+      return priceToPxY(g12OffpeakPricePln(), height);
+    },
+  };
+}
+
 function tariffRceHourLabelIndices(slots) {
   const hourIdx = [];
   for (let i = 0; i < slots.length; i++) {
@@ -4649,6 +4863,8 @@ async function loadBuyTariffChart() {
     updateBuyTariffLabels(buyTariffData.tariff_name);
     const rows = simData?.rows?.length ? simData.rows : buyTariffData.rows;
     renderTariffRceChartsPair();
+    refreshAcrPriceBgIfDashboard();
+    renderAcrChartLegend();
     return;
   }
   try {
@@ -4656,6 +4872,8 @@ async function loadBuyTariffChart() {
     buyTariffData = await res.json();
     updateBuyTariffLabels(buyTariffData.tariff_name);
     renderTariffRceChartsPair();
+    refreshAcrPriceBgIfDashboard();
+    renderAcrChartLegend();
   } catch (e) {
     console.warn('buy-tariff error', e);
   }
@@ -4714,7 +4932,7 @@ function bindRceTip(areaEl) {
   });
 }
 
-function renderRceSplineOverlay(svgEl, areaEl, timeline, minP, maxP) {
+function renderRceSplineOverlay(svgEl, areaEl, timeline, minP, maxP, options = {}) {
   if (!svgEl || !areaEl) return;
   svgEl.innerHTML = '';
   if (!rceData?.series_15min?.length || !timeline.length) return;
@@ -4722,8 +4940,11 @@ function renderRceSplineOverlay(svgEl, areaEl, timeline, minP, maxP) {
   const height = areaEl.clientHeight || 200;
   if (height < 10) return;
 
-  // Use actual column DOM positions to match flex layout exactly
-  const colEls = areaEl.querySelectorAll('#tariff-rce-columns .tariff-rce-col');
+  const colSelector = options.colSelector || '#tariff-rce-columns .tariff-rce-col';
+  const strokeWidth = options.strokeWidth ?? DASH_CHART.lineWidth;
+  const pathClass = options.pathClass || '';
+  const priceToPxY = options.priceToPxY;
+  const colEls = areaEl.querySelectorAll(colSelector);
   const areaRect = areaEl.getBoundingClientRect();
   const width = areaRect.width || areaEl.clientWidth || 600;
   if (width < 10) return;
@@ -4752,10 +4973,12 @@ function renderRceSplineOverlay(svgEl, areaEl, timeline, minP, maxP) {
     const colInfo = hourColMap.get(start.hourKey);
     if (!colInfo) continue;
     const x = colInfo.left + (start.minute / 60) * colInfo.colWidth;
-    const yPct = tariffBarHeight(s.price, minP, maxP) / 100;
+    const y = priceToPxY
+      ? priceToPxY(s.price, height)
+      : height * (1 - tariffBarHeight(s.price, minP, maxP) / 100);
     pts.push({
       x,
-      y: height * (1 - yPct),
+      y,
       price: s.price,
       date: start.date,
       labelDate: s.date,
@@ -4776,24 +4999,11 @@ function renderRceSplineOverlay(svgEl, areaEl, timeline, minP, maxP) {
   window._rceSplinePts15 = pts.slice(0, -1);
 
   const pathD = stepPath(pts);
-  const offpeakY = height * (1 - tariffBarHeight(g12OffpeakPricePln(), minP, maxP) / 100);
-  const uid = 'trc' + Date.now().toString(36);
 
   svgEl.setAttribute('viewBox', `0 0 ${width} ${height}`);
-  svgEl.innerHTML = `
-    <defs>
-      <clipPath id="${uid}b">
-        <rect x="0" y="${offpeakY.toFixed(1)}" width="${width}" height="${(height - offpeakY + 4).toFixed(1)}"/>
-      </clipPath>
-      <clipPath id="${uid}a">
-        <rect x="0" y="-4" width="${width}" height="${(offpeakY + 6).toFixed(1)}"/>
-      </clipPath>
-    </defs>
-    <path d="${pathD}" stroke="${CHART_COLORS.rceBelowG12}" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" fill="none" clip-path="url(#${uid}b)"/>
-    <path d="${pathD}" stroke="${CHART_COLORS.rceAboveOffpeak}" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" fill="none" clip-path="url(#${uid}a)"/>
-  `;
+  svgEl.innerHTML = `<path d="${pathD}" class="${pathClass}" stroke="${CHART_COLORS.rceLine}" stroke-width="${strokeWidth}" vector-effect="non-scaling-stroke" stroke-linecap="square" stroke-linejoin="miter" fill="none"/>`;
 
-  bindRceTip(areaEl);
+  if (!options.skipTip) bindRceTip(areaEl);
 }
 
 function renderTariffRceCombinedChart() {
@@ -4851,6 +5061,218 @@ function renderTariffRceCombinedChart() {
   renderRceSplineOverlay(splineEl, areaEl, timeline, minP, maxP);
   updateTariffRceNowLine(nowLineEl, areaEl, timeline);
   if (window._tariffRceFocusPending) applyFocusFromQuery();
+}
+
+/** Hourly G12 + RCE slots for one accruals chart day (24h, matches X-axis). */
+function buildAcrPriceTimeline(dateStr) {
+  if (!dateStr) return [];
+  const buyRows = simData?.rows?.length ? simData.rows : buyTariffData?.rows;
+  const buyHourMap = buildBuyHourMap(buyRows || []);
+  const rceByHour = new Map();
+  if (rceData?.series_15min?.length) {
+    for (const s of rceData.series_15min) {
+      if (s.price == null) continue;
+      const start = rcePeriodStart(s.date, s.time);
+      if (start.date !== dateStr) continue;
+      const key = start.hourKey;
+      if (!rceByHour.has(key)) rceByHour.set(key, []);
+      rceByHour.get(key).push(s.price);
+    }
+  }
+
+  const slots = [];
+  for (let h = 0; h < 24; h += 1) {
+    const time = `${String(h).padStart(2, '0')}:00`;
+    const g12 = resolveG12ForSlot(dateStr, time, buyHourMap);
+    const prices = rceByHour.get(`${dateStr}|${String(h).padStart(2, '0')}`) || [];
+    const rcePrice = prices.length
+      ? Math.round((prices.reduce((a, v) => a + v, 0) / prices.length) * 10000) / 10000
+      : null;
+    slots.push({
+      date: dateStr,
+      time,
+      key: tariffRceSlotKey(dateStr, time),
+      buyPrice: g12.buyPrice,
+      g12_zone: g12.g12_zone,
+      rcePrice,
+      start: g12.start,
+    });
+  }
+  return slots;
+}
+
+function renderAcrPriceBackground(dateStr) {
+  const columnsEl = document.getElementById('acr-price-columns');
+  const splineEl = document.getElementById('acr-price-spline');
+  const areaEl = document.getElementById('acr-chart-area');
+  if (!columnsEl || !areaEl) return;
+
+  const energyRange = window._acrChartEnergyRange;
+  if (!energyRange) return;
+
+  const scale = buildAcrPriceYScale(energyRange.minVal, energyRange.maxVal);
+  const timeline = buildAcrPriceTimeline(dateStr);
+  columnsEl.innerHTML = '';
+  if (splineEl) splineEl.innerHTML = '';
+
+  if (!timeline.length) return;
+
+  timeline.forEach((slot) => {
+    const col = document.createElement('div');
+    col.className = 'acr-price-col';
+
+    const bars = document.createElement('div');
+    bars.className = 'acr-price-col-stack';
+
+    if (slot.buyPrice != null) {
+      const barStyle = scale.priceToBarStyle(slot.buyPrice);
+      const g12Bar = document.createElement('div');
+      g12Bar.className = 'acr-price-g12-bar';
+      g12Bar.dataset.g12Zone = slot.g12_zone;
+      g12Bar.style.cssText = [
+        `bottom:${barStyle.bottom}`,
+        `height:${barStyle.height}`,
+        `background:${g12ZoneBgColor(slot.g12_zone)}`,
+      ].join(';');
+      bars.appendChild(g12Bar);
+    }
+
+    col.appendChild(bars);
+    columnsEl.appendChild(col);
+  });
+
+  if (splineEl) {
+    renderRceSplineOverlay(splineEl, areaEl, timeline, scale.minP, scale.maxP, {
+      colSelector: '#acr-price-columns .acr-price-col',
+      skipTip: true,
+      priceToPxY: (price, height) => scale.priceToPxY(price, height),
+      pathClass: 'acr-rce-line',
+    });
+  }
+  applyAcrChartLegendVisibility();
+}
+
+function refreshAcrPriceBgIfDashboard() {
+  if (currentTab !== 'dashboard') return;
+  const dateStr = document.getElementById('accruals-date')?.value || accrualData?.date;
+  if (!dateStr) return;
+  renderAcrPriceBackground(dateStr);
+}
+
+function acrLegendLineSwatch(color, dashed) {
+  const dash = dashed ? ' stroke-dasharray="6 4"' : '';
+  return `<svg width="20" height="8" aria-hidden="true"><line class="dash-legend-line" x1="0" y1="4" x2="20" y2="4" stroke="${color}" stroke-width="1.5"${dash}/></svg>`;
+}
+
+function acrLegendSwatch(color) {
+  return `<span class="dash-legend-swatch" style="background:${color}"></span>`;
+}
+
+function acrLegendG12Swatch() {
+  return `<span class="inline-flex gap-px">${acrLegendSwatch(CHART_COLORS.peak)}${acrLegendSwatch(CHART_COLORS.offpeak)}</span>`;
+}
+
+function acrLegendRceSwatch() {
+  return acrLegendLineSwatch(CHART_COLORS.rceLine, false);
+}
+
+function getAcrChartLegendItems() {
+  const tariffName = buyTariffData?.tariff_name || configData?.grid?.g12?.tariff_name || 'G12';
+  return [
+    { key: 'pv', label: 'PV', swatch: acrLegendLineSwatch('#f59e0b', false) },
+    { key: 'load', label: 'Consumption', swatch: acrLegendLineSwatch('#60a5fa', false) },
+    { key: 'grid-buy', label: 'Grid Used', swatch: acrLegendLineSwatch('#f87171', true) },
+    { key: 'grid-sell', label: 'Grid export', swatch: acrLegendLineSwatch('#4ade80', true) },
+    { key: 'soc', label: 'SOC (%)', swatch: acrLegendLineSwatch('#c084fc', false) },
+    { key: 'g12', label: tariffName, swatch: acrLegendG12Swatch() },
+    { key: 'rce', label: 'RCE', swatch: acrLegendRceSwatch() },
+  ];
+}
+
+const ACR_PRICE_LEGEND_DEFAULT_HIDDEN = ['g12', 'rce'];
+
+function ensureAcrLegendHidden() {
+  if (!window._acrLegendHidden) {
+    window._acrLegendHidden = new Set(ACR_PRICE_LEGEND_DEFAULT_HIDDEN);
+    return;
+  }
+  migrateAcrLegendHiddenKeys();
+}
+
+function migrateAcrLegendHiddenKeys() {
+  const hidden = window._acrLegendHidden;
+  if (!hidden) return;
+  if (['g12-peak', 'g12-offpeak'].some((k) => hidden.has(k))) {
+    hidden.delete('g12-peak');
+    hidden.delete('g12-offpeak');
+    hidden.add('g12');
+  }
+  if (['rce-above', 'rce-below'].some((k) => hidden.has(k))) {
+    hidden.delete('rce-above');
+    hidden.delete('rce-below');
+    hidden.add('rce');
+  }
+}
+
+function applyAcrChartLegendVisibility() {
+  ensureAcrLegendHidden();
+  const hidden = window._acrLegendHidden;
+  if (!hidden) return;
+  const show = (key) => !hidden.has(key);
+  const setDisplay = (el, key) => {
+    if (!el) return;
+    el.style.display = show(key) ? '' : 'none';
+  };
+
+  setDisplay(document.getElementById('acr-line-pv'), 'pv');
+  setDisplay(document.getElementById('acr-line-load'), 'load');
+  setDisplay(document.getElementById('acr-line-grid-buy'), 'grid-buy');
+  setDisplay(document.getElementById('acr-line-grid-sell'), 'grid-sell');
+  setDisplay(document.getElementById('acr-line-soc'), 'soc');
+  document.querySelectorAll('.acr-grid-buy-seg').forEach((el) => setDisplay(el, 'grid-buy'));
+  document.querySelectorAll('.acr-grid-sell-seg').forEach((el) => setDisplay(el, 'grid-sell'));
+  document.querySelectorAll('.acr-soc-seg').forEach((el) => setDisplay(el, 'soc'));
+
+  document.querySelectorAll('.acr-price-g12-bar').forEach((bar) => setDisplay(bar, 'g12'));
+  document.querySelectorAll('.acr-rce-line').forEach((el) => setDisplay(el, 'rce'));
+
+  const priceBg = document.getElementById('acr-price-bg');
+  if (priceBg) {
+    const anyPrice = show('g12') || show('rce');
+    priceBg.style.visibility = anyPrice ? '' : 'hidden';
+  }
+
+  document.querySelectorAll('#acr-chart-legend [data-acr-series]').forEach((btn) => {
+    btn.classList.toggle('dash-legend-item--muted', hidden.has(btn.dataset.acrSeries));
+  });
+}
+
+function renderAcrChartLegend() {
+  const el = document.getElementById('acr-chart-legend');
+  if (!el) return;
+  ensureAcrLegendHidden();
+
+  el.innerHTML = getAcrChartLegendItems().map((item) => (
+    `<button type="button" class="dash-legend-item" data-acr-series="${item.key}">${item.swatch}<span>${item.label}</span></button>`
+  )).join('');
+
+  applyAcrChartLegendVisibility();
+}
+
+function bindAcrChartLegend() {
+  if (window._acrLegendClickBound) return;
+  window._acrLegendClickBound = true;
+  const el = document.getElementById('acr-chart-legend');
+  if (!el) return;
+  ensureAcrLegendHidden();
+  el.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-acr-series]');
+    if (!btn) return;
+    const key = btn.dataset.acrSeries;
+    if (window._acrLegendHidden.has(key)) window._acrLegendHidden.delete(key);
+    else window._acrLegendHidden.add(key);
+    applyAcrChartLegendVisibility();
+  });
 }
 
 function updateTariffRceNowLine(nowLineEl, areaEl, timeline) {
@@ -4930,8 +5352,46 @@ async function loadAccruals(date) {
     accrualData = await accrRes.json();
     renderAccrualsCards(accrualData);
     renderAccrualsChart(accrualData);
-    renderEnergyOverviewCosts(findHistoryMonthDayRow(monthData, dateStr));
+    refreshEnergyOverviewCosts(findHistoryMonthDayRow(monthData, dateStr));
   } catch(e) { console.warn('accruals error', e); }
+}
+
+/** Completed-hour costs from EA history_rows (today only; excludes future plan hours). */
+function eoCompletedHistoryCostsForDate(dateStr) {
+  if (!simData || dateStr !== simData.today_date) return null;
+  const rows = simData.history_rows || [];
+  if (!rows.length) return null;
+  let energy_cost = 0;
+  let service_cost = 0;
+  let import_energy_cost = 0;
+  let export_revenue = 0;
+  let grid_import = 0;
+  let grid_export = 0;
+  for (const r of rows) {
+    energy_cost += Number(r.energy_cost || 0);
+    service_cost += Number(r.service_cost || 0);
+    import_energy_cost += Number(r.import_energy_cost || 0);
+    export_revenue += Number(r.export_revenue || 0);
+    grid_import += Number(r.grid_import || 0);
+    grid_export += Number(r.grid_export || 0);
+  }
+  const round2 = (v) => Math.round(v * 100) / 100;
+  return {
+    energy_cost: round2(energy_cost),
+    service_cost: round2(service_cost),
+    import_energy_cost: round2(import_energy_cost),
+    export_revenue: round2(export_revenue),
+    grid_import: round2(grid_import),
+    grid_export: round2(grid_export),
+  };
+}
+
+function refreshEnergyOverviewCosts(monthRowFallback) {
+  const dateStr = document.getElementById('accruals-date')?.value || DEBUG_TODAY;
+  const row = eoCompletedHistoryCostsForDate(dateStr)
+    || monthRowFallback
+    || null;
+  renderEnergyOverviewCosts(row);
 }
 
 function renderEnergyOverviewCosts(row) {
@@ -5061,6 +5521,7 @@ function renderAccrualsChart(d) {
   minVal -= pad;
   maxVal += pad;
   const range = maxVal - minVal || 1;
+  window._acrChartEnergyRange = { minVal, maxVal };
 
   const yEl    = document.getElementById('acr-y-axis');
   const ySocEl = document.getElementById('acr-y-axis-soc');
@@ -5187,10 +5648,11 @@ function renderAccrualsChart(d) {
   if (xlEl) {
     xlEl.innerHTML = '';
     const xStep = window.matchMedia('(max-width: 767px)').matches ? 4 : 1;
-    for (let i = 0; i < 24; i++) {
+    for (let h = 0; h < 24; h += xStep) {
       const lbl = document.createElement('span');
-      lbl.style.cssText = 'flex:1;text-align:center;overflow:hidden;min-width:0;';
-      lbl.textContent = (i % xStep === 0) ? String(i).padStart(2, '0') : '';
+      lbl.className = 'acr-hour-label';
+      lbl.style.left = `${(h / 24) * 100}%`;
+      lbl.textContent = String(h).padStart(2, '0');
       xlEl.appendChild(lbl);
     }
   }
@@ -5215,6 +5677,9 @@ function renderAccrualsChart(d) {
     if (h.soc[slot] != null) html += tooltipRowLine('#c084fc', false, SA_LABELS.soc, fmtChartSoc(h.soc[slot]));
     return html;
   }, slotCount);
+
+  renderAcrPriceBackground(dateStr);
+  renderAcrChartLegend();
 }
 
 // ---------------------------------------------------------------------------
@@ -5228,7 +5693,28 @@ async function loadRCE() {
     rceData = await res.json();
     renderRCEHeader(rceData);
     renderTariffRceChartsPair();
+    refreshAcrPriceBgIfDashboard();
   } catch(e) { console.warn('RCE error', e); }
+}
+
+let quarterRefreshBoot = true;
+
+/** RCE + forecast + EA simulation — one 15-min cycle (and on page load). */
+async function refreshQuarterCycle() {
+  await loadRCE();
+  await loadForecast(true, { syncSliders: quarterRefreshBoot });
+  const forceSim = quarterRefreshBoot;
+  quarterRefreshBoot = false;
+  await preloadSimulation(forceSim);
+  if (currentTab === 'simulation' && simData) {
+    renderSimulationBundle(simData);
+  }
+  if (currentTab === 'dashboard') {
+    const dateStr = document.getElementById('accruals-date')?.value || DEBUG_TODAY;
+    if (dateStr === DEBUG_TODAY) {
+      await loadAccruals(dateStr);
+    }
+  }
 }
 
 function renderRCEHeader(d) {
@@ -5266,23 +5752,51 @@ function renderRCEChart(d) {
 // ---------------------------------------------------------------------------
 // Rules
 // ---------------------------------------------------------------------------
+let smartModeEnabled = false;
+let rulesManualEditPending = false;
+
+function markRulesManualEdit() {
+  rulesManualEditPending = true;
+}
+
+function clearRulesManualEdit() {
+  rulesManualEditPending = false;
+}
+
+function isSmartModeEnabled() {
+  const el = document.getElementById('smart-mode-enabled');
+  if (el) return el.checked;
+  return smartModeEnabled;
+}
+
 async function loadSmartMode() {
   try {
     const res = await fetch('api/smart-mode');
     const d = await res.json();
+    smartModeEnabled = !!d.enabled;
     const el = document.getElementById('smart-mode-enabled');
-    if (el) el.checked = !!d.enabled;
+    if (el) el.checked = smartModeEnabled;
   } catch (e) { console.warn('smart mode', e); }
 }
 
 async function saveSmartMode() {
   const enabled = document.getElementById('smart-mode-enabled')?.checked ?? false;
   try {
-    await fetch('api/smart-mode', {
+    const res = await fetch('api/smart-mode', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({enabled}),
     });
+    const result = await res.json();
+    smartModeEnabled = !!result.enabled;
+    if (enabled) {
+      clearRulesManualEdit();
+      if (simData?.rows?.length) {
+        applyProposedSchedule(simData.next_hour_schedule || simData.proposed_schedule);
+      }
+    } else {
+      await refreshTimerFromSA({ silent: true, force: true });
+    }
   } catch (e) { console.warn('smart mode save', e); }
 }
 
@@ -5307,6 +5821,7 @@ async function refreshTimerFromSA(options = {}) {
     if (gen !== rulesFetchGen) return;
     rulesData = data;
     renderRules(rulesData);
+    clearRulesManualEdit();
     persistRulesUiCache();
     if (!silent && !rulesData.sa_online && !rulesData.stale) {
       alert('SolarAssistant did not respond in time. Try again in a few seconds.');
@@ -5455,6 +5970,7 @@ async function applyWorkMode() {
       rulesData.sa_online = true;
       delete rulesData.stale;
       markSaRulesWrite();
+      clearRulesManualEdit();
       persistRulesUiCache();
     } else {
       alert('Failed to write Work mode to SA. Retry in ~15s.');
@@ -5493,6 +6009,7 @@ async function applyTimedPower(kind) {
       rulesData.sa_online = true;
       delete rulesData.stale;
       markSaRulesWrite();
+      clearRulesManualEdit();
       persistRulesUiCache();
     } else {
       alert(`Failed to write Timed ${kind} to SA. Retry in ~15s.`);
@@ -5524,7 +6041,7 @@ function mergePlanSlotOne(existingSlots, planSlots) {
 }
 
 function applyProposedSchedule(schedule) {
-  if (!schedule) return;
+  if (!schedule || !isSmartModeEnabled()) return;
   const chargeBase = rulesData?.charge_slots?.length
     ? rulesData.charge_slots
     : collectTimerSlots('charge', 3);
@@ -5665,6 +6182,7 @@ async function applyTimerSlot(kind, slotNum) {
       rulesData.sa_online = true;
       delete rulesData.stale;
       markSaRulesWrite();
+      clearRulesManualEdit();
       persistRulesUiCache();
     } else {
       alert(`Failed to write ${kind} slot ${slotNum} to SA. Retry in ~15s.`);
@@ -5691,7 +6209,10 @@ function renderSimulationView(data) {
     return;
   }
   renderSimulation(data);
-  applyProposedSchedule(data.next_hour_schedule || data.proposed_schedule);
+  // Auto-preview plan in slot 1 only when Smart mode is on and user is not editing / just wrote to SA.
+  if (isSmartModeEnabled() && !shouldSkipRulesRefresh() && !rulesManualEditPending) {
+    applyProposedSchedule(data.next_hour_schedule || data.proposed_schedule);
+  }
 }
 
 async function loadSimulation(forceRefresh = false, silent = false) {
@@ -5728,7 +6249,8 @@ async function preloadSimulation(forceRefresh = false) {
     }
     if (data.buy_tariff) buyTariffData = data.buy_tariff;
     if (currentTab === 'simulation') renderSimulationBundle(simData);
-    else refreshEnergyOverviewPlanFill();
+    refreshEnergyOverviewPlanFill();
+    refreshEnergyOverviewCosts();
   } catch (e) {
     console.warn('simulation preload', e);
   }
@@ -7031,6 +7553,20 @@ function syncEnergyCardsToFlow() {
   cards.style.height = `${flow.getBoundingClientRect().height}px`;
 }
 
+function bindRulesManualEditTracking() {
+  const root = document.getElementById('tab-simulation');
+  if (!root) return;
+  root.addEventListener('input', (e) => {
+    if (e.target.matches('.timer-slot-input')) markRulesManualEdit();
+  });
+  root.addEventListener('change', (e) => {
+    if (e.target.matches('#work-mode-select, #timed-charge-select, #timed-discharge-select')
+        || e.target.matches('.timer-slot-check-grid input[type="checkbox"]')) {
+      markRulesManualEdit();
+    }
+  });
+}
+
 function bindTimedTableCheckboxSync() {
   if (window._timedTableCheckboxSyncBound) return;
   window._timedTableCheckboxSyncBound = true;
@@ -7074,26 +7610,25 @@ function startMetricsPolling() {
 }
 
 function bootForCurrentTab() {
-  loadRCE();
-  setInterval(loadRCE, 1800000);
+  void (async () => {
+    await loadSmartMode();
+    await refreshQuarterCycle();
+    setInterval(() => { refreshQuarterCycle().catch(e => console.warn('quarter refresh', e)); }, QUARTER_REFRESH_MS);
+  })();
 
   if (currentTab === 'dashboard') {
     startMetricsPolling();
-    loadForecast(true);
-    loadAccruals();
-    preloadSimulation();
+    loadBuyTariffChart();
     setInterval(() => { loadAccruals(document.getElementById('accruals-date')?.value); }, 60000);
-    setInterval(() => loadForecast(true), 300000);
     return;
   }
 
   if (currentTab === 'simulation') {
-    loadForecast(true);
     return;
   }
 
   if (currentTab === 'debug') {
-    loadForecast(true);
+    return;
   }
 }
 
@@ -7125,10 +7660,12 @@ initHistoryMonth();
 initDatePickerClickTargets();
 initDraggableCardGrids();
 bindEnergyCardsHeightSync();
+bindRulesManualEditTracking();
 bindTimerPowerSelectWidthsSync();
 bindTimedTableCheckboxSync();
 bindSimHistoryTableFontFit();
 bindTariffChartResize();
+bindAcrChartLegend();
 initPageTab();
 applyFocusFromQuery();
 loadDebugTabSetting();
