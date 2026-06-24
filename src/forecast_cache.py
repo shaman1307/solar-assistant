@@ -209,28 +209,46 @@ def _apply_load_effective(
     metric["total_effective"] = round(sum(metric["effective_hourly"]), 2)
 
 
-def build_day_forecast(date_str: str, cfg: dict, pv_hourly: list[float]) -> dict[str, Any]:
+def build_day_forecast(
+    date_str: str,
+    cfg: dict,
+    pv_hourly: list[float],
+    pv_q15: list[float] | None = None,
+) -> dict[str, Any]:
     load_q15, load_hourly = compute_weekday_load_profile(date_str, cfg)
     day = _empty_day()
     _set_metric_effective(day["load"], load_hourly, load_q15)
     day["load"]["base_source"] = "weekday_samples_trimmed_v1"
-    pv_q15 = hourly_to_q15_equal(pv_hourly)
-    _set_metric_effective(day["pv"], pv_hourly, pv_q15)
+    q15 = list(pv_q15) if pv_q15 is not None else hourly_to_q15_equal(pv_hourly)
+    while len(q15) < Q15_PER_DAY:
+        q15.append(0.0)
+    _set_metric_effective(day["pv"], pv_hourly, q15[:Q15_PER_DAY])
     return day
 
 
-def compute_pv_hourly_for_date(date_str: str, cfg: dict) -> list[float]:
-    from .forecast import get_pv_hourly_for_date_sync
+def compute_pv_profiles_for_date(date_str: str, cfg: dict) -> tuple[list[float], list[float]]:
+    from .forecast import fetch_pv_for_dates_sync
 
-    pv, _src = get_pv_hourly_for_date_sync(cfg, date_str)
-    while len(pv) < HOURS_PER_DAY:
-        pv.append(0.0)
-    return [round(float(v), 3) for v in pv[:HOURS_PER_DAY]]
+    batch = fetch_pv_for_dates_sync(cfg, [date_str])
+    prof = batch.get(date_str) or {}
+    hourly = [round(float(v), 3) for v in list(prof.get("hourly") or [0.0] * HOURS_PER_DAY)[:HOURS_PER_DAY]]
+    q15_raw = list(prof.get("q15") or hourly_to_q15_equal(hourly))
+    while len(hourly) < HOURS_PER_DAY:
+        hourly.append(0.0)
+    q15 = [round(float(v), 6) for v in q15_raw[:Q15_PER_DAY]]
+    while len(q15) < Q15_PER_DAY:
+        q15.append(0.0)
+    return hourly, q15
+
+
+def compute_pv_hourly_for_date(date_str: str, cfg: dict) -> list[float]:
+    hourly, _q15 = compute_pv_profiles_for_date(date_str, cfg)
+    return hourly
 
 
 def refresh_intraday_pv(cfg: dict, *, now: datetime | None = None) -> dict[str, Any]:
     """Re-fetch Open-Meteo PV for today (full profile) and tomorrow."""
-    from .forecast import fetch_pv_hourly_for_dates_sync, invalidate_cache as invalidate_om_mem
+    from .forecast import fetch_pv_for_dates_sync, invalidate_cache as invalidate_om_mem
 
     now = now or now_warsaw()
     today_str = now.strftime("%Y-%m-%d")
@@ -240,19 +258,21 @@ def refresh_intraday_pv(cfg: dict, *, now: datetime | None = None) -> dict[str, 
     days = cache["days"]
 
     invalidate_om_mem()
-    fresh_by_date = fetch_pv_hourly_for_dates_sync(cfg, [today_str, tomorrow_str])
+    fresh_by_date = fetch_pv_for_dates_sync(cfg, [today_str, tomorrow_str])
 
     for date_str in (today_str, tomorrow_str):
-        fresh_pv = fresh_by_date.get(date_str)
-        if not fresh_pv:
+        prof = fresh_by_date.get(date_str)
+        if not prof:
             log.warning("Intraday PV refresh — no data for %s", date_str)
             continue
-        pv_metric = days[date_str]["pv"]
-        merged = [round(float(v), 3) for v in fresh_pv[:HOURS_PER_DAY]]
+        merged = [round(float(v), 3) for v in list(prof.get("hourly") or [])[:HOURS_PER_DAY]]
+        merged_q15 = [round(float(v), 6) for v in list(prof.get("q15") or [])[:Q15_PER_DAY]]
         while len(merged) < HOURS_PER_DAY:
             merged.append(0.0)
-        pv_q15 = hourly_to_q15_equal(merged)
-        _set_metric_effective(pv_metric, merged, pv_q15)
+        while len(merged_q15) < Q15_PER_DAY:
+            merged_q15.append(0.0)
+        pv_metric = days[date_str]["pv"]
+        _set_metric_effective(pv_metric, merged, merged_q15)
 
     cache["last_om_refresh"] = now.strftime("%Y-%m-%d %H:%M:%S")
     log.info(
@@ -276,8 +296,8 @@ def build_nightly_cache(cfg: dict, *, now: datetime | None = None) -> dict[str, 
         "days": {},
     }
     for date_str in (today_str, d1, d2):
-        pv_h = compute_pv_hourly_for_date(date_str, cfg)
-        cache["days"][date_str] = build_day_forecast(date_str, cfg, pv_h)
+        pv_h, pv_q = compute_pv_profiles_for_date(date_str, cfg)
+        cache["days"][date_str] = build_day_forecast(date_str, cfg, pv_h, pv_q)
 
     save_day_cache(cache)
 
@@ -302,8 +322,8 @@ def ensure_cache_days(cfg: dict, dates: list[str]) -> dict[str, Any]:
             pv_total = float((existing.get("pv") or {}).get("total_base") or 0.0)
             if load_ok and pv_total > 0.01:
                 continue
-        pv_h = compute_pv_hourly_for_date(date_str, cfg)
-        days[date_str] = build_day_forecast(date_str, cfg, pv_h)
+        pv_h, pv_q = compute_pv_profiles_for_date(date_str, cfg)
+        days[date_str] = build_day_forecast(date_str, cfg, pv_h, pv_q)
         changed = True
     if changed:
         cache["computed_at"] = now_warsaw().strftime("%Y-%m-%d %H:%M:%S")

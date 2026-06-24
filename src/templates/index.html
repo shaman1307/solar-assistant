@@ -2048,8 +2048,7 @@
               <div class="ov-control-main">
               <div class="ov-head">
                 <div class="ov-head-main">
-                  <label class="text-sm font-semibold text-gray-500">PV Total</label>
-                  <span class="ov-kwh text-sm font-semibold text-amber-400">— kWh</span>
+                  <label class="ov-total-label text-sm font-semibold text-gray-500">Forecast PV total: <span class="ov-kwh tabular-nums text-amber-400">— kWh</span></label>
                 </div>
                 <span class="ov-formula">—</span>
               </div>
@@ -2077,8 +2076,7 @@
               <div class="ov-control-main">
               <div class="ov-head">
                 <div class="ov-head-main">
-                  <label class="text-sm font-semibold text-gray-500">Consumption Total</label>
-                  <span class="ov-kwh text-sm font-semibold text-blue-400">— kWh</span>
+                  <label class="ov-total-label text-sm font-semibold text-gray-500">Forecast Consumption total: <span class="ov-kwh tabular-nums text-blue-400">— kWh</span></label>
                 </div>
                 <span class="ov-formula">—</span>
               </div>
@@ -2156,10 +2154,6 @@
             <span class="flex items-center gap-1"><span class="inline-block w-4 h-3 rounded-sm" style="background:rgba(134,239,172,0.45)"></span><span class="text-gray-400">SOC ≥ 90%</span></span>
           </div>
           <div id="fc-bars-pv" class="hidden"></div>
-          <div class="flex flex-wrap items-center justify-center gap-x-6 gap-y-1 mt-3 w-full text-sm">
-            <span><span class="text-gray-500">Forecast PV total:</span> <span class="font-bold text-amber-400" id="fc-pv-total">—</span></span>
-            <span><span class="text-gray-500">Forecast Consumption total:</span> <span class="font-bold text-blue-400" id="fc-load-total">—</span></span>
-          </div>
         </div>
       </div>
     </div>
@@ -2353,8 +2347,9 @@
       <table class="w-full text-xs debug-table">
         <thead>
           <tr class="border-b border-gray-200 text-gray-500 text-left">
-            <th class="px-2 py-2 font-medium">Date / Hour</th>
+            <th class="px-2 py-2 font-medium">Start - End</th>
             <th class="px-2 py-2 font-medium text-right">PV</th>
+            <th class="px-2 py-2 font-medium text-right">Forecast PV total<br><span class="font-normal">chart</span></th>
             <th class="px-2 py-2 font-medium text-right">Load</th>
             <th class="px-2 py-2 font-medium text-right">Grid Used<br><span class="font-normal">act / sim</span></th>
             <th class="px-2 py-2 font-medium text-right">Grid Export<br><span class="font-normal">act / sim</span></th>
@@ -2375,7 +2370,7 @@
           </tr>
         </thead>
         <tbody id="debug-body">
-          <tr><td colspan="19" class="px-3 py-6 text-center text-gray-600">No data yet.</td></tr>
+          <tr><td colspan="20" class="px-3 py-6 text-center text-gray-600">No data yet.</td></tr>
         </tbody>
       </table>
     </div>
@@ -2572,6 +2567,54 @@ function expandHourlyToSmooth10minKw(hourly) {
 
 function expandHourlyToSmoothQ15Kw(hourly) {
   return expandHourlyToSmoothKw(hourly, CHART_SLOTS_Q15, CHART_SLOTS_PER_HOUR_Q15);
+}
+
+/** Native Open-Meteo q15 kWh → chart kW (no interpolation). */
+function forecastPvQ15ToKw(day) {
+  const q15 = day?.pv_forecast_q15;
+  if (!Array.isArray(q15) || !q15.length) return [];
+  return q15ToChartKw(q15.slice(0, CHART_SLOTS_Q15), false);
+}
+
+/** Flat steps from hourly actual kWh (no cross-hour interpolation). */
+function flatHourlyActualToQ15Kw(hourly) {
+  const out = new Array(CHART_SLOTS_Q15).fill(null);
+  if (!Array.isArray(hourly)) return out;
+  for (let h = 0; h < 24; h++) {
+    const v = hourly[h];
+    if (v == null || v === '') continue;
+    const kw = Math.round(Number(v) * 4 * 1000) / 1000;
+    for (let q = 0; q < CHART_SLOTS_PER_HOUR_Q15; q++) {
+      out[h * CHART_SLOTS_PER_HOUR_Q15 + q] = kw;
+    }
+  }
+  return out;
+}
+
+function actualPvQ15ToKw(forecastData, day) {
+  const q15 = forecastData?.pv_actual_q15;
+  if (Array.isArray(q15) && q15.some(v => v != null)) {
+    return q15ToChartKw(q15.slice(0, CHART_SLOTS_Q15), !!forecastData.pv_actual_q15_is_kw);
+  }
+  const live10 = forecastData?.series_10min;
+  if (live10?.pv?.length) {
+    return expand10minToSmoothQ15Kw(live10.pv);
+  }
+  const hourly = day?.pv_actual || forecastData?.pv_actual_hourly;
+  if (Array.isArray(hourly) && hourly.some(v => v != null)) {
+    return flatHourlyActualToQ15Kw(hourly);
+  }
+  return null;
+}
+
+function q15HourSumKwh(q15, hour) {
+  if (!Array.isArray(q15) || hour < 0 || hour >= 24) return null;
+  let sum = 0;
+  const base = hour * CHART_SLOTS_PER_HOUR_Q15;
+  for (let q = 0; q < CHART_SLOTS_PER_HOUR_Q15; q++) {
+    sum += Number(q15[base + q]) || 0;
+  }
+  return Math.round(sum * 100) / 100;
 }
 
 /** Consumption forecast: native q15 profile (steps, EV blocks); fallback to hourly interpolation. */
@@ -2918,6 +2961,7 @@ function renderSimulationBundle(data) {
     loadRCE();
   }
   renderSimulationView(data);
+  refreshEnergyOverviewPlanFill();
 }
 
 function markSaRulesWrite() {
@@ -3097,23 +3141,14 @@ function renderForecast() {
   const isToday = currentForecastDay === 'today';
   const slotCount = CHART_SLOTS_Q15;
 
-  // Forecast chart: smooth curve by interpolating hourly Open-Meteo to q15 centers.
-  const pvForecastHourly = isToday
-    ? (day.pv_forecast || day.pv || [])
-    : (day.pv || day.pv_forecast || []);
-  const pvForecastKw = expandHourlyToSmoothQ15Kw(pvForecastHourly);
+  // Forecast chart: native Open-Meteo q15 PV (pv_forecast_q15), no hourly interpolation.
+  const pvForecastKw = forecastPvQ15ToKw(day);
   const loadForecastKw = forecastLoadQ15ToKw(day);
 
   let pvActualKw = null;
   let loadActualKw = null;
   if (isToday) {
-    const live10 = forecastData.series_10min;
-    if (live10?.pv?.length) {
-      pvActualKw = expand10minToSmoothQ15Kw(live10.pv);
-    } else {
-      const pvActualHourly = day.pv_actual || forecastData.pv_actual_hourly || [];
-      pvActualKw = expandHourlyToSmoothQ15Kw(pvActualHourly);
-    }
+    pvActualKw = actualPvQ15ToKw(forecastData, day);
     loadActualKw = actualLoadQ15ToKw(forecastData);
   }
 
@@ -3168,9 +3203,6 @@ function renderForecast() {
     }
   }
 
-  set('fc-pv-total',   (day.pv_total || 0).toFixed(2) + ' kWh');
-  set('fc-load-total', (day.load_total || 0).toFixed(2) + ' kWh');
-
   const fcWrap = document.getElementById('fc-chart-wrap');
   const fcTip = document.getElementById('fc-chart-tooltip');
   const fcDate = isToday
@@ -3187,10 +3219,8 @@ function renderForecast() {
     return `<div class="tt-time">${chartSlotTitleQ15(slot, fcDate)}</div>${html}`;
   }, slotCount);
 
-  const accrualsDate = document.getElementById('accruals-date')?.value || DEBUG_TODAY;
-  if (accrualData?.totals) {
-    updateEnergyPlanFill(accrualData.totals.pv, accrualData.totals.load, accrualsDate);
-  }
+  refreshEnergyOverviewPlanFill();
+  if (debugData) renderDebugTable(debugData);
 }
 
 // ---------------------------------------------------------------------------
@@ -3211,6 +3241,44 @@ const OV_POS_SPLIT = 50; // 100% sits at centre of track
 
 let ovSaveTimer = null;
 let ovSaveInFlight = false;
+
+function evLoadKwhForDay(day) {
+  if (!forecastData?.ev_charging) return 0;
+  const block = day === 'today' ? forecastData.ev_charging.today : forecastData.ev_charging.tomorrow;
+  return evLoadKwhFromSession(block?.session || {});
+}
+
+/** Open-Meteo day total at 100% — slider baseline only, no actuals, no slider scale. */
+function ovOmBaseline(day, metric) {
+  return Number(forecastData?.baseline?.[day]?.[metric] ?? 0);
+}
+
+function ovForecastTotalKwh(metric, day) {
+  const id = metric === 'pv_kwh' ? 'pv' : 'load';
+  const el = document.getElementById('ov-ctrl-' + id);
+  if (el && (el.dataset.day || currentForecastDay) === day) {
+    const v = ovCurrentKwh(el);
+    if (Number.isFinite(v)) return v;
+  }
+  const base = ovOmBaseline(day, metric);
+  if (metric === 'load_kwh') {
+    return base > 0 ? base + evLoadKwhForDay(day) : null;
+  }
+  return base > 0 ? base : null;
+}
+
+function ovForecastPastHourSum(dayData, metric) {
+  if (!dayData) return 0;
+  const hourly = metric === 'pv_kwh' ? (dayData.pv || []) : (dayData.load || []);
+  const actuals = metric === 'pv_kwh'
+    ? (dayData.pv_actual || forecastData?.pv_actual_hourly || [])
+    : (forecastData?.load_actual_hourly || []);
+  let sum = 0;
+  for (let h = 0; h < 24; h++) {
+    if (actuals[h] != null) sum += Number(hourly[h]) || 0;
+  }
+  return sum;
+}
 
 function ovPctToPos(pct) {
   pct = Math.max(OV_PCT_MIN, Math.min(OV_PCT_MAX, pct));
@@ -3288,45 +3356,38 @@ function formatOvFormula(baseline, pct, evKwh = 0) {
 function updateOvFormula(el, baseline, pct, evKwh, displayKwh) {
   const formulaEl = el.querySelector('.ov-formula');
   if (!formulaEl) return;
-  const isLoad = el.dataset.metric === 'load_kwh';
-  const ev = isLoad ? evKwh : 0;
-  const fromPct = ovPctToKwh(baseline, pct);
-  formulaEl.textContent = formatOvFormula(baseline, pct, ev);
-  const formulaTotal = Math.round((fromPct + ev) * 100) / 100;
-  const day = forecastData?.[currentForecastDay];
-  const apiTotal = isLoad ? day?.load_total : day?.pv_total;
-  const mismatchSlider = Math.abs(formulaTotal - displayKwh) > 0.05;
-  const mismatchApi = apiTotal != null && Math.abs(Number(apiTotal) - displayKwh) > 0.15;
-  const warn = mismatchSlider || mismatchApi;
+  formulaEl.textContent = formatOvFormula(baseline, pct, evKwh || 0);
+  const formulaTotal = Math.round((ovPctToKwh(baseline, pct) + (evKwh || 0)) * 100) / 100;
+  const warn = Math.abs(formulaTotal - displayKwh) > 0.05;
   formulaEl.classList.toggle('ov-formula-warn', warn);
-  if (warn) {
-    const parts = [];
-    if (mismatchSlider) {
-      parts.push(`Slider total ${displayKwh.toFixed(2)} kWh vs formula ${formulaTotal.toFixed(2)} kWh`);
-    }
-    if (mismatchApi) {
-      parts.push(`Forecast cache total ${Number(apiTotal).toFixed(2)} kWh`);
-    }
-    formulaEl.title = parts.join('; ');
-  } else {
-    formulaEl.title = '';
-  }
+  formulaEl.title = warn
+    ? `Slider total ${displayKwh.toFixed(2)} kWh vs formula ${formulaTotal.toFixed(2)} kWh`
+    : '';
 }
 
 function ovCurrentKwh(el) {
   const metric = el.dataset.metric;
+  const day = el.dataset.day || currentForecastDay;
   const cfgKey = ovCfgKeyForMetric(metric, currentForecastDay);
-  if (ovPendingOverrides[cfgKey] != null) return ovPendingOverrides[cfgKey];
-  const baseline = parseFloat(el.dataset.baseline) || 0;
+  const cacheBase = parseFloat(el.dataset.baseline) || 0;
   const pct = ovPosValueToPct(parseInt(el.querySelector('.ov-range').value, 10));
-  return ovPctToKwh(baseline, pct);
+  let kwh = ovPendingOverrides[cfgKey] != null
+    ? ovPendingOverrides[cfgKey]
+    : ovPctToKwh(cacheBase, pct);
+  if (metric === 'load_kwh') {
+    kwh += evLoadKwhForDay(day);
+  }
+  return kwh;
 }
 
 function ovSetKwhFromAbsolute(el, kwh) {
-  const baseline = parseFloat(el.dataset.baseline) || 0;
-  if (baseline <= 0) return;
-  const clamped = Math.round(ovClampKwh(baseline, kwh) * 100) / 100;
-  const pct = ovKwhToPct(baseline, clamped);
+  const metric = el.dataset.metric;
+  const day = el.dataset.day || currentForecastDay;
+  const cacheBase = parseFloat(el.dataset.baseline) || 0;
+  if (cacheBase <= 0) return;
+  const target = metric === 'load_kwh' ? kwh - evLoadKwhForDay(day) : kwh;
+  const clamped = Math.round(ovClampKwh(cacheBase, target) * 100) / 100;
+  const pct = ovKwhToPct(cacheBase, clamped);
   el.querySelector('.ov-range').value = ovPctToPosValue(pct);
   updateOvControl(el, { exactKwh: clamped });
   syncOvPendingFromExact(el, clamped);
@@ -3423,20 +3484,22 @@ function bindOvStepper(el) {
 }
 
 function updateOvControl(el, opts = {}) {
-  const baseline = parseFloat(el.dataset.baseline) || 0;
+  const day = el.dataset.day || currentForecastDay;
+  const metric = el.dataset.metric;
+  const isLoad = metric === 'load_kwh';
+  const omBase = parseFloat(el.dataset.baseline) || 0;
   const range = el.querySelector('.ov-range');
   const pos = parseInt(range.value, 10) / 10;
   const pct = ovPosValueToPct(parseInt(range.value, 10));
-  const baseKwh = opts.exactKwh != null
+  const evKwh = isLoad ? evLoadKwhForDay(day) : 0;
+  const sliderKwh = opts.exactKwh != null
     ? opts.exactKwh
-    : ovPctToKwh(baseline, pct);
-  const isLoad = el.dataset.metric === 'load_kwh';
-  const evKwh = isLoad ? evLoadKwhFromSession(readEvFormSession()) : 0;
-  const displayKwh = isLoad ? baseKwh + evKwh : baseKwh;
-  const planKwh = isLoad ? baseline + evKwh : baseline;
+    : ovPctToKwh(omBase, pct);
+  const displayKwh = isLoad ? sliderKwh + evKwh : sliderKwh;
+  const planKwh = isLoad ? omBase + evKwh : omBase;
 
   el.querySelector('.ov-kwh').textContent = displayKwh.toFixed(2) + ' kWh';
-  updateOvFormula(el, baseline, pct, evKwh, displayKwh);
+  updateOvFormula(el, omBase, pct, evKwh, displayKwh);
 
   const fill = el.querySelector('.ov-scale-fill');
   if (fill) {
@@ -3454,8 +3517,10 @@ function updateOvControl(el, opts = {}) {
 
   const input = el.querySelector('.ov-kwh-input');
   if (input && document.activeElement !== input) {
-    input.value = baseKwh.toFixed(2);
+    input.value = displayKwh.toFixed(2);
   }
+  refreshEnergyOverviewPlanFill();
+  if (debugData) renderDebugTable(debugData);
 }
 
 function ovCfgKeyForMetric(metric, day) {
@@ -3587,7 +3652,9 @@ async function saveOverrides() {
     await loadForecast(true, { syncSliders: false });
     ovPendingOverrides = { ...(forecastData.overrides_saved || {}) };
     applyOverrideSlidersForDay(currentForecastDay);
-    preloadSimulation();
+    await preloadSimulation(true);
+    if (currentTab === 'simulation' && simData) renderSimulationBundle(simData);
+    else refreshEnergyOverviewPlanFill();
   } catch (e) {
     console.warn('overrides save', e);
   } finally {
@@ -3855,7 +3922,9 @@ async function saveEvCharging() {
       evChargingPayload = forecastData.ev_charging;
       applyEvFormForDay(currentForecastDay);
     }
-    await preloadSimulation();
+    await preloadSimulation(true);
+    if (currentTab === 'simulation' && simData) renderSimulationBundle(simData);
+    else refreshEnergyOverviewPlanFill();
     renderForecast();
   } catch (e) {
     console.warn('ev charging save', e);
@@ -4904,23 +4973,30 @@ function renderAccrualsCards(d) {
 let eoPlanFillLatch = { pv: false, load: false };
 let eoPlanFillLatchDate = null;
 
-function eoForecastDayKeyForDate(dateStr) {
-  if (!dateStr || !forecastData) return null;
-  if (dateStr === DEBUG_TODAY) return 'today';
-  const tomorrow = new Date(DEBUG_TODAY + 'T12:00:00');
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  if (dateStr === tomorrow.toISOString().slice(0, 10)) return 'tomorrow';
-  return null;
+function eoSimArbitrageTotalForDate(dateStr, field) {
+  if (!simData) return null;
+  if (dateStr !== simData.today_date) return null;
+  const fromTotals = Number(simData.totals?.[field]);
+  if (Number.isFinite(fromTotals)) return fromTotals;
+  const rows = [...(simData.history_rows || []), ...(simData.rows || [])]
+    .filter(r => r.plan_date === dateStr);
+  if (!rows.length) return null;
+  return Math.round(rows.reduce((s, r) => s + Number(r[field] || 0), 0) * 100) / 100;
 }
 
 function eoForecastPlanForDate(dateStr) {
-  const dayKey = eoForecastDayKeyForDate(dateStr);
-  if (!dayKey) return { pv: null, load: null };
-  const day = forecastData[dayKey];
   return {
-    pv: day?.pv_total != null ? Number(day.pv_total) : null,
-    load: day?.load_total != null ? Number(day.load_total) : null,
+    pv: eoSimArbitrageTotalForDate(dateStr, 'production'),
+    load: eoSimArbitrageTotalForDate(dateStr, 'consumption'),
   };
+}
+
+function refreshEnergyOverviewPlanFill() {
+  const dateStr = document.getElementById('accruals-date')?.value || DEBUG_TODAY;
+  const actualPv = accrualData?.totals?.pv;
+  const actualLoad = accrualData?.totals?.load;
+  if (actualPv == null && actualLoad == null && !simData) return;
+  updateEnergyPlanFill(actualPv, actualLoad, dateStr);
 }
 
 function updateEnergyPlanFill(actualPv, actualLoad, dateStr) {
@@ -5640,9 +5716,10 @@ async function loadSimulation(forceRefresh = false, silent = false) {
   }
 }
 
-async function preloadSimulation() {
+async function preloadSimulation(forceRefresh = false) {
   try {
-    const res = await fetch('api/simulation');
+    const q = forceRefresh ? '?refresh=1' : '';
+    const res = await fetch('api/simulation' + q);
     const data = await res.json();
     simData = data;
     if (data.rce && !rceData) {
@@ -5651,7 +5728,7 @@ async function preloadSimulation() {
     }
     if (data.buy_tariff) buyTariffData = data.buy_tariff;
     if (currentTab === 'simulation') renderSimulationBundle(simData);
-    if (forecastData) renderForecast();
+    else refreshEnergyOverviewPlanFill();
   } catch (e) {
     console.warn('simulation preload', e);
   }
@@ -6446,7 +6523,46 @@ function renderDebugTotals(d) {
   renderDebugTotalsBlock(el, day.totals.actual || {}, day.totals.sim || {}, computeSmartTotals(day), metrics);
 }
 
-const DEBUG_COLS = 19;
+const DEBUG_COLS = 20;
+
+function debugForecastDayKey(dateStr) {
+  if (!dateStr || !forecastData) return null;
+  if (dateStr === DEBUG_TODAY) return 'today';
+  const tomorrow = new Date(DEBUG_TODAY + 'T12:00:00');
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (dateStr === tomorrow.toISOString().slice(0, 10)) return 'tomorrow';
+  return null;
+}
+
+/** Hourly PV kWh from forecast chart (sum of 4 native OM q15 buckets). */
+function debugForecastPvHourly(dateStr, hour) {
+  const key = debugForecastDayKey(dateStr);
+  if (!key) return null;
+  return q15HourSumKwh(forecastData[key]?.pv_forecast_q15, hour);
+}
+
+function debugForecastPvDayTotal(dateStr) {
+  const key = debugForecastDayKey(dateStr);
+  if (!key) return null;
+  return ovForecastTotalKwh('pv_kwh', key);
+}
+
+function debugDateSeparatorRow(dateStr) {
+  if (!dateStr) return '';
+  return `<tr class="border-b border-gray-200 bg-slate-100">
+    <td colspan="${DEBUG_COLS}" class="px-3 py-1.5 text-xs font-semibold text-gray-700 tracking-wide">${formatSimPlanDate(dateStr)}</td>
+  </tr>`;
+}
+
+function debugForecastPvCell(dateStr, hour, isTotal = false) {
+  const v = isTotal ? debugForecastPvDayTotal(dateStr) : debugForecastPvHourly(dateStr, hour);
+  const cls = isTotal ? 'text-amber-700 font-semibold' : 'text-amber-700';
+  const pad = isTotal ? 'py-2' : 'py-1.5';
+  if (v == null || !Number.isFinite(v)) {
+    return `<td class="px-2 ${pad} text-right tabular-nums text-gray-300">—</td>`;
+  }
+  return `<td class="px-2 ${pad} text-right tabular-nums ${cls}">${debugFmt(v, 2)}</td>`;
+}
 
 function debugTimerCell(timerText) {
   if (!timerText) {
@@ -6523,6 +6639,7 @@ function renderForecastSummaryRow(forecast) {
   return `<tr class="border-t-2 border-dashed border-amber-300 bg-amber-50/70 font-semibold">
     <td class="px-2 py-2 text-amber-900 whitespace-nowrap">Day 3 forecast ${dateStr}</td>
     <td class="px-2 py-2 text-right tabular-nums text-amber-900">${debugFmt(forecast.pv_total, 2)}</td>
+    <td class="px-2 py-2 text-right tabular-nums text-amber-900">${debugFmt(forecast.pv_total, 2)}</td>
     <td class="px-2 py-2 text-right tabular-nums text-amber-900">${debugFmt(forecast.load_total, 2)}</td>
     ${debugEmptyCells(5)}
     ${debugEmptyCells(2)}
@@ -6561,10 +6678,11 @@ function renderDebugTable(d) {
       const act = r.actual || {};
       const sim = r.sim || {};
       const rowDate = r.date || dateStr;
-      const hourLabel = chartHourTitle(r.hour, rowDate);
+      const hourLabel = simRowTimeRange(r);
       return `<tr class="border-b border-gray-100 hover:bg-gray-50">
-        <td class="px-2 py-1.5 font-medium text-gray-700 whitespace-nowrap">${hourLabel}</td>
+        <td class="px-2 py-1.5 font-medium text-gray-700 whitespace-nowrap tabular-nums">${hourLabel}</td>
         <td class="px-2 py-1.5 text-right tabular-nums">${debugFmt(r.pv, 2)}</td>
+        ${debugForecastPvCell(rowDate, r.hour)}
         <td class="px-2 py-1.5 text-right tabular-nums">${debugFmt(r.load, 2)}</td>
         <td class="px-2 py-1.5 text-right tabular-nums">${debugPairCell(act.grid_used, sim.grid_used)}</td>
         <td class="px-2 py-1.5 text-right tabular-nums">${debugPairCell(act.grid_export, sim.grid_export)}</td>
@@ -6579,8 +6697,9 @@ function renderDebugTable(d) {
     }).join('');
 
     const totalRow = `<tr class="border-t-2 border-gray-300 bg-gray-50 font-semibold">
-      <td class="px-2 py-2 text-gray-900">Total ${dateStr}</td>
+      <td class="px-2 py-2 text-gray-900 whitespace-nowrap tabular-nums">${simTodayTotalLabel(dateStr)}</td>
       <td class="px-2 py-2 text-right tabular-nums">${debugFmt(totalPv, 2)}</td>
+      ${debugForecastPvCell(dateStr, null, true)}
       <td class="px-2 py-2 text-right tabular-nums">${debugFmt(totalLoad, 2)}</td>
       <td class="px-2 py-2 text-right tabular-nums">${debugPairCell(actT.grid_used, simT.grid_used, 2, 0.2)}</td>
       <td class="px-2 py-2 text-right tabular-nums">${debugPairCell(actT.grid_export, simT.grid_export, 2, 0.2)}</td>
@@ -6594,7 +6713,7 @@ function renderDebugTable(d) {
       <td class="px-2 py-2"></td>
     </tr>`;
 
-    return hourRows + totalRow;
+    return debugDateSeparatorRow(dateStr) + hourRows + totalRow;
   }
 
   body.innerHTML = days.map((day, i) => dayBlock(day, i)).join('')
@@ -6962,12 +7081,18 @@ function bootForCurrentTab() {
     startMetricsPolling();
     loadForecast(true);
     loadAccruals();
+    preloadSimulation();
     setInterval(() => { loadAccruals(document.getElementById('accruals-date')?.value); }, 60000);
     setInterval(() => loadForecast(true), 300000);
     return;
   }
 
   if (currentTab === 'simulation') {
+    loadForecast(true);
+    return;
+  }
+
+  if (currentTab === 'debug') {
     loadForecast(true);
   }
 }

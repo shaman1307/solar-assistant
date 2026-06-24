@@ -11,7 +11,11 @@ from .. import influxdb as influxdb_mod
 from .. import rce as rce_mod
 from ..config import load_config
 from .. import forecast as forecast_mod
-from ..debug_smart_plan import apply_smart_plan_for_day, hourly_rows_from_pv_load
+from ..debug_smart_plan import (
+    apply_smart_plan_for_day,
+    hourly_rows_from_pv_load,
+    merge_today_hourly_profile,
+)
 from ..g12_pricing import get_buy_price
 from ..inverter_sim import simulate_day_from_profile
 
@@ -73,21 +77,19 @@ async def api_inverter_debug(
     if accruals.get("error"):
         return {"error": accruals["error"], "date": date}
 
-    # For today's date: Influx has only completed-hours; fill the remaining PV/load
-    # from forecast so the day can be replayed end-to-end.
+    # Today: completed hours from Influx; current hour and later from forecast.
     today_str = influxdb_mod.now_warsaw().strftime("%Y-%m-%d")
     hourly = accruals.get("hourly") or {}
     if date == today_str:
+        now = influxdb_mod.now_warsaw()
+        plan_from_hour = now.replace(minute=0, second=0, microsecond=0).hour
         fc_day = await forecast_mod.get_horizon_day_profile(date, cfg)
-        pv_src = list(hourly.get("pv") or [])
-        load_src = list(hourly.get("load") or [])
-        pv = [pv_src[h] if h < len(pv_src) else None for h in range(24)]
-        load = [load_src[h] if h < len(load_src) else None for h in range(24)]
-        for h in range(24):
-            if pv[h] is None:
-                pv[h] = fc_day["pv"][h]
-            if load[h] is None:
-                load[h] = fc_day["load"][h]
+        pv, load = merge_today_hourly_profile(
+            fc_day["pv"],
+            fc_day["load"],
+            hourly,
+            until_hour=plan_from_hour,
+        )
         hourly = dict(hourly)
         hourly["pv"] = pv
         hourly["load"] = load

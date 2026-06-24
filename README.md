@@ -10,9 +10,37 @@ Tested with **SRNE 3-phase** hybrid inverter and Energa **G12** tariff (Poland).
 
 - Live dashboard: PV, load, battery, grid, energy overview
 - Hourly energy accruals and charts (InfluxDB)
-- PV forecast (Open-Meteo) and RCE sell prices
-- **Energy arbitrage simulation and monthly cost history** — rolling 24-hour plan that minimises your G12 electricity bill; hourly table with planned actions, import/export, and cash balance; closed-month totals from Influx actuals
+- **PV forecast (Open-Meteo, native 15-minute resolution)** — `minutely_15` irradiance for today/tomorrow; hourly totals derived as sums of four quarter-hour buckets (no artificial hourly→q15 smoothing on charts)
+- **EV charging planner** — day/night charge windows added to effective load forecast; persists per date; triggers plan/forecast refresh on save
+- **Forecast Overrides** — PV and consumption day totals as % of Open-Meteo baseline; 15-minute forecast chart with planned SOC bands
+- RCE sell prices (PSE, quarter-hourly)
+- **Energy arbitrage simulation and monthly cost history** — rolling 24-hour plan that minimises your G12 electricity bill; hourly table with planned actions, import/export, and cash balance; completed hours from Influx actuals, remaining hours from forecast (current hour is forecast-only, not mixed with partial Influx)
+- **Debug tab** (optional) — inverter physics replay vs Influx; smart-plan columns aligned with Energy arbitrage; **Forecast PV total chart** column from the same native q15 profile as the forecast graph
+- **Energy Overview plan markers** — small totals bottom-right on PV and Consumption cards match Energy arbitrage **TOTAL** row (Production / Consumption); loaded with plan simulation on dashboard boot
 - **Timer schedule read/write through SolarAssistant REST API** — view and edit the SRNE timed charge/discharge slots in the UI; with Smart mode on, the backend writes slot 1 automatically each hour
+
+## Recent changes (2026-06-24)
+
+### PV forecast: real 15-minute Open-Meteo data
+
+- Backend fetches Open-Meteo `minutely_15` (`direct_radiation`, `diffuse_radiation`) and converts to per-block PV kWh per 15-minute slot.
+- Day cache (`forecast_cache.py`) stores native `base_q15` / `effective_q15`; intraday and nightly refresh no longer split hourly values into equal quarters.
+- Forecast API exposes `pv_forecast_q15` (96 slots) and `meta.pv_om_resolution: "15min"`.
+- **Forecast Overrides** PV line uses `pv_forecast_q15` step profile — no cross-hour interpolation.
+- Actual PV on the chart uses `pv_actual_q15` or flat hourly steps when only hourly actuals exist.
+
+### Debug tab and Energy arbitrage alignment
+
+- Shared `merge_today_hourly_profile(..., until_hour=plan_from_hour)`: hours before the current clock hour use Influx actuals; current hour and later use forecast only (no blending partial-hour Influx into the plan).
+- Debug **PV** column and Energy arbitrage **Production** use the same merged hourly profile; **Load** / **Consumption** likewise.
+- Debug **Forecast PV total chart** = sum of four `pv_forecast_q15` slots per hour (matches forecast graph tooltip, not merged `today.pv` or interpolated hourly).
+- Time column shows `HH:00–HH:00` ranges with date separator rows like Energy arbitrage.
+
+### Energy Overview and plan refresh
+
+- PV card corner = Energy arbitrage TOTAL **Production**; Consumption card corner = TOTAL **Consumption** (not Forecast Overrides slider totals).
+- Dashboard preloads `/api/simulation` so corner values appear without opening Rules & Simulation.
+- Saving **EV charging** or **Forecast Overrides** forces plan refresh (`?refresh=1`) and updates Energy arbitrage table plus overview corners.
 
 ## Smart energy planning
 
@@ -22,9 +50,9 @@ Solar Smart does not talk to the inverter directly. It plans energy flows and, w
 
 Every hour at **:00 Europe/Warsaw** the app rebuilds a **Plan Simulation** (this runs even when Smart mode is off):
 
-1. **Inputs** — live battery SOC and today's completed hours from InfluxDB; PV/load forecast for today and tomorrow (Open-Meteo + weekday load cache); Energa **G12** buy prices (peak/off-peak zones); **PSE RCE** quarter-hourly sell prices; battery capacity, inverter AC limit, and transfer losses from config.
+1. **Inputs** — live battery SOC and today's completed hours from InfluxDB; PV/load forecast for today and tomorrow (Open-Meteo **15-minute PV** + weekday load cache, plus optional EV charging blocks); Energa **G12** buy prices (peak/off-peak zones); **PSE RCE** quarter-hourly sell prices; battery capacity, inverter AC limit, and transfer losses from config.
 2. **Optimizer** — a 15-minute dynamic-programming model (`plan_optimizer.py`) steps through the next 24 hours and picks, for each quarter, whether to import from the grid, charge the battery from the grid, or export stored energy to the grid. The objective is to minimise net cash cost: `grid import × G12 buy − grid export × export credit`. Battery export is allowed only when RCE is high enough to beat keeping energy for self-consumption at off-peak buy price. A SOC floor (`min_soc_pct`) and night reserve prevent over-discharging before the next PV window.
-3. **Output in the UI** — the **Energy arbitrage** tab shows the rolling plan hour by hour (action label, PV, load, grid flows, SOC, energy and service cost). Completed hours are reconciled against Influx actuals. **Monthly history** aggregates past days the same way.
+3. **Output in the UI** — the **Energy arbitrage** tab shows the rolling plan hour by hour (action label, PV, load, grid flows, SOC, energy and service cost). Completed hours are reconciled against Influx actuals; **from the current clock hour onward** the plan uses full-hour forecast PV/load (not partial-hour Influx). **Monthly history** aggregates past days the same way.
 
 At **23:59 Europe/Warsaw** a nightly job rebuilds weekday Load + Open-Meteo PV profiles for tomorrow and the day after, then estimates tomorrow's energy gap (PV − load − usable SOC). If the house needs more energy than PV can cover, it stores a suggested grid-charge rate (`_charge_rate_kw`) used when the plan calls for **Charging from Grid**.
 

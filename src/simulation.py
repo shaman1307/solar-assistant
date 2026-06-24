@@ -140,6 +140,8 @@ def run_simulation(
     pv_tomorrow = forecast["tomorrow"]["pv"]
     load_today = forecast["today"]["load"]
     load_tomorrow = forecast["tomorrow"]["load"]
+    pv_forecast_today = forecast["today"].get("pv_forecast") or pv_today
+    load_forecast_today = forecast["today"].get("load_forecast") or load_today
 
     now = _now_warsaw()
     start_dt = now.replace(minute=0, second=0, microsecond=0)
@@ -170,7 +172,10 @@ def run_simulation(
 
     # Optimizer: Influx for completed hours only; forecast from plan_from_hour onward.
     pv_merged, load_merged = merge_today_hourly_profile(
-        pv_today, load_today, today_hourly, until_hour=plan_from_hour,
+        pv_forecast_today,
+        load_forecast_today,
+        today_hourly,
+        until_hour=plan_from_hour,
     )
     day_start_soc, _ = _initial_soc_kwh(today_hourly or {}, battery_cap)
     if not today_hourly:
@@ -216,7 +221,7 @@ def run_simulation(
         if prev_day_hourly:
             dt0 = datetime.strptime(today_str, "%Y-%m-%d").replace(hour=0)
             disp_pv, disp_load = _hourly_forecast_kwh(
-                dt0, today_date, pv_today, pv_tomorrow, load_today, load_tomorrow,
+                dt0, today_date, pv_merged, pv_tomorrow, load_merged, load_tomorrow,
             )
             q0 = quarters_by_date.get(today_str) or []
             rce_vals = [float(v) for v in q0[0:4] if v is not None]
@@ -255,7 +260,7 @@ def run_simulation(
                 continue
             dt = datetime.strptime(today_str, "%Y-%m-%d").replace(hour=h)
             disp_pv, disp_load = _hourly_forecast_kwh(
-                dt, today_date, pv_today, pv_tomorrow, load_today, load_tomorrow,
+                dt, today_date, pv_merged, pv_tomorrow, load_merged, load_tomorrow,
             )
             row = build_smart_plan_hour_row(
                 dt,

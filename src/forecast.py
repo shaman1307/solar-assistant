@@ -124,12 +124,9 @@ def _get_pv_profiles_sync(cfg: dict) -> dict[str, list[float]]:
     fetch_ok = False
 
     try:
-        hourly = _fetch_irradiance(cfg["location"]["latitude"], cfg["location"]["longitude"])
-        times: list[str] = hourly["time"]
-        direct: list[float] = hourly["direct_radiation"]
-        diffuse: list[float] = hourly["diffuse_radiation"]
-        today_pv = _fill_pv_for_date(cfg, times, direct, diffuse, today_str)
-        tomorrow_pv = _fill_pv_for_date(cfg, times, direct, diffuse, tomorrow_str)
+        batch = fetch_pv_for_dates_sync(cfg, [today_str, tomorrow_str])
+        today_pv = list((batch.get(today_str) or {}).get("hourly") or [0.0] * 24)
+        tomorrow_pv = list((batch.get(tomorrow_str) or {}).get("hourly") or [0.0] * 24)
         fetch_ok = True
     except Exception as exc:
         log.warning("Open-Meteo PV fetch failed: %s", exc)
@@ -144,25 +141,36 @@ def _get_pv_profiles_sync(cfg: dict) -> dict[str, list[float]]:
 
 def get_pv_hourly_for_date_sync(cfg: dict, date_str: str) -> tuple[list[float], str]:
     """Open-Meteo PV hourly kWh for any calendar date."""
-    batch = fetch_pv_hourly_for_dates_sync(cfg, [date_str])
-    pv = batch.get(date_str)
-    if pv is not None:
+    batch = fetch_pv_for_dates_sync(cfg, [date_str])
+    prof = batch.get(date_str)
+    if prof is not None:
         today = now_warsaw().date()
         target = datetime.strptime(date_str, "%Y-%m-%d").date()
-        src = "open-meteo-archive" if target < today else "forecast"
-        return pv, src
+        src = "open-meteo-archive" if target < today else "open-meteo-15min"
+        return list(prof["hourly"]), src
     return [0.0] * 24, "forecast"
 
 
 def fetch_pv_hourly_for_dates_sync(cfg: dict, date_strs: list[str]) -> dict[str, list[float]]:
-    """Fetch Open-Meteo once and return PV hourly kWh for each date (today/tomorrow)."""
+    """Hourly PV kWh per date (derived from q15 when forecast API is used)."""
+    batch = fetch_pv_for_dates_sync(cfg, date_strs)
+    return {
+        d: [round(float(v), 3) for v in list(prof.get("hourly") or [0.0] * 24)[:24]]
+        for d, prof in batch.items()
+    }
+
+
+def fetch_pv_for_dates_sync(
+    cfg: dict, date_strs: list[str],
+) -> dict[str, dict[str, list[float]]]:
+    """Fetch Open-Meteo PV: q15 kWh (forecast) + hourly sums. {date: {hourly, q15}}."""
     if not date_strs:
         return {}
 
     lat = cfg["location"]["latitude"]
     lon = cfg["location"]["longitude"]
     today = now_warsaw().date()
-    out: dict[str, list[float]] = {}
+    out: dict[str, dict[str, list[float]]] = {}
 
     past = [d for d in date_strs if datetime.strptime(d, "%Y-%m-%d").date() < today]
     future = [d for d in date_strs if d not in past]
@@ -172,23 +180,24 @@ def fetch_pv_hourly_for_dates_sync(cfg: dict, date_strs: list[str]) -> dict[str,
         now_ts = time.time()
         cached = _archive_cache.get(cache_key)
         if cached and cached.get("ts", 0) > now_ts - ARCHIVE_CACHE_TTL_S:
-            out[date_str] = [round(float(v), 3) for v in list(cached["data"])[:24]]
-            continue
-        try:
-            hourly = _fetch_irradiance_archive(lat, lon, date_str)
-            pv = _fill_pv_for_date(
-                cfg,
-                hourly["time"],
-                hourly["direct_radiation"],
-                hourly["diffuse_radiation"],
-                date_str,
-            )
-            rounded = [round(float(v), 3) for v in pv[:24]]
-            _archive_cache[cache_key] = {"ts": now_ts, "data": rounded}
-            out[date_str] = rounded
-        except Exception as exc:
-            log.warning("Open-Meteo archive PV for %s failed: %s", date_str, exc)
-            out[date_str] = [0.0] * 24
+            hourly = [round(float(v), 3) for v in list(cached["data"])[:24]]
+        else:
+            try:
+                hourly_data = _fetch_irradiance_archive(lat, lon, date_str)
+                hourly = _fill_pv_for_date(
+                    cfg,
+                    hourly_data["time"],
+                    hourly_data["direct_radiation"],
+                    hourly_data["diffuse_radiation"],
+                    date_str,
+                )
+                hourly = [round(float(v), 3) for v in hourly[:24]]
+                _archive_cache[cache_key] = {"ts": now_ts, "data": hourly}
+            except Exception as exc:
+                log.warning("Open-Meteo archive PV for %s failed: %s", date_str, exc)
+                hourly = [0.0] * 24
+        q15 = fc.hourly_to_q15_equal(hourly)
+        out[date_str] = {"hourly": hourly, "q15": q15}
 
     if not future:
         return out
@@ -199,17 +208,22 @@ def fetch_pv_hourly_for_dates_sync(cfg: dict, date_strs: list[str]) -> dict[str,
     ]
     try:
         forecast_days = max(2, max(o + 1 for o in offsets))
-        hourly = _fetch_irradiance(lat, lon, forecast_days=forecast_days)
-        times = hourly["time"]
-        direct = hourly["direct_radiation"]
-        diffuse = hourly["diffuse_radiation"]
+        q15_data = _fetch_irradiance_q15(lat, lon, forecast_days=forecast_days)
+        times = q15_data["time"]
+        direct = q15_data["direct_radiation"]
+        diffuse = q15_data["diffuse_radiation"]
         for date_str in future:
-            pv = _fill_pv_for_date(cfg, times, direct, diffuse, date_str)
-            out[date_str] = [round(float(v), 3) for v in pv[:24]]
+            q15 = _fill_pv_q15_for_date(cfg, times, direct, diffuse, date_str)
+            q15 = [round(float(v), 6) for v in q15[:fc.Q15_PER_DAY]]
+            hourly = [round(float(v), 3) for v in fc.q15_to_hourly(q15)[:24]]
+            out[date_str] = {"hourly": hourly, "q15": q15}
     except Exception as exc:
-        log.warning("Open-Meteo batch PV fetch failed: %s", exc)
+        log.warning("Open-Meteo 15-min PV batch fetch failed: %s", exc)
         for date_str in future:
-            out.setdefault(date_str, [0.0] * 24)
+            out.setdefault(date_str, {
+                "hourly": [0.0] * 24,
+                "q15": [0.0] * fc.Q15_PER_DAY,
+            })
 
     return out
 
@@ -228,6 +242,19 @@ def _fetch_irradiance_archive(lat: float, lon: float, date_str: str) -> dict[str
     return resp.json()["hourly"]
 
 
+def _fetch_irradiance_q15(lat: float, lon: float, *, forecast_days: int = 2) -> dict[str, list]:
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "minutely_15": "direct_radiation,diffuse_radiation",
+        "forecast_days": max(2, min(int(forecast_days), 16)),
+        "timezone": TIMEZONE,
+    }
+    resp = requests.get(OPEN_METEO_URL, params=params, timeout=OM_TIMEOUT_S)
+    resp.raise_for_status()
+    return resp.json()["minutely_15"]
+
+
 def _fetch_irradiance(lat: float, lon: float, *, forecast_days: int = 2) -> dict[str, list]:
     params = {
         "latitude": lat,
@@ -239,6 +266,43 @@ def _fetch_irradiance(lat: float, lon: float, *, forecast_days: int = 2) -> dict
     resp = requests.get(OPEN_METEO_URL, params=params, timeout=OM_TIMEOUT_S)
     resp.raise_for_status()
     return resp.json()["hourly"]
+
+
+def _fill_pv_q15_for_date(
+    cfg: dict,
+    times: list[str],
+    direct: list[float],
+    diffuse: list[float],
+    date_str: str,
+) -> list[float]:
+    q15 = [0.0] * fc.Q15_PER_DAY
+    lat = cfg["location"]["latitude"]
+    azimuth = cfg["solar"]["azimuth"]
+    loss = cfg["solar"]["system_loss_factor"]
+    blocks = cfg["solar"]["blocks"]
+
+    for t, d, df in zip(times, direct, diffuse):
+        if t[:10] != date_str:
+            continue
+        dt = datetime.strptime(t[:16], "%Y-%m-%dT%H:%M")
+        slot = dt.hour * 4 + dt.minute // 15
+        if not (0 <= slot < fc.Q15_PER_DAY):
+            continue
+        sun_alt, sun_az = _solar_position(lat, dt)
+        kwh = 0.0
+        for block in blocks:
+            kwh += _block_interval_kwh(
+                d, df,
+                block["power_kwp"],
+                block["tilt"],
+                azimuth,
+                sun_alt,
+                sun_az,
+                loss,
+                interval_h=0.25,
+            )
+        q15[slot] += kwh
+    return q15
 
 
 def _fill_pv_for_date(
@@ -262,7 +326,7 @@ def _fill_pv_for_date(
         sun_alt, sun_az = _solar_position(lat, dt)
         kwh = 0.0
         for block in blocks:
-            kwh += _block_hour_kwh(
+            kwh += _block_interval_kwh(
                 d, df,
                 block["power_kwp"],
                 block["tilt"],
@@ -270,6 +334,7 @@ def _fill_pv_for_date(
                 sun_alt,
                 sun_az,
                 loss,
+                interval_h=1.0,
             )
         pv[hour] += kwh
     return pv
@@ -296,7 +361,7 @@ def _solar_position(lat_deg: float, dt: datetime) -> tuple[float, float]:
     return altitude, az
 
 
-def _block_hour_kwh(
+def _block_interval_kwh(
     direct: float,
     diffuse: float,
     power_kwp: float,
@@ -305,6 +370,8 @@ def _block_hour_kwh(
     sun_alt: float,
     sun_az: float,
     loss: float,
+    *,
+    interval_h: float = 1.0,
 ) -> float:
     if sun_alt <= 0.05:
         return 0.0
@@ -315,8 +382,24 @@ def _block_hour_kwh(
         + math.cos(sun_alt) * math.sin(t_r) * math.cos(sun_az - az_r)
     )
     proj = max(0.0, cos_i / math.sin(sun_alt))
-    irr_wh_m2 = (direct or 0) * proj + (diffuse or 0) * (1 + math.cos(t_r)) / 2
+    irr_wh_m2 = ((direct or 0) * proj + (diffuse or 0) * (1 + math.cos(t_r)) / 2) * interval_h
     return irr_wh_m2 / 1000.0 * power_kwp * loss
+
+
+def _block_hour_kwh(
+    direct: float,
+    diffuse: float,
+    power_kwp: float,
+    tilt_deg: float,
+    azimuth_compass: float,
+    sun_alt: float,
+    sun_az: float,
+    loss: float,
+) -> float:
+    return _block_interval_kwh(
+        direct, diffuse, power_kwp, tilt_deg, azimuth_compass,
+        sun_alt, sun_az, loss, interval_h=1.0,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +420,8 @@ def _assemble_forecast(
     tomorrow_load = fc.effective_hourly(cfg, tomorrow_str, "load")
     today_pv_q15 = fc.effective_q15(cfg, today_str, "pv")
     tomorrow_pv_q15 = fc.effective_q15(cfg, tomorrow_str, "pv")
+    today_pv_forecast_q15 = list(today_pv_q15)
+    tomorrow_pv_forecast_q15 = list(tomorrow_pv_q15)
     today_load_q15 = fc.effective_q15(cfg, today_str, "load")
     tomorrow_load_q15 = fc.effective_q15(cfg, tomorrow_str, "load")
 
@@ -361,6 +446,7 @@ def _assemble_forecast(
     base_today["pv_q15"] = [round(v, 6) for v in today_pv_q15_merged]
     base_today["load_q15"] = [round(v, 6) for v in today_load_q15]
     base_today["pv_forecast"] = [round(v, 3) for v in today_pv_cached]
+    base_today["pv_forecast_q15"] = [round(v, 6) for v in today_pv_forecast_q15]
     base_today["pv_actual"] = today_pv_actual
     base_today["load_forecast"] = [round(v, 3) for v in today_load]
 
@@ -368,6 +454,7 @@ def _assemble_forecast(
     base_tomorrow["pv_q15"] = [round(v, 6) for v in tomorrow_pv_q15]
     base_tomorrow["load_q15"] = [round(v, 6) for v in tomorrow_load_q15]
     base_tomorrow["pv_forecast"] = list(tomorrow_pv)
+    base_tomorrow["pv_forecast_q15"] = [round(v, 6) for v in tomorrow_pv_forecast_q15]
     base_tomorrow["pv_actual"] = [None] * 24
     base_tomorrow["load_forecast"] = [round(v, 3) for v in tomorrow_load]
 
@@ -384,6 +471,7 @@ def _assemble_forecast(
             "cache_computed_at": cache.get("computed_at"),
             "last_om_refresh": cache.get("last_om_refresh"),
             "interval_minutes": 15,
+            "pv_om_resolution": "15min",
         },
         "baseline": baseline,
         "overrides_saved": {
