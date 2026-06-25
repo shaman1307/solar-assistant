@@ -519,6 +519,12 @@ def build_smart_plan_hour_row(
 
     rce_vals = [s["rce"] for s in slots if s.get("rce") is not None]
     rce_price = round(sum(float(v) for v in rce_vals) / len(rce_vals), 4) if rce_vals else None
+    rce_q15: list[float | None] = []
+    for s in slots:
+        rv = s.get("rce")
+        rce_q15.append(round(float(rv), 4) if rv is not None else None)
+    while len(rce_q15) < 4:
+        rce_q15.append(None)
 
     batt_exp = sum(float(s.get("battery_export_kwh") or 0.0) for s in slots)
     cash = hour_grid_cash_pln(
@@ -550,6 +556,7 @@ def build_smart_plan_hour_row(
             hour, slots, cfg, epsilon=epsilon, action=action, grid_export=grid_export,
         ),
         "rce_price": rce_price,
+        "rce_q15": rce_q15,
         "export_credit": cash["export_credit"],
         "g12_zone": g12_zone,
         "buy_price": round(buy_price, 4),

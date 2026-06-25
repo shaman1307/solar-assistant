@@ -62,8 +62,14 @@ def build_tail_hour_arrays(
     cfg: dict,
     rce_map: dict[tuple[str, int], float | None],
     export_credit_fn,
+    *,
+    tail_start_hour: int | None = None,
 ) -> tuple[list[float], list[float], list[float], list[float]]:
-    """PV/load/buy/export-credit for calendar hours from end_dt.hour through 23:00."""
+    """PV/load/buy/export-credit for calendar hours after the optimized horizon.
+
+  *tail_start_hour* is the first calendar hour not covered by DP steps (e.g. 24 when
+    the plan ends at 23:45). Defaults to *end_dt.hour* for legacy hourly horizons.
+    """
     day_key = _forecast_day_key(end_dt, today_date)
     pv_day = forecast[day_key]["pv"]
     load_day = forecast[day_key]["load"]
@@ -72,7 +78,8 @@ def build_tail_hour_arrays(
     tail_buy: list[float] = []
     tail_export_credit: list[float] = []
     date_str = end_dt.strftime("%Y-%m-%d")
-    for h in range(end_dt.hour, 24):
+    start_h = end_dt.hour if tail_start_hour is None else int(tail_start_hour)
+    for h in range(start_h, 24):
         tail_pv.append(float(pv_day[h]))
         tail_load.append(float(load_day[h]))
         dt = end_dt.replace(hour=h, minute=0, second=0, microsecond=0)

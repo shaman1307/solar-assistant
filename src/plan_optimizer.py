@@ -392,6 +392,21 @@ def reserve_soc_per_step(
     ]
 
 
+def _tail_start_hour(
+    *,
+    steps: int,
+    rce_step_offset: int,
+    step_scale: float,
+    end_dt: datetime,
+) -> int:
+    """First calendar hour after the last optimized step (no double-count with DP)."""
+    if steps <= 0:
+        return end_dt.hour
+    slots_per_hour = max(1, int(round(1.0 / step_scale)) if step_scale > 0 else 1)
+    last_global = rce_step_offset + steps - 1
+    return (last_global // slots_per_hour) + 1
+
+
 def optimize_horizon(
     *,
     steps: int,
@@ -427,10 +442,12 @@ def optimize_horizon(
     inf = 1e15
 
     dp: list[dict[int, float]] = [{} for _ in range(steps + 1)]
+    soc_at: list[dict[int, float]] = [{} for _ in range(steps + 1)]
     back: dict[tuple[int, int], tuple[int, HourControl]] = {}
 
     s0 = _soc_bin(initial_soc_kwh, min_kwh, bin_kwh)
     dp[0][s0] = 0.0
+    soc_at[0][s0] = min(battery_cap, max(min_kwh, initial_soc_kwh))
     forecast_data = forecast or {
         "today": {"pv": [], "load": [], "pv_total": 0.0, "load_total": 0.0},
         "tomorrow": {"pv": [], "load": [], "pv_total": 0.0, "load_total": 0.0},
@@ -439,8 +456,13 @@ def optimize_horizon(
     def _pv_export_credit(rce: float | None, *, from_battery: bool) -> float:
         return export_credit_price(rce, tariff, from_battery=from_battery)
 
+    tail_start = _tail_start_hour(
+        steps=steps, rce_step_offset=rce_step_offset,
+        step_scale=step_scale, end_dt=end_dt,
+    )
     tail_pv, tail_load, tail_buy, tail_export_credit = build_tail_hour_arrays(
         end_dt, today_date, forecast_data, cfg, rce_map, _pv_export_credit,
+        tail_start_hour=tail_start,
     )
 
     # Reserve for battery export must cover the night until PV can carry the house load again.
@@ -474,7 +496,10 @@ def optimize_horizon(
         )
 
         for soc_bin, cost_in in list(dp[step].items()):
-            soc = min(battery_cap, _soc_from_bin(soc_bin, min_kwh, bin_kwh))
+            soc = soc_at[step].get(
+                soc_bin,
+                min(battery_cap, _soc_from_bin(soc_bin, min_kwh, bin_kwh)),
+            )
             reserve = reserves[step]
             for ctrl in _control_options(
                 soc, pv, load,
@@ -501,12 +526,16 @@ def optimize_horizon(
                 if total < dp[step + 1].get(nb, inf):
                     dp[step + 1][nb] = total
                     back[(step + 1, nb)] = (soc_bin, ctrl)
+                    soc_at[step + 1][nb] = phys.soc_end
 
     if not dp[steps]:
         return [HourControl(0.0, 0.0) for _ in range(steps)]
 
     def _total_cost(path_cost: float, soc_bin: int) -> float:
-        soc_end = min(battery_cap, _soc_from_bin(soc_bin, min_kwh, bin_kwh))
+        soc_end = soc_at[steps].get(
+            soc_bin,
+            min(battery_cap, _soc_from_bin(soc_bin, min_kwh, bin_kwh)),
+        )
         tail = tail_balance_cost_pln(
             soc_end, tail_pv, tail_load, tail_buy, tail_export_credit,
             battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=ac_cap_kw,

@@ -59,7 +59,7 @@
     .sim-table-ea .sim-col-kwh { width: 5.5%; }
     .sim-table-ea .sim-col-soc { width: 4.5%; }
     .sim-table-ea .sim-col-price { width: 6.5%; }
-    .sim-table-ea .sim-col-rce { width: 5.5%; }
+    .sim-table-ea .sim-col-rce { width: 7.5%; }
     .sim-table-ea .sim-col-cost { width: 6%; }
     .sim-table-ea .sim-col-timer { width: 12%; }
     .sim-table-ea .sim-col-action { width: 12%; }
@@ -74,6 +74,9 @@
     .sim-table td {
       padding: var(--sim-table-pad-y, 0.25rem) var(--sim-table-pad-x, 0.375rem);
     }
+    .sim-table-ea .sim-col-rce-cell {
+      font-size: inherit;
+    }
     @media (max-width: 767px) {
       .sim-history-block--ea .sim-table-ea thead th,
       .sim-history-block--month .sim-table-month thead th {
@@ -81,6 +84,9 @@
         hyphens: auto;
       }
       .sim-history-block--ea .sim-table-ea {
+        --sim-table-font-size: 8px;
+        --sim-table-pad-x: 1px;
+        --sim-table-pad-y: 1px;
         line-height: 1.05;
       }
       .sim-history-block--ea .sim-table-ea thead th {
@@ -6152,6 +6158,7 @@ function renderSimulationView(data) {
       bodyTotal.innerHTML = `<tr><td colspan="${SIM_TABLE_COLS}" class="px-3 py-6 text-center text-gray-500">Loading plan…</td></tr>`;
     }
     loadBuyTariffChart();
+    simHistoryApplyCachedFont(document.querySelector('.sim-table-ea'));
     return;
   }
   renderSimulation(data);
@@ -6165,6 +6172,7 @@ async function loadSimulation(forceRefresh = false, silent = false) {
   const bodyTotal = document.getElementById('sim-body-total');
   if (!silent && bodyTotal) {
     bodyTotal.innerHTML = `<tr><td colspan="${SIM_TABLE_COLS}" class="px-3 py-6 text-center text-gray-600">Loading…</td></tr>`;
+    simHistoryApplyCachedFont(document.querySelector('.sim-table-ea'));
   }
   try {
     const q = forceRefresh ? '?refresh=1' : '';
@@ -6218,7 +6226,7 @@ function updateSimTableHeaders(_data) {
 function simTodayTotalLabel(todayDate) {
   if (!todayDate || !/^\d{4}-\d{2}-\d{2}$/.test(todayDate)) return 'TOTAL';
   const [y, m, d] = todayDate.split('-');
-  return `${d}-${m}-${y} (TOTAL)`;
+  return `${d}-${m}-${y}`;
 }
 
 function renderSimulation(data) {
@@ -6346,8 +6354,6 @@ function toggleHistoryMonthDays() {
   const label = btn.dataset.label || btn.textContent.replace(/ [▼▲]$/, '');
   btn.dataset.label = label;
   btn.textContent = hidden ? label + ' ▼' : 'Hide daily breakdown ▲';
-  fitSimHistoryTables();
-  if (!hidden) requestAnimationFrame(fitSimHistoryTables);
 }
 
 const HISTORY_MONTH_CACHE_KEY = 'sa_history_month_v2';
@@ -6455,11 +6461,8 @@ function toggleSimPlan() {
   btn.dataset.label = label;
   btn.textContent = hidden ? label + ' ▼' : 'Hide ' + label + ' ▲';
   if (!hidden) {
-    fitSimHistoryTables();
-    requestAnimationFrame(() => {
-      fitSimHistoryTables();
-      scrollSimPlanToCurrentHour();
-    });
+    syncSimEaStickyOffsets();
+    requestAnimationFrame(scrollSimPlanToCurrentHour);
   }
 }
 
@@ -6474,11 +6477,50 @@ function syncSimEaStickyOffsets() {
 const SIM_TABLE_FONT_MAX_PX = 12;
 const SIM_TABLE_FONT_MIN_PX = 5;
 const SIM_TABLE_FONT_STEP_PX = 0.5;
+const SIM_TABLE_FONT_MOBILE_BOOST_PX = 1;
+const SIM_EA_FONT_CACHE_KEY = 'sa_sim_ea_font_px_v1';
+
+function simHistoryApplyTableFont(table, size) {
+  table.style.setProperty('--sim-table-font-size', `${size}px`);
+  table.style.setProperty('--sim-table-pad-x', `${Math.max(1, Math.round(size * 0.15))}px`);
+  table.style.setProperty('--sim-table-pad-y', `${Math.max(1, Math.round(size * 0.15))}px`);
+}
+
+function simHistoryReadFontCache(table) {
+  const fromTable = table?.dataset?.simFontPx;
+  if (fromTable) return parseFloat(fromTable);
+  try {
+    const raw = sessionStorage.getItem(SIM_EA_FONT_CACHE_KEY);
+    return raw ? parseFloat(raw) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function simHistoryPersistFontCache(table, size) {
+  table.dataset.simFontPx = String(size);
+  try {
+    sessionStorage.setItem(SIM_EA_FONT_CACHE_KEY, String(size));
+  } catch (_) {}
+}
+
+function simHistoryApplyCachedFont(table) {
+  if (!table) return false;
+  const cached = simHistoryReadFontCache(table);
+  if (cached == null || !Number.isFinite(cached)) return false;
+  simHistoryApplyTableFont(table, cached);
+  if (table.classList.contains('sim-table-ea')) syncSimEaStickyOffsets();
+  return true;
+}
+
+function simHistoryEaHasPlanRows(table) {
+  return !!table?.querySelector('#sim-body-plan tr[data-sim-hour], #sim-body-plan tr[data-sim-date]');
+}
 
 function simHistoryOverflowCells(table) {
   const cells = [];
   table.querySelectorAll('thead th').forEach(c => cells.push(c));
-  table.querySelectorAll('tbody:not(.hidden) tr').forEach(row => {
+  table.querySelectorAll('tbody tr').forEach(row => {
     if (row.querySelector('td[colspan]')) return;
     for (const cell of row.cells) {
       if (!cell || cell.colSpan > 1) continue;
@@ -6526,16 +6568,29 @@ function fitSimHistoryTableFont(table) {
     table.style.removeProperty('--sim-table-font-size');
     table.style.removeProperty('--sim-table-pad-x');
     table.style.removeProperty('--sim-table-pad-y');
+    delete table.dataset.simFontPx;
     return;
   }
-  let size = SIM_TABLE_FONT_MAX_PX;
-  while (size >= SIM_TABLE_FONT_MIN_PX) {
-    table.style.setProperty('--sim-table-font-size', `${size}px`);
-    table.style.setProperty('--sim-table-pad-x', `${Math.max(1, Math.round(size * 0.15))}px`);
-    table.style.setProperty('--sim-table-pad-y', `${Math.max(1, Math.round(size * 0.15))}px`);
-    if (!simHistoryFitOverflows(table)) break;
-    size -= SIM_TABLE_FONT_STEP_PX;
+  const isEa = table.classList.contains('sim-table-ea');
+  if (isEa && !simHistoryEaHasPlanRows(table)) {
+    simHistoryApplyCachedFont(table);
+    return;
   }
+  const hiddenTbodies = [...table.querySelectorAll('tbody.hidden')];
+  hiddenTbodies.forEach(tb => tb.classList.remove('hidden'));
+  let size = SIM_TABLE_FONT_MAX_PX;
+  try {
+    while (size >= SIM_TABLE_FONT_MIN_PX) {
+      simHistoryApplyTableFont(table, size);
+      if (!simHistoryFitOverflows(table)) break;
+      size -= SIM_TABLE_FONT_STEP_PX;
+    }
+  } finally {
+    hiddenTbodies.forEach(tb => tb.classList.add('hidden'));
+  }
+  const finalSize = Math.min(SIM_TABLE_FONT_MAX_PX, size + SIM_TABLE_FONT_MOBILE_BOOST_PX);
+  simHistoryApplyTableFont(table, finalSize);
+  if (isEa) simHistoryPersistFontCache(table, finalSize);
 }
 
 function fitSimHistoryTables() {
@@ -6547,6 +6602,10 @@ function fitSimHistoryTables() {
 function bindSimHistoryTableFontFit() {
   if (window._simHistoryFontFitBound) return;
   window._simHistoryFontFitBound = true;
+  if (window.matchMedia('(max-width: 767px)').matches) {
+    simHistoryApplyCachedFont(document.querySelector('.sim-table-ea'));
+    syncSimEaStickyOffsets();
+  }
   const run = () => requestAnimationFrame(fitSimHistoryTables);
   window.addEventListener('resize', run);
   window.addEventListener('orientationchange', () => setTimeout(run, 150));
@@ -6583,10 +6642,6 @@ function toggleSimTomorrowRemainder() {
   if (!body || !btn) return;
   const hidden = body.classList.toggle('hidden');
   btn.textContent = hidden ? 'Tomorrow remainder (not simulated) ▼' : 'Hide tomorrow remainder ▲';
-  if (!hidden) {
-    fitSimHistoryTables();
-    requestAnimationFrame(fitSimHistoryTables);
-  }
 }
 
 function simEnergyCashFlow(r) {
@@ -6720,8 +6775,28 @@ function formatActionSpans(action) {
 }
 
 function simRowRceAboveOffpeak(r) {
+  const off = g12OffpeakPricePln();
+  const qs = r.rce_q15;
+  if (Array.isArray(qs) && qs.length) {
+    return qs.some((p) => p != null && Number(p) > off);
+  }
   if (r.rce_price == null) return false;
-  return Number(r.rce_price) > g12OffpeakPricePln();
+  return Number(r.rce_price) > off;
+}
+
+function simRceCell(r, isTotal) {
+  if (isTotal) {
+    return '<td class="text-right text-gray-600 tabular-nums"></td>';
+  }
+  const qs = r.rce_q15;
+  if (Array.isArray(qs) && qs.length) {
+    const parts = qs.map((p) => (p != null ? Number(p).toFixed(3) : '—'));
+    const line1 = parts.slice(0, 2).join(' ');
+    const line2 = parts.slice(2, 4).join(' ');
+    return `<td class="text-right text-gray-600 tabular-nums sim-col-rce-cell leading-tight whitespace-nowrap">${line1}<br>${line2}</td>`;
+  }
+  const rce = r.rce_price != null ? Number(r.rce_price).toFixed(3) : '—';
+  return `<td class="text-right text-gray-600 tabular-nums sim-col-rce-cell">${rce}</td>`;
 }
 
 function makeSimRow(r, isTotal, isTomorrowRemainder, isHistory) {
@@ -6762,7 +6837,7 @@ function makeSimRow(r, isTotal, isTomorrowRemainder, isHistory) {
     <td class="text-right text-gray-600 tabular-nums">${fmt(r.grid_export ?? r.feed_in, 3)}</td>
     <td class="text-right tabular-nums sim-soc-cell ${socCls}">${fmt(r.soc, 1)}</td>
     <td class="text-right text-gray-600 tabular-nums">${r.buy_price != null ? r.buy_price.toFixed(4) : '—'}</td>
-    <td class="text-right text-gray-600 tabular-nums">${r.rce_price != null ? r.rce_price.toFixed(3) : '—'}</td>
+    ${simRceCell(r, isTotal)}
     <td class="text-right tabular-nums ${energyCls}" title="${energyTitle}">${simEnergyFmt(energyCash)}</td>
     <td class="text-right tabular-nums ${serviceCls}" title="${serviceTitle}">${simServiceFmt(serviceVal)}</td>
     ${timerHtml}

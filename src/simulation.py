@@ -452,6 +452,9 @@ def _tomorrow_remainder_rows(
         chunk = quarters[h * Q15_PER_HOUR:(h + 1) * Q15_PER_HOUR]
         vals = [float(v) for v in chunk if v is not None]
         rce_price = round(sum(vals) / len(vals), 4) if vals else None
+        rce_q15 = list(chunk) if chunk else [None] * Q15_PER_HOUR
+        while len(rce_q15) < Q15_PER_HOUR:
+            rce_q15.append(None)
 
         rows.append(
             {
@@ -474,6 +477,7 @@ def _tomorrow_remainder_rows(
                 "action": "",
                 "timer_schedule": "",
                 "rce_price": rce_price,
+                "rce_q15": rce_q15,
                 "export_credit": None,
                 "g12_zone": g12_zone,
                 "buy_price": round(buy_price, 4),

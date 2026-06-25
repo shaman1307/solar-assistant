@@ -56,6 +56,7 @@ def _row_from_hourly_actual(
     params: dict[str, float | int],
     rce_price: float | None,
     plan_date: str,
+    rce_q15: list[float | None] | None = None,
 ) -> dict[str, Any] | None:
     """One completed hour from Influx hourly accruals."""
     h = hour_dt.hour
@@ -126,6 +127,7 @@ def _row_from_hourly_actual(
         "action": action,
         "timer_schedule": "",
         "rce_price": round(rce_price, 4) if rce_price is not None else None,
+        "rce_q15": list(rce_q15) if rce_q15 else None,
         "export_credit": cash["export_credit"],
         "g12_zone": g12_zone,
         "buy_price": round(buy_price, 4),
@@ -281,8 +283,9 @@ def build_completed_history_rows(
     for h in range(0, until_hour):
         dt = base.replace(hour=h)
         c0 = h * 4
+        hour_rce_q15 = list(quarters[c0:c0 + 4])
         hour_rce_vals = [
-            float(v) for v in quarters[c0:c0 + 4] if v is not None
+            float(v) for v in hour_rce_q15 if v is not None
         ]
         rce_price = (
             round(sum(hour_rce_vals) / len(hour_rce_vals), 4)
@@ -291,6 +294,7 @@ def build_completed_history_rows(
         row = _row_from_hourly_actual(
             dt, today_hourly,
             cfg=cfg, params=params, rce_price=rce_price, plan_date=plan_date,
+            rce_q15=hour_rce_q15,
         )
         if row:
             rows.append(row)
