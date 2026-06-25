@@ -305,7 +305,7 @@ def build_nightly_cache(cfg: dict, *, now: datetime | None = None) -> dict[str, 
     for key in ("today_pv_kwh", "today_load_kwh", "tomorrow_pv_kwh", "tomorrow_load_kwh"):
         overrides[key] = None
     save_config(cfg)
-    ev.nightly_reset_tomorrow(cfg, now=now)
+    ev.nightly_rollover(cfg, now=now)
     log.info("Nightly forecast cache saved for %s, %s, %s", today_str, d1, d2)
     return cache
 

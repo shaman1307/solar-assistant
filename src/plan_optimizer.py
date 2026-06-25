@@ -466,9 +466,10 @@ def optimize_horizon(
         pv = pv_series[step]
         load = load_series[step]
         buy_p = buy_prices[step]
-        rce = rce_series[step]
+        rce_idx = rce_step_offset + step
+        rce = rce_series[rce_idx] if rce_idx < len(rce_series) else None
         allow_battery_export = battery_export_step_allowed(
-            rce_step_offset + step, rce_series, offpeak_buy,
+            rce_idx, rce_series, offpeak_buy,
             step_scale=step_scale, epsilon=eps_step,
         )
 

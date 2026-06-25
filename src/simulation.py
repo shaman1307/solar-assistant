@@ -14,6 +14,7 @@ from .g12_pricing import get_buy_price
 from .plan_cost import compute_plan_totals
 from .debug_smart_plan import (
     build_smart_plan_hour_row,
+    build_history_hour_timer_schedule,
     collect_q15_schedule_rows,
     merge_today_hourly_profile,
     run_day_smart_q15_plan,
@@ -215,49 +216,35 @@ def run_simulation(
     export_hours: set[int] = set()
     all_rows: list[dict] = []
     remaining = hour_steps
-    h0_carryover: dict | None = None
-
-    if plan_from_hour == 0:
-        prev_day_hourly = live_metrics.get("prev_day_hourly")
-        if prev_day_hourly:
-            dt0 = datetime.strptime(today_str, "%Y-%m-%d").replace(hour=0)
-            disp_pv, disp_load = _hourly_forecast_kwh(
-                dt0, today_date, pv_merged, pv_tomorrow, load_merged, load_tomorrow,
-            )
-            q0 = quarters_by_date.get(today_str) or []
-            rce_vals = [float(v) for v in q0[0:4] if v is not None]
-            rce_h0 = round(sum(rce_vals) / len(rce_vals), 4) if rce_vals else None
-            h0_carryover = build_h0_carryover_row(
-                today_str,
-                prev_day_hourly,
-                forecast_pv=disp_pv,
-                forecast_load=disp_load,
-                cfg=cfg,
-                params=params,
-                rce_price=rce_h0,
-                timer_schedule="",
-            )
-            if h0_carryover and smart_today:
-                slots0 = smart_today["q15_by_hour"].get(0) or []
-                h0_carryover["timer_schedule"] = build_hour_timer_schedule(
-                    0,
-                    slots0,
-                    cfg,
-                    epsilon=epsilon,
-                    action=h0_carryover.get("action"),
-                    grid_export=float(h0_carryover.get("grid_export") or 0),
-                )
 
     if smart_today:
         for h in range(plan_from_hour, 24):
             if remaining <= 0:
                 break
-            if h == 0 and h0_carryover is not None:
-                all_rows.append(h0_carryover)
-                remaining -= 1
-                continue
             slots = smart_today["q15_by_hour"].get(h) or []
             if not slots:
+                if h == 0 and plan_from_hour == 0:
+                    prev_day_hourly = live_metrics.get("prev_day_hourly")
+                    if prev_day_hourly:
+                        dt0 = datetime.strptime(today_str, "%Y-%m-%d").replace(hour=0)
+                        disp_pv, disp_load = _hourly_forecast_kwh(
+                            dt0, today_date, pv_merged, pv_tomorrow, load_merged, load_tomorrow,
+                        )
+                        q0 = quarters_by_date.get(today_str) or []
+                        rce_vals = [float(v) for v in q0[0:4] if v is not None]
+                        rce_h0 = round(sum(rce_vals) / len(rce_vals), 4) if rce_vals else None
+                        carry = build_h0_carryover_row(
+                            today_str,
+                            prev_day_hourly,
+                            forecast_pv=disp_pv,
+                            forecast_load=disp_load,
+                            cfg=cfg,
+                            params=params,
+                            rce_price=rce_h0,
+                        )
+                        if carry:
+                            all_rows.append(carry)
+                            remaining -= 1
                 continue
             dt = datetime.strptime(today_str, "%Y-%m-%d").replace(hour=h)
             disp_pv, disp_load = _hourly_forecast_kwh(
@@ -342,20 +329,25 @@ def run_simulation(
             cfg,
             params,
         )
-        if smart_today and history_rows:
+        if history_rows:
             for row in history_rows:
                 h = row.get("hour")
                 if h is None:
                     continue
                 hi = int(h)
-                slots = smart_today["q15_by_hour"].get(hi) or []
-                row["timer_schedule"] = build_hour_timer_schedule(
+                row["timer_schedule"] = build_history_hour_timer_schedule(
                     hi,
-                    slots,
-                    cfg,
-                    epsilon=epsilon,
-                    action=row.get("action"),
-                    grid_export=float(row.get("grid_export") or 0),
+                    row,
+                    date_str=today_str,
+                    pv_hourly=pv_forecast_today,
+                    load_hourly=load_forecast_today,
+                    tomorrow_pv=pv_tomorrow,
+                    tomorrow_load=load_tomorrow,
+                    today_hourly=today_hourly,
+                    cfg=cfg,
+                    rce_quarters=rce_today if len(rce_today) >= Q15_PER_HOUR * 24 else None,
+                    battery_cap=battery_cap,
+                    min_soc_pct=min_soc_pct,
                 )
 
     rows = all_rows

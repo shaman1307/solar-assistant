@@ -126,26 +126,120 @@ def session_has_charging(session: dict[str, Any] | None) -> bool:
     return False
 
 
-def get_session(date_str: str) -> dict[str, Any] | None:
-    return load_store().get("sessions", {}).get(date_str)
+def _calendar_pair(now: datetime | None = None) -> tuple[str, str]:
+    now = now or now_warsaw()
+    today_str = now.strftime("%Y-%m-%d")
+    tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    return today_str, tomorrow_str
+
+
+def _migrate_v1_to_v2(data: dict[str, Any], today_str: str) -> None:
+    """Legacy per-date sessions → relative today/tomorrow + history."""
+    old = data.pop("sessions", {}) or {}
+    tomorrow_str = (
+        datetime.strptime(today_str, "%Y-%m-%d").date() + timedelta(days=1)
+    ).strftime("%Y-%m-%d")
+    data.clear()
+    data.update({
+        "version": 2,
+        "anchor_date": today_str,
+        "today": old.get(today_str),
+        "tomorrow": old.get(tomorrow_str),
+        "history": {k: v for k, v in old.items() if k < today_str},
+    })
+
+
+def _do_one_rollover(data: dict[str, Any], cfg: dict, anchor_date_str: str) -> str:
+    """Archive relative today; relative today ← tomorrow; tomorrow cleared."""
+    anchor = datetime.strptime(anchor_date_str, "%Y-%m-%d").date()
+    next_anchor = (anchor + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    today_sess = data.get("today")
+    tomorrow_sess = data.get("tomorrow")
+    history: dict[str, Any] = data.setdefault("history", {})
+
+    if today_sess and session_has_charging(today_sess):
+        history[anchor_date_str] = normalize_session(today_sess, cfg)
+
+    if tomorrow_sess and session_has_charging(tomorrow_sess):
+        data["today"] = normalize_session(tomorrow_sess, cfg)
+    else:
+        data["today"] = None
+
+    data["tomorrow"] = None
+    data["anchor_date"] = next_anchor
+    return next_anchor
+
+
+def _load_store_ready(cfg: dict, *, now: datetime | None = None) -> dict[str, Any]:
+    """Load store, migrate v1, catch up missed nightly rollovers."""
+    now = now or now_warsaw()
+    today_str, _ = _calendar_pair(now)
+    data = load_store()
+    if data.get("version") != 2:
+        _migrate_v1_to_v2(data, today_str)
+        save_store(data)
+
+    anchor = str(data.get("anchor_date") or today_str)
+    while anchor < today_str:
+        _do_one_rollover(data, cfg, anchor)
+        anchor = str(data["anchor_date"])
+        save_store(data)
+
+    if anchor != today_str:
+        data["anchor_date"] = today_str
+        save_store(data)
+
+    return data
+
+
+def _resolve_session_slot(
+    data: dict[str, Any],
+    date_str: str,
+    *,
+    today_str: str,
+    tomorrow_str: str,
+) -> dict[str, Any] | None:
+    if date_str == today_str:
+        return data.get("today")
+    if date_str == tomorrow_str:
+        return data.get("tomorrow")
+    return (data.get("history") or {}).get(date_str)
+
+
+def get_session(date_str: str, cfg: dict) -> dict[str, Any] | None:
+    data = _load_store_ready(cfg)
+    today_str, tomorrow_str = _calendar_pair()
+    return _resolve_session_slot(
+        data, date_str, today_str=today_str, tomorrow_str=tomorrow_str,
+    )
 
 
 def set_session(date_str: str, session: dict[str, Any], cfg: dict) -> dict[str, Any]:
     normalized = normalize_session(session, cfg)
-    data = load_store()
-    sessions: dict[str, Any] = data.setdefault("sessions", {})
-    if session_has_charging(normalized):
-        sessions[date_str] = normalized
+    data = _load_store_ready(cfg)
+    today_str, tomorrow_str = _calendar_pair()
+
+    if date_str == today_str:
+        slot_key = "today"
+    elif date_str == tomorrow_str:
+        slot_key = "tomorrow"
     else:
-        sessions.pop(date_str, None)
+        raise ValueError("EV charging can only be set for today or tomorrow")
+
+    if session_has_charging(normalized):
+        data[slot_key] = normalized
+    else:
+        data[slot_key] = None
+
     save_store(data)
-    prune_old_sessions()
+    prune_old_sessions(cfg)
     return normalized
 
 
 def get_session_for_ui(date_str: str, cfg: dict) -> dict[str, Any]:
-    """UI state: stored plan for date, or disabled defaults."""
-    stored = get_session(date_str)
+    """UI state: stored plan for calendar date, or disabled defaults."""
+    stored = get_session(date_str, cfg)
     if stored and session_has_charging(stored):
         return normalize_session(stored, cfg)
     return default_session()
@@ -167,7 +261,7 @@ def session_for_load_add(
 ) -> dict[str, Any] | None:
     if not is_plannable_date(date_str, today_str, tomorrow_str):
         return None
-    session = get_session(date_str)
+    session = get_session(date_str, cfg)
     if not session_has_charging(session):
         return None
     return normalize_session(session, cfg)
@@ -176,7 +270,7 @@ def session_for_load_add(
 def session_for_history_subtract(date_str: str, today_str: str, cfg: dict) -> dict[str, Any] | None:
     if not is_history_date(date_str, today_str):
         return None
-    session = get_session(date_str)
+    session = get_session(date_str, cfg)
     if not session_has_charging(session):
         return None
     return normalize_session(session, cfg)
@@ -235,28 +329,33 @@ def ev_total_kwh(session: dict[str, Any] | None) -> float:
     return round(sum(build_ev_hourly(session)), 2)
 
 
-def prune_old_sessions() -> None:
+def prune_old_sessions(cfg: dict) -> None:
     today = now_warsaw().date()
     cutoff = (today - timedelta(days=HISTORY_RETENTION_DAYS)).strftime("%Y-%m-%d")
-    data = load_store()
-    sessions = data.get("sessions") or {}
-    kept = {d: s for d, s in sessions.items() if d >= cutoff}
-    if len(kept) != len(sessions):
-        data["sessions"] = kept
+    data = _load_store_ready(cfg)
+    history: dict[str, Any] = data.get("history") or {}
+    kept = {d: s for d, s in history.items() if d >= cutoff}
+    if len(kept) != len(history):
+        data["history"] = kept
         save_store(data)
 
 
-def nightly_reset_tomorrow(cfg: dict, *, now: datetime | None = None) -> str:
-    """At 23:59: reset tomorrow's EV plan to defaults; keep today and past sessions."""
+def nightly_rollover(cfg: dict, *, now: datetime | None = None) -> str:
+    """At 23:59: relative today ← tomorrow; tomorrow cleared; anchor → next day."""
     now = now or now_warsaw()
-    tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-    data = load_store()
-    sessions = data.setdefault("sessions", {})
-    sessions[tomorrow_str] = default_session()
+    today_str, _ = _calendar_pair(now)
+    data = _load_store_ready(cfg, now=now)
+    if str(data.get("anchor_date") or today_str) != today_str:
+        data["anchor_date"] = today_str
+    next_anchor = _do_one_rollover(data, cfg, today_str)
     save_store(data)
-    prune_old_sessions()
-    log.info("EV charging plan reset to defaults for %s", tomorrow_str)
-    return tomorrow_str
+    prune_old_sessions(cfg)
+    log.info(
+        "EV charging rolled over at %s — anchor now %s",
+        today_str,
+        next_anchor,
+    )
+    return next_anchor
 
 
 def api_payload(cfg: dict) -> dict[str, Any]:

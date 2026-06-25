@@ -15,7 +15,7 @@ from . import sa_client
 from .config import load_config
 from .influxdb import now_warsaw
 from .plan_simulation import build_plan_simulation, get_cached_plan
-from .timer_plan import hour_has_timer_schedule
+from .timer_plan import ACTION_CHARGE_GRID, hour_has_timer_schedule, normalize_action
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +105,21 @@ async def _apply_work_mode_for_hour(
         timer_txt = str(row.get("timer_schedule") or "").strip()
         status["timer_schedule"] = timer_txt
 
+        if (
+            phase == "start"
+            and normalize_action(row.get("action") or "") == ACTION_CHARGE_GRID
+        ):
+            status["skipped"] = True
+            status["skip_reason"] = "charge_grid_skips_on_grid"
+            status["ok"] = True
+            _last_work_mode_sync = status
+            log.info(
+                "Work mode start skipped — Charging from Grid (hour %02d, timer=%s)",
+                hour,
+                timer_txt,
+            )
+            return status
+
         rules = await sa_client.get_rules(cfg)
         before = rules.get("work_mode")
         status["work_mode_before"] = before
@@ -151,7 +166,7 @@ async def _apply_work_mode_for_hour(
 
 
 async def run_work_mode_hour_start() -> dict[str, Any]:
-    """:00 — On-grid for hours with a planned Timer Schedule."""
+    """:00 — On-grid for timed discharge; skip for Charging from Grid."""
     return await _apply_work_mode_for_hour(
         phase="start",
         target_mode=sa_client.WORK_MODE_ON_GRID,

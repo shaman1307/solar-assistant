@@ -4,7 +4,8 @@ Hour boundary SA sync — :00 and :58 Europe/Warsaw only.
 Writes to SA from the current hour's Energy arbitrage Timer Schedule cell
 (e.g. Dis 19:30-20:00 6.51kW cap16%), not merged multi-hour proposed_schedule.
 Also switches Work mode (On-grid at :00, Limit power to home load at :58).
-Timer Schedule is written to SA at :00 only; :58 is work mode only.
+Timer Schedule is written to SA at :00 only; :58 clears timed charge/discharge
+flags (checkboxes only) and switches work mode to Limit home load.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ _last_hour_boundary_sync: dict[str, Any] = {
     "timer_schedule": None,
     "work_mode": None,
     "timer_sync": None,
+    "timed_power": None,
     "ok": None,
     "error": None,
 }
@@ -97,6 +99,20 @@ async def _sync_timer_from_hour_row(
     return status
 
 
+async def _clear_timed_power_flags(cfg: dict) -> dict[str, Any]:
+    """Disable Timed charge / Timed discharge on SA (checkboxes only, no slots)."""
+    status: dict[str, Any] = {"ok": None, "error": None}
+    ok = await sa_client.set_timed_power_flags(
+        cfg,
+        timed_charge_enabled=False,
+        timed_discharge_enabled=False,
+    )
+    status["ok"] = ok
+    if not ok:
+        status["error"] = "SA timed power flags write failed"
+    return status
+
+
 async def run_hour_boundary_sync(*, phase: str) -> dict[str, Any]:
     """phase: 'start' (:00) or 'end' (:58)."""
     global _last_hour_boundary_sync
@@ -112,6 +128,7 @@ async def run_hour_boundary_sync(*, phase: str) -> dict[str, Any]:
         "timer_schedule": None,
         "work_mode": None,
         "timer_sync": None,
+        "timed_power": None,
         "ok": None,
         "error": None,
     }
@@ -133,24 +150,28 @@ async def run_hour_boundary_sync(*, phase: str) -> dict[str, Any]:
             status["work_mode"] = await run_work_mode_hour_start()
             status["timer_sync"] = await _sync_timer_from_hour_row(cfg, rows, hour)
         else:
+            status["timed_power"] = await _clear_timed_power_flags(cfg)
             status["work_mode"] = await run_work_mode_hour_end()
             status["timer_sync"] = {
                 "skipped": True,
-                "skip_reason": "end_phase_work_mode_only",
+                "skip_reason": "end_phase_no_timer_write",
                 "ok": True,
             }
 
         wm = status["work_mode"]
         ts = status["timer_sync"]
-        if not hour_has_timer_schedule(rows, hour):
+        tp = status.get("timed_power")
+        if phase == "end":
+            status["ok"] = (tp.get("ok") is not False) and (wm.get("ok") is not False)
+        elif not hour_has_timer_schedule(rows, hour):
             status["ok"] = True
-        elif phase == "end":
-            status["ok"] = wm.get("ok") is not False
         else:
             status["ok"] = (wm.get("ok") is not False) and (ts.get("ok") is not False)
 
         if status["ok"] is False:
             parts = []
+            if phase == "end" and tp.get("ok") is False:
+                parts.append("timed power")
             if wm.get("ok") is False:
                 parts.append("work mode")
             if phase == "start" and ts.get("ok") is False:
@@ -186,5 +207,5 @@ def register_hour_boundary_jobs(scheduler: AsyncIOScheduler) -> None:
     )
     log.info(
         "Hour boundary SA sync: :00 On-grid + hour Timer Schedule (after plan refresh); "
-        ":58 Limit home only (smart mode) — Europe/Warsaw.",
+        ":58 clear timed charge/discharge + Limit home (smart mode) — Europe/Warsaw.",
     )

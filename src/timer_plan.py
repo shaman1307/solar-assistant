@@ -302,6 +302,22 @@ def _hour_q15_timer_energy(
     return total, active
 
 
+def _charge_timer_cap_pct(slots: list[dict[str, Any]], cfg: dict) -> int:
+    """SA charge stop target: reserve SOC needed until PV carries load again."""
+    battery_cap = float(cfg["battery"]["capacity_kwh"])
+    min_soc = int(plan_min_soc_pct(cfg))
+    reserve_kwh = next(
+        (float(s["reserve_kwh"]) for s in slots if s.get("reserve_kwh") is not None),
+        None,
+    )
+    if reserve_kwh is not None and battery_cap > 0:
+        pct = reserve_kwh / battery_cap * 100.0
+        return int(round(min(100.0, max(float(min_soc), pct))))
+    if slots:
+        return int(round(float(slots[-1].get("soc_pct", min_soc))))
+    return min_soc
+
+
 def _hour_timer_segment(
     hour: int,
     slots: list[dict[str, Any]],
@@ -343,7 +359,7 @@ def _hour_timer_segment(
 
     prefix = "Chg" if target_action == ACTION_CHARGE_GRID else "Dis"
     if target_action == ACTION_CHARGE_GRID:
-        cap = int(round(float(slots[-1].get("soc_pct", slots[last_q].get("soc_pct", 80)))))
+        cap = _charge_timer_cap_pct(slots, cfg)
     else:
         cap = min_soc
     return f"{prefix} {_min_to_hhmm(from_min)}-{_min_to_hhmm(to_min)} {power_kw}kW cap{cap}%"
@@ -377,7 +393,7 @@ def _fallback_charge_grid_timer(
     power_kw = round(min(energy, ac_kw), 2)
     if power_kw <= 0:
         power_kw = round(min(ac_kw, 1.0), 2)
-    cap = int(round(float(slots[-1].get("soc_pct", 80)))) if slots else 80
+    cap = _charge_timer_cap_pct(slots, cfg) if slots else 80
     return (
         f"Chg {_min_to_hhmm(hour_start)}-{_min_to_hhmm(hour_start + 60)} "
         f"{power_kw}kW cap{cap}%"

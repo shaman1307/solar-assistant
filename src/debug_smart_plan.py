@@ -290,7 +290,7 @@ def run_day_smart_q15_plan(
             "soc_pct": soc_pct,
             "soc_end": phys.soc_end,
             "reserve_kwh": reserves[step],
-            "rce": rce_q[step],
+            "rce": rce_q[global_step] if global_step < len(rce_q) else None,
         }
         q15_by_hour[h].append(slot)
         q15_plan_rows.append({
@@ -346,6 +346,57 @@ def _merge_smart_day_plans(
         "timer_schedule": derive_timer_schedule_q15(q15_plan_rows, cfg),
         "epsilon": tail.get("epsilon", head.get("epsilon")),
     }
+
+
+def build_history_hour_timer_schedule(
+    hour: int,
+    row: dict[str, Any],
+    *,
+    date_str: str,
+    pv_hourly: list[float],
+    load_hourly: list[float],
+    tomorrow_pv: list[float],
+    tomorrow_load: list[float],
+    today_hourly: dict[str, list] | None,
+    cfg: dict,
+    rce_quarters: list[float | None] | None,
+    battery_cap: float,
+    min_soc_pct: float,
+) -> str:
+    """Timer Schedule for a completed hour: Influx SOC at hour start + optimizer reserve.
+
+    PV/load use the forecast profile (as at plan time), not merged actuals for later hours.
+    """
+    from .plan_hourly_actuals import hour_start_soc_kwh
+
+    params = get_simulation_params(cfg)
+    epsilon = float(params["epsilon_kwh"])
+    start_soc = hour_start_soc_kwh(today_hourly, hour, battery_cap, min_soc_pct)
+    if start_soc is None:
+        return ""
+
+    plan = run_day_smart_q15_plan(
+        date_str=date_str,
+        pv_hourly=pv_hourly,
+        load_hourly=load_hourly,
+        tomorrow_pv=tomorrow_pv,
+        tomorrow_load=tomorrow_load,
+        cfg=cfg,
+        rce_quarters=rce_quarters,
+        initial_soc_kwh=start_soc,
+        from_hour=hour,
+    )
+    if not plan:
+        return ""
+    slots = (plan.get("q15_by_hour") or {}).get(hour) or []
+    return build_hour_timer_schedule(
+        hour,
+        slots,
+        cfg,
+        epsilon=epsilon,
+        action=row.get("action"),
+        grid_export=float(row.get("grid_export") or 0),
+    )
 
 
 def run_today_smart_q15_plan(

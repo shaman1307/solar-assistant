@@ -10,6 +10,7 @@ from .plan_cost import (
     derive_grid_flows_from_balance,
     hour_meter_cash_pln,
 )
+from .inverter_sim import _initial_soc_kwh
 from .timer_plan import classify_action
 
 
@@ -133,6 +134,35 @@ def _row_from_hourly_actual(
     }
 
 
+def hour_start_soc_kwh(
+    hourly: dict[str, list[float | None]] | None,
+    hour: int,
+    battery_cap: float,
+    min_soc_pct: float,
+) -> float | None:
+    """SOC at the start of *hour* from Influx (end of previous hour, or backtrack at h=0)."""
+    if not hourly or not (0 <= hour < 24):
+        return None
+    min_kwh = (float(min_soc_pct) / 100.0) * battery_cap
+    if hour == 0:
+        start_kwh, _ = _initial_soc_kwh(hourly, battery_cap)
+        return start_kwh
+
+    soc_series = hourly.get("soc") or [None] * 24
+    prev_pct = soc_series[hour - 1] if hour - 1 < len(soc_series) else None
+    if prev_pct is not None:
+        pct = max(min_soc_pct, min(100.0, float(prev_pct)))
+        return (pct / 100.0) * battery_cap
+
+    end_pct = soc_series[hour] if hour < len(soc_series) else None
+    if end_pct is None:
+        return None
+    end_kwh = (max(min_soc_pct, min(100.0, float(end_pct))) / 100.0) * battery_cap
+    bc = float((hourly.get("bat_charge") or [None] * 24)[hour] or 0.0)
+    bd = float((hourly.get("bat_discharge") or [None] * 24)[hour] or 0.0)
+    return max(min_kwh, min(battery_cap, end_kwh - bc + bd))
+
+
 def _hourly_slot_empty(hourly: dict[str, list[float | None]], h: int) -> bool:
     """True when all energy slots for this hour are zero or missing."""
     for key in ("pv", "load", "bat_charge", "bat_discharge", "grid_buy", "grid_sell"):
@@ -162,11 +192,7 @@ def build_h0_carryover_row(
     rce_price: float | None,
     timer_schedule: str = "",
 ) -> dict[str, Any] | None:
-    """First row at 00:00–01:00 when today's Influx is empty.
-
-    Bat/grid/SOC from yesterday 23:00–00:00 (hour 23); PV/Load from forecast.
-    Replaced by today's hour-0 actuals on the 01:00 plan refresh.
-    """
+    """Fallback first row at 00:00–01:00 when smart plan slots are unavailable."""
     prev_h = 23
     bat_in = _hourly_slot(prev_day_hourly, prev_h, "bat_charge")
     bat_out = _hourly_slot(prev_day_hourly, prev_h, "bat_discharge")

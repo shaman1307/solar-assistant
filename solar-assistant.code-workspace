@@ -7,6 +7,10 @@
   ],
   "settings": {
     "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+    "python.terminal.activateEnvironment": true,
+    "terminal.integrated.env.windows": {
+      "PATH": "${workspaceFolder}\\.venv\\Scripts;${env:LOCALAPPDATA}\\Programs\\Python\\Python312;${env:LOCALAPPDATA}\\Programs\\Python\\Python312\\Scripts;${env:PATH}"
+    },
     "files.exclude": {
       "**/__pycache__": true,
       "**/.pytest_cache": true
