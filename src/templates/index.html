@@ -6454,7 +6454,7 @@ function renderSimulation(data) {
 function historyMonthTotalLabel(month) {
   if (!month || !/^\d{4}-\d{2}$/.test(month)) return 'TOTAL';
   const [y, m] = month.split('-');
-  return `${m}-${y} (TOTAL)`;
+  return `${m}-${y}`;
 }
 
 function makeHistoryMonthRow(r, isTotal) {
