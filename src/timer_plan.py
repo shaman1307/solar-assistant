@@ -798,16 +798,43 @@ def timer_discharge_early_end_hhmm(timer_txt: str, hour: int) -> str | None:
     return f"{latest_end // 60:02d}:{latest_end % 60:02d}"
 
 
-def timer_discharge_end_due(timer_txt: str, now: datetime) -> tuple[bool, str | None]:
-    """True when a discharge end time is <= *now* and still relevant for this quarter.
+def timer_discharge_active_at(timer_txt: str, now: datetime) -> bool:
+    """True when *now* is inside a discharge segment (start <= now < end)."""
+    if not timer_txt or not str(timer_txt).strip():
+        return False
+    now_min = now.hour * 60 + now.minute
+    for seg in parse_timer_schedule_segments(timer_txt):
+        if seg.get("kind") != "dis":
+            continue
+        start_min = _hhmm_to_minute_of_day(seg["from"])
+        end_min = _hhmm_to_minute_of_day(seg["to"])
+        if start_min is None or end_min is None:
+            continue
+        if start_min <= now_min < end_min:
+            return True
+    return False
 
-    Covers in-hour ends (e.g. 22:45) and hour-boundary ends (e.g. 20:00 on the :00 tick).
+
+_DISCHARGE_END_LOOKBACK_MIN = 15
+
+
+def timer_discharge_end_due(
+    timer_txt: str,
+    now: datetime,
+    *,
+    plan_hour: int | None = None,
+) -> tuple[bool, str | None]:
+    """True when a discharge end in *plan_hour*'s row is <= *now* and still fresh.
+
+  Covers in-hour ends (e.g. 22:45) and full-hour ends (e.g. 22:00 on row 21).
     """
     if not timer_txt or not str(timer_txt).strip():
         return False, None
     now_min = now.hour * 60 + now.minute
-    hour_start = now.hour * 60
-    prev_hour_start = max(0, (now.hour - 1) * 60)
+    row_hour = now.hour if plan_hour is None else plan_hour
+    row_start = row_hour * 60
+    row_end = (row_hour + 1) * 60
+    earliest_relevant = now_min - _DISCHARGE_END_LOOKBACK_MIN
     latest_due: int | None = None
     for seg in parse_timer_schedule_segments(timer_txt):
         if seg.get("kind") != "dis":
@@ -815,11 +842,12 @@ def timer_discharge_end_due(timer_txt: str, now: datetime) -> tuple[bool, str | 
         end_min = _hhmm_to_minute_of_day(seg["to"])
         if end_min is None or end_min > now_min:
             continue
-        in_current_hour = end_min >= hour_start
-        boundary_prev_hour = now.minute == 0 and end_min > prev_hour_start
-        if in_current_hour or boundary_prev_hour:
-            if latest_due is None or end_min > latest_due:
-                latest_due = end_min
+        if end_min < earliest_relevant:
+            continue
+        if not (row_start < end_min <= row_end):
+            continue
+        if latest_due is None or end_min > latest_due:
+            latest_due = end_min
     if latest_due is None:
         return False, None
     return True, f"{latest_due // 60:02d}:{latest_due % 60:02d}"

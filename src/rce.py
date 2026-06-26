@@ -74,7 +74,13 @@ def hourly_rce_for_dates(*dates: str) -> dict[str, list[float | None]]:
             dt = datetime.strptime(dtime_str[:16], "%Y-%m-%d %H:%M")
         except ValueError:
             continue
-        buckets_60[(dt.strftime("%Y-%m-%d"), dt.hour)].append(float(rce_mwh) / 1000.0)
+        pln_kwh = float(rce_mwh) / 1000.0
+        end_q = dt.minute // 15
+        if end_q == 0:
+            slot_dt = dt - timedelta(hours=1)
+            buckets_60[(slot_dt.strftime("%Y-%m-%d"), slot_dt.hour)].append(pln_kwh)
+        else:
+            buckets_60[(dt.strftime("%Y-%m-%d"), dt.hour)].append(pln_kwh)
 
     def _avg(vals: list[float]) -> float | None:
         return round(sum(vals) / len(vals), 4) if vals else None
@@ -100,7 +106,7 @@ async def get_hourly_rce_for_dates(*dates: str) -> dict[str, list[float | None]]
 
 
 def quarter_rce_for_dates(*dates: str) -> dict[str, list[float | None]]:
-    """96-slot RCE (PLN/kWh) per date — index = hour*4 + quarter."""
+    """96-slot RCE (PLN/kWh) per date — index = hour*4 + quarter (q0 = HH:00–HH:15)."""
     unique = sorted({d for d in dates if d})
     if not unique:
         return {}
@@ -115,9 +121,14 @@ def quarter_rce_for_dates(*dates: str) -> dict[str, list[float | None]]:
             dt = datetime.strptime(dtime_str[:16], "%Y-%m-%d %H:%M")
         except ValueError:
             continue
-        date_key = dt.strftime("%Y-%m-%d")
-        quarter = dt.minute // 15
-        buckets_15[(date_key, dt.hour, quarter)] = round(float(rce_mwh) / 1000.0, 4)
+        pln_kwh = round(float(rce_mwh) / 1000.0, 4)
+        # PSE dtime is period end; map to clock-hour quarter (q0 = :00–:15).
+        end_q = dt.minute // 15
+        if end_q == 0:
+            slot_dt = dt - timedelta(hours=1)
+            buckets_15[(slot_dt.strftime("%Y-%m-%d"), slot_dt.hour, 3)] = pln_kwh
+        else:
+            buckets_15[(dt.strftime("%Y-%m-%d"), dt.hour, end_q - 1)] = pln_kwh
 
     return {
         d: [
@@ -138,22 +149,15 @@ async def get_quarter_rce_for_dates(*dates: str) -> dict[str, list[float | None]
 # ---------------------------------------------------------------------------
 
 def _current_period_end(now: datetime) -> tuple[str, int, int]:
-    """PSE dtime is period end; return (date, hour, quarter) for the slot containing *now*."""
-    cq = now.minute // 15
-    end_minute = (cq + 1) * 15
-    end_dt = now.replace(second=0, microsecond=0)
-    if end_minute >= 60:
-        end_dt = end_dt.replace(minute=0) + timedelta(hours=1)
-    else:
-        end_dt = end_dt.replace(minute=end_minute)
-    return end_dt.strftime("%Y-%m-%d"), end_dt.hour, end_dt.minute // 15
+    """Clock-aligned 15-min slot containing *now* (date, hour, quarter 0..3)."""
+    return now.strftime("%Y-%m-%d"), now.hour, now.minute // 15
 
 
 def _refresh_current_price(data: dict[str, Any]) -> None:
     """Recompute live current slot price (safe to call on cached series)."""
     now = now_warsaw()
-    date_key, end_hour, end_q = _current_period_end(now)
-    time_label = f"{end_hour:02d}:{end_q * 15:02d}"
+    date_key, hour, q = _current_period_end(now)
+    time_label = f"{hour:02d}:{q * 15:02d}"
     current_price = None
     for slot in data.get("series_15min", []):
         if slot.get("date") == date_key and slot.get("time") == time_label:
@@ -185,7 +189,7 @@ def _fetch_and_build() -> dict[str, Any]:
 
     raw = _fetch_rce(today_str, tomorrow_str)
 
-    # Parse 15-min records: one price per (date, hour, quarter).
+    # Parse 15-min records into clock-hour quarters (q0 = HH:00–HH:15).
     buckets_15: dict[tuple[str, int, int], float] = {}
     buckets_30: dict[tuple[str, int, int], list[float]] = defaultdict(list)
     buckets_60: dict[tuple[str, int], list[float]] = defaultdict(list)
@@ -201,11 +205,19 @@ def _fetch_and_build() -> dict[str, Any]:
             continue
         date_key = dt.strftime("%Y-%m-%d")
         pln_kwh = float(rce_mwh) / 1000.0
-        quarter = dt.minute // 15
-        buckets_15[(date_key, dt.hour, quarter)] = pln_kwh
-        half = 0 if dt.minute < 30 else 1
-        buckets_30[(date_key, dt.hour, half)].append(pln_kwh)
-        buckets_60[(date_key, dt.hour)].append(pln_kwh)
+        end_q = dt.minute // 15
+        if end_q == 0:
+            slot_dt = dt - timedelta(hours=1)
+            clock_date = slot_dt.strftime("%Y-%m-%d")
+            clock_h = slot_dt.hour
+            clock_q = 3
+        else:
+            clock_date = date_key
+            clock_h = dt.hour
+            clock_q = end_q - 1
+        buckets_15[(clock_date, clock_h, clock_q)] = pln_kwh
+        buckets_30[(clock_date, clock_h, clock_q // 2)].append(pln_kwh)
+        buckets_60[(clock_date, clock_h)].append(pln_kwh)
 
     def _avg(vals: list) -> float | None:
         return round(sum(vals) / len(vals), 4) if vals else None
@@ -241,13 +253,9 @@ def _fetch_and_build() -> dict[str, Any]:
         for h in range(24) for q in range(4)
     )
 
-    # Series from next 15-min period until end of today (+ tomorrow when published).
+    # Series from current 15-min slot until end of today (+ tomorrow when published).
     series_from_now: list[dict] = []
-    _, cur_end_hour, cur_end_q = _current_period_end(now)
-    start_h, start_q = cur_end_hour, cur_end_q + 1
-    if start_q >= 4:
-        start_q = 0
-        start_h += 1
+    _, start_h, start_q = _current_period_end(now)
 
     for h in range(start_h, 24):
         q_start = start_q if h == start_h else 0

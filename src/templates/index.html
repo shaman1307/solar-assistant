@@ -6351,18 +6351,21 @@ function renderSimulation(data) {
   const planBody = document.getElementById('sim-body-plan');
   const totalBody = document.getElementById('sim-body-total');
   const planToggle = document.getElementById('sim-plan-toggle');
+  const planExpanded = !!(planBody && !planBody.classList.contains('hidden'));
   if (planBody) planBody.innerHTML = '';
   if (totalBody) totalBody.innerHTML = '';
 
   const detailCount = historyRows.length + rows.length;
   if (detailCount && planToggle && planBody) {
     planToggle.classList.remove('hidden');
-    planBody.classList.add('hidden');
+    planBody.classList.toggle('hidden', !planExpanded);
     appendSimPlanRows(planBody, historyRows, rows);
     const planBtn = document.getElementById('sim-plan-btn');
     if (planBtn) {
       planBtn.dataset.label = 'Rolling Plan';
-      planBtn.textContent = planBtn.dataset.label + ' ▼';
+      planBtn.textContent = planExpanded
+        ? 'Hide Rolling Plan ▲'
+        : planBtn.dataset.label + ' ▼';
     }
   } else if (planToggle) {
     planToggle.classList.add('hidden');

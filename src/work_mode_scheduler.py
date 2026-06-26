@@ -2,7 +2,8 @@
 Work mode scheduler — SRNE grid export requires On-grid during timed discharge hours.
 
 At :00 Europe/Warsaw: On-grid when Timer Schedule present (except charge-grid) or SOC is 100%.
-At :00/:15/:30/:45: Limit power to home load when discharge has ended and live PV is zero.
+At :00/:15/:30/:45: Limit power to home load when live PV is zero and the current
+hour has no Timer Schedule, or a planned discharge has ended.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from .timer_plan import (
     hour_has_timer_schedule,
     normalize_action,
     plan_row_grid_export_kwh,
+    timer_discharge_active_at,
     timer_discharge_end_due,
 )
 
@@ -81,13 +83,6 @@ def _hour_row(rows: list[dict], hour: int) -> dict[str, Any] | None:
         (r for r in rows if r.get("hour") == hour and r.get("start") != "TOTAL"),
         None,
     )
-
-
-def _hours_to_check_for_limit(now_hour: int) -> list[int]:
-    hours = [now_hour]
-    if now_hour > 0:
-        hours.insert(0, now_hour - 1)
-    return hours
 
 
 async def _set_work_mode_if_needed(
@@ -218,6 +213,21 @@ async def run_work_mode_hour_start() -> dict[str, Any]:
         return status
 
 
+def limit_home_due_for_timer(
+    timer_txt: str,
+    now,
+    *,
+    plan_hour: int,
+) -> tuple[bool, str | None]:
+    """Whether Limit home applies for the current hour's Timer Schedule cell."""
+    timer_txt = str(timer_txt or "").strip()
+    if not timer_txt:
+        return True, None
+    if timer_discharge_active_at(timer_txt, now):
+        return False, None
+    return timer_discharge_end_due(timer_txt, now, plan_hour=plan_hour)
+
+
 async def run_work_mode_limit_home() -> dict[str, Any]:
     """:00/:15/:30/:45 — Limit home load when discharge ended and live PV is zero."""
     global _last_work_mode_sync
@@ -268,26 +278,18 @@ async def run_work_mode_limit_home() -> dict[str, Any]:
             return status
 
         rows = await _plan_rows(cfg)
-        due = False
-        due_end: str | None = None
-        due_timer = ""
-        due_row: dict[str, Any] | None = None
-        for h in _hours_to_check_for_limit(hour):
-            row = _hour_row(rows, h)
-            if not row:
-                continue
-            timer_txt = str(row.get("timer_schedule") or "").strip()
-            if not timer_txt:
-                continue
-            is_due, end_hhmm = timer_discharge_end_due(timer_txt, now)
-            if is_due:
-                due = True
-                due_end = end_hhmm
-                due_timer = timer_txt
-                due_row = row
-                break
+        row = _hour_row(rows, hour)
+        if not row:
+            status["skipped"] = True
+            status["skip_reason"] = "no_hour_row"
+            status["ok"] = True
+            log.info("Work mode limit_home skipped — hour %02d no plan row", hour)
+            _last_work_mode_sync = status
+            return status
 
-        if not due or not due_row:
+        timer_txt = str(row.get("timer_schedule") or "").strip()
+        is_due, due_end = limit_home_due_for_timer(timer_txt, now, plan_hour=hour)
+        if not is_due:
             status["skipped"] = True
             status["skip_reason"] = "discharge_not_ended"
             status["ok"] = True
@@ -297,14 +299,14 @@ async def run_work_mode_limit_home() -> dict[str, Any]:
 
         status["limit_due"] = True
         status["discharge_end_hhmm"] = due_end
-        status["timer_schedule"] = due_timer
-        status["grid_export_kwh"] = round(plan_row_grid_export_kwh(due_row), 3)
+        status["timer_schedule"] = timer_txt or None
+        status["grid_export_kwh"] = round(plan_row_grid_export_kwh(row), 3)
 
         await _set_work_mode_if_needed(
             cfg,
             target_mode=sa_client.WORK_MODE_LIMIT_HOME_LOAD,
             status=status,
-            timer_txt=due_timer,
+            timer_txt=timer_txt,
         )
         _last_work_mode_sync = status
         return status

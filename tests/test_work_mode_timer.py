@@ -4,10 +4,12 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from src.timer_plan import (
+    timer_discharge_active_at,
     timer_discharge_early_end_hhmm,
     timer_discharge_end_due,
     timer_discharge_end_times_hhmm,
 )
+from src.work_mode_scheduler import limit_home_due_for_timer
 
 
 def test_full_hour_discharge_not_early():
@@ -35,7 +37,7 @@ def test_discharge_end_times():
 def test_discharge_end_due_at_45():
     txt = "Dis 22:00-22:45 6.54kW cap16%"
     now = datetime(2026, 6, 26, 22, 45, tzinfo=ZoneInfo("Europe/Warsaw"))
-    due, end = timer_discharge_end_due(txt, now)
+    due, end = timer_discharge_end_due(txt, now, plan_hour=22)
     assert due is True
     assert end == "22:45"
 
@@ -43,14 +45,14 @@ def test_discharge_end_due_at_45():
 def test_discharge_end_not_due_before_45():
     txt = "Dis 22:00-22:45 6.54kW cap16%"
     now = datetime(2026, 6, 26, 22, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
-    due, _ = timer_discharge_end_due(txt, now)
+    due, _ = timer_discharge_end_due(txt, now, plan_hour=22)
     assert due is False
 
 
 def test_discharge_end_due_on_hour_boundary():
     txt = "Dis 19:00-20:00 7.12kW cap16%"
     now = datetime(2026, 6, 26, 20, 0, tzinfo=ZoneInfo("Europe/Warsaw"))
-    due, end = timer_discharge_end_due(txt, now)
+    due, end = timer_discharge_end_due(txt, now, plan_hour=19)
     assert due is True
     assert end == "20:00"
 
@@ -58,5 +60,57 @@ def test_discharge_end_due_on_hour_boundary():
 def test_discharge_end_not_due_stale_previous_hour():
     txt = "Dis 19:00-20:00 7.12kW cap16%"
     now = datetime(2026, 6, 26, 22, 0, tzinfo=ZoneInfo("Europe/Warsaw"))
-    due, _ = timer_discharge_end_due(txt, now)
+    due, _ = timer_discharge_end_due(txt, now, plan_hour=19)
     assert due is False
+
+
+def test_discharge_active_during_full_hour_window():
+    txt = "Dis 21:00-22:00 6.96kW cap17%"
+    now = datetime(2026, 6, 26, 21, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
+    assert timer_discharge_active_at(txt, now) is True
+
+
+def test_discharge_not_active_after_end():
+    txt = "Dis 21:00-22:00 6.96kW cap17%"
+    now = datetime(2026, 6, 26, 22, 0, tzinfo=ZoneInfo("Europe/Warsaw"))
+    assert timer_discharge_active_at(txt, now) is False
+
+
+def test_discharge_active_at_window_start():
+    txt = "Dis 21:00-22:00 6.96kW cap17%"
+    now = datetime(2026, 6, 26, 21, 0, tzinfo=ZoneInfo("Europe/Warsaw"))
+    assert timer_discharge_active_at(txt, now) is True
+
+
+def test_full_hour_discharge_not_due_while_active():
+    """Dis 21:00-22:00 still running at 21:45 — end not due on row 21."""
+    txt = "Dis 21:00-22:00 6.96kW cap17%"
+    now = datetime(2026, 6, 26, 21, 45, tzinfo=ZoneInfo("Europe/Warsaw"))
+    assert timer_discharge_active_at(txt, now) is True
+    due, end = timer_discharge_end_due(txt, now, plan_hour=21)
+    assert due is False
+    assert end is None
+
+
+def test_full_hour_discharge_due_after_end():
+    txt = "Dis 21:00-22:00 6.96kW cap17%"
+    now = datetime(2026, 6, 26, 22, 15, tzinfo=ZoneInfo("Europe/Warsaw"))
+    assert timer_discharge_active_at(txt, now) is False
+    due, end = timer_discharge_end_due(txt, now, plan_hour=21)
+    assert due is True
+    assert end == "22:00"
+
+
+def test_limit_home_due_when_current_timer_empty():
+    now = datetime(2026, 6, 26, 21, 15, tzinfo=ZoneInfo("Europe/Warsaw"))
+    due, end = limit_home_due_for_timer("", now, plan_hour=21)
+    assert due is True
+    assert end is None
+
+
+def test_limit_home_not_due_when_current_discharge_active():
+    txt = "Dis 21:00-22:00 6.96kW cap17%"
+    now = datetime(2026, 6, 26, 21, 15, tzinfo=ZoneInfo("Europe/Warsaw"))
+    due, end = limit_home_due_for_timer(txt, now, plan_hour=21)
+    assert due is False
+    assert end is None
