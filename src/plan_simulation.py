@@ -191,6 +191,8 @@ async def fetch_plan_inputs(
         metrics = dict(metrics)
         metrics["today_hourly"] = today_day["hourly"]
         today_pv_actual = today_day["hourly"].get("pv")
+        if today_day.get("series_10min"):
+            metrics["series_10min"] = today_day["series_10min"]
     if now_warsaw().hour == 0:
         yesterday_str = (now_warsaw() - timedelta(days=1)).strftime("%Y-%m-%d")
         prev_day = await influxdb_mod.get_accruals_for_date(yesterday_str)

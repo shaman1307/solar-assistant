@@ -437,8 +437,8 @@
       }
       .timer-power-label {
         grid-column: 1;
-        text-align: right;
-        justify-self: stretch;
+        text-align: left;
+        justify-self: start;
         white-space: nowrap;
       }
       .timer-power-select,
@@ -471,9 +471,9 @@
         grid-column: 1;
         font-size: 0.8125rem;
         line-height: 1.2;
-        text-align: right;
+        text-align: left;
         white-space: nowrap;
-        justify-self: stretch;
+        justify-self: start;
       }
       .timer-power-select,
       #work-mode-select {
@@ -2062,6 +2062,30 @@
     <div class="timer-schedule-card bg-white rounded-xl border border-gray-200">
       <div class="timer-power-controls">
         <div class="timer-power-row">
+          <span class="timer-power-label">Battery discharge mode</span>
+          <div class="timer-power-field">
+            <select id="battery-discharge-mode-select" class="timer-power-select" aria-label="Battery discharge mode">
+              {% for opt in battery_discharge_mode_options %}
+              <option value="{{ opt }}">{{ opt }}</option>
+              {% endfor %}
+            </select>
+            <button type="button" id="battery-discharge-mode-apply" onclick="applyBatteryDischargeMode()"
+              class="timer-slot-apply-btn shrink-0">Apply</button>
+          </div>
+        </div>
+        <div class="timer-power-row">
+          <span class="timer-power-label">Solar power priority</span>
+          <div class="timer-power-field">
+            <select id="solar-power-priority-select" class="timer-power-select" aria-label="Solar power priority">
+              {% for opt in solar_power_priority_options %}
+              <option value="{{ opt }}">{{ opt }}</option>
+              {% endfor %}
+            </select>
+            <button type="button" id="solar-power-priority-apply" onclick="applySolarPowerPriority()"
+              class="timer-slot-apply-btn shrink-0">Apply</button>
+          </div>
+        </div>
+        <div class="timer-power-row">
           <span class="timer-power-label">Work mode</span>
           <div class="timer-power-field">
             <select id="work-mode-select" class="timer-power-select" aria-label="Work mode">
@@ -3127,6 +3151,10 @@ function persistRulesUiCache() {
     sessionStorage.setItem(RULES_UI_CACHE_KEY, JSON.stringify({
       work_mode: rulesData.work_mode,
       work_mode_options: rulesData.work_mode_options,
+      battery_discharge_mode: rulesData.battery_discharge_mode,
+      battery_discharge_mode_options: rulesData.battery_discharge_mode_options,
+      solar_power_priority: rulesData.solar_power_priority,
+      solar_power_priority_options: rulesData.solar_power_priority_options,
       timed_charge_enabled: rulesData.timed_charge_enabled,
       timed_discharge_enabled: rulesData.timed_discharge_enabled,
       charge_slots: rulesData.charge_slots,
@@ -3234,7 +3262,6 @@ async function loadMetrics() {
       set('m-bat-discharged', d.battery_discharged_today != null ? fmt(-Math.abs(d.battery_discharged_today), 2) : '—');
     }
     updateLiveFlow(d);
-    updateSimCurrentHourLiveSoc(d.battery_soc ?? d.soc);
     updateSaStatusBadge(d);
   } catch(e) { console.warn('metrics error', e); }
 }
@@ -5888,47 +5915,62 @@ function renderTimedPowerSelects(r) {
 }
 
 function renderRules(r) {
+  renderInverterEnumSelect(
+    'battery-discharge-mode-select',
+    r.battery_discharge_mode_options,
+    r.battery_discharge_mode,
+  );
+  renderInverterEnumSelect(
+    'solar-power-priority-select',
+    r.solar_power_priority_options,
+    r.solar_power_priority,
+  );
   renderWorkModeSelect(r);
   renderTimedPowerSelects(r);
   renderTimerSlots('charge-slots-body', r.charge_slots || [], true);
   renderTimerSlots('discharge-slots-body', r.discharge_slots || [], false);
 }
 
-function renderWorkModeSelect(r) {
-  const sel = document.getElementById('work-mode-select');
+function renderInverterEnumSelect(selectId, options, current) {
+  const sel = document.getElementById(selectId);
   if (!sel) return;
-  const options = Array.isArray(r.work_mode_options) && r.work_mode_options.length
-    ? r.work_mode_options
-    : [];
-  const current = r.work_mode || '';
+  const opts = Array.isArray(options) ? [...options] : [];
+  const cur = current || '';
+  if (cur && !opts.includes(cur)) opts.unshift(cur);
   const prev = sel.value;
-  sel.innerHTML = options.map(opt => {
+  sel.innerHTML = opts.map(opt => {
     const esc = String(opt).replace(/"/g, '&quot;');
-    const selected = opt === current ? ' selected' : '';
+    const selected = opt === cur ? ' selected' : '';
     return `<option value="${esc}"${selected}>${esc}</option>`;
   }).join('');
-  if (current && options.includes(current)) sel.value = current;
-  else if (prev && options.includes(prev)) sel.value = prev;
+  if (cur && opts.includes(cur)) sel.value = cur;
+  else if (prev && opts.includes(prev)) sel.value = prev;
   syncTimerPowerSelectWidths();
 }
 
+function renderWorkModeSelect(r) {
+  renderInverterEnumSelect('work-mode-select', r.work_mode_options, r.work_mode);
+}
+
 function syncTimerPowerSelectWidths() {
-  const wm = document.getElementById('work-mode-select');
   const root = document.querySelector('.timer-power-controls');
-  if (!wm || !root || !wm.options.length) return;
+  if (!root) return;
   if (window.matchMedia('(max-width: 767px)').matches) {
     root.style.removeProperty('--timer-power-select-w');
     return;
   }
-  const prev = wm.value;
-  wm.style.width = 'auto';
-  let maxW = wm.offsetWidth;
-  for (const opt of wm.options) {
-    wm.value = opt.value;
-    maxW = Math.max(maxW, wm.offsetWidth);
+  let maxW = 0;
+  for (const sel of root.querySelectorAll('.timer-power-select')) {
+    if (!sel.options.length) continue;
+    const prev = sel.value;
+    sel.style.width = 'auto';
+    for (const opt of sel.options) {
+      sel.value = opt.value;
+      maxW = Math.max(maxW, sel.offsetWidth);
+    }
+    sel.value = prev;
   }
-  wm.value = prev;
-  root.style.setProperty('--timer-power-select-w', `${maxW}px`);
+  if (maxW > 0) root.style.setProperty('--timer-power-select-w', `${maxW}px`);
 }
 
 function setApplyButtonBusy(btn, busy) {
@@ -5938,16 +5980,49 @@ function setApplyButtonBusy(btn, busy) {
 }
 
 async function applyWorkMode() {
-  const sel = document.getElementById('work-mode-select');
-  const btn = document.getElementById('work-mode-apply');
-  const mode = sel?.value;
-  if (!mode) return;
+  await applyInverterEnumSetting({
+    selectId: 'work-mode-select',
+    btnId: 'work-mode-apply',
+    url: 'api/rules/work-mode',
+    bodyKey: 'work_mode',
+    rulesKey: 'work_mode',
+    label: 'Work mode',
+  });
+}
+
+async function applyBatteryDischargeMode() {
+  await applyInverterEnumSetting({
+    selectId: 'battery-discharge-mode-select',
+    btnId: 'battery-discharge-mode-apply',
+    url: 'api/rules/battery-discharge-mode',
+    bodyKey: 'battery_discharge_mode',
+    rulesKey: 'battery_discharge_mode',
+    label: 'Battery discharge mode',
+  });
+}
+
+async function applySolarPowerPriority() {
+  await applyInverterEnumSetting({
+    selectId: 'solar-power-priority-select',
+    btnId: 'solar-power-priority-apply',
+    url: 'api/rules/solar-power-priority',
+    bodyKey: 'solar_power_priority',
+    rulesKey: 'solar_power_priority',
+    label: 'Solar power priority',
+  });
+}
+
+async function applyInverterEnumSetting({ selectId, btnId, url, bodyKey, rulesKey, label }) {
+  const sel = document.getElementById(selectId);
+  const btn = document.getElementById(btnId);
+  const value = sel?.value;
+  if (!value) return;
   setApplyButtonBusy(btn, true);
   try {
-    const res = await fetch('api/rules/work-mode', {
+    const res = await fetch(url, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ work_mode: mode }),
+      body: JSON.stringify({ [bodyKey]: value }),
     });
     if (!res.ok) {
       alert(`Apply failed (HTTP ${res.status}). Try again in a few seconds.`);
@@ -5956,14 +6031,14 @@ async function applyWorkMode() {
     const data = await res.json();
     if (data.ok) {
       if (!rulesData) rulesData = {};
-      rulesData.work_mode = mode;
+      rulesData[rulesKey] = value;
       rulesData.sa_online = true;
       delete rulesData.stale;
       markSaRulesWrite();
       clearRulesManualEdit();
       persistRulesUiCache();
     } else {
-      alert('Failed to write Work mode to SA. Retry in ~15s.');
+      alert(`Failed to write ${label} to SA. Retry in ~15s.`);
     }
   } catch (e) {
     alert('Failed to apply — network or timeout. Wait ~15s and retry.');
@@ -6824,8 +6899,8 @@ function makeSimRow(r, isTotal, isTomorrowRemainder, isHistory) {
   const timerHtml = isTotal
     ? '<td></td>'
     : simTimerCell(r.timer_schedule);
-  const socCls = r.soc_live
-    ? 'text-violet-700 font-semibold sim-soc-live'
+  const socCls = r.soc_blended
+    ? 'text-violet-700 font-semibold sim-soc-blended'
     : 'text-gray-600';
   tr.innerHTML = `
     <td class="text-gray-600 whitespace-nowrap tabular-nums">${simRowTimeRange(r)}</td>

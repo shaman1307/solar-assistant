@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from datetime import datetime
 from typing import Any
 
 from .simulation_config import get_simulation_params, plan_min_soc_pct
@@ -748,6 +749,89 @@ def parse_timer_schedule_segments(text: str) -> list[dict[str, Any]]:
             "capacity_pct": int(cap_s),
         })
     return segments
+
+
+def _hhmm_to_minute_of_day(hhmm: str) -> int | None:
+    parts = str(hhmm).strip().split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]) * 60 + int(parts[1])
+    except ValueError:
+        return None
+
+
+def timer_discharge_end_times_hhmm(timer_txt: str) -> list[str]:
+    """All discharge segment end times (HH:MM) from a Timer Schedule cell."""
+    ends: list[str] = []
+    for seg in parse_timer_schedule_segments(timer_txt):
+        if seg.get("kind") != "dis":
+            continue
+        to_min = _hhmm_to_minute_of_day(seg["to"])
+        if to_min is None:
+            continue
+        ends.append(f"{to_min // 60:02d}:{to_min % 60:02d}")
+    return ends
+
+
+def timer_discharge_early_end_hhmm(timer_txt: str, hour: int) -> str | None:
+    """HH:MM when discharge ends before (hour+1):00, else None.
+
+    Example: hour 22 + ``Dis 22:00-22:45 …`` → ``22:45``; ``Dis 22:00-23:00`` → None.
+    """
+    segments = parse_timer_schedule_segments(timer_txt)
+    discharge = [s for s in segments if s.get("kind") == "dis"]
+    if not discharge:
+        return None
+    hour_start = hour * 60
+    hour_end = (hour + 1) * 60
+    latest_end: int | None = None
+    for seg in discharge:
+        to_min = _hhmm_to_minute_of_day(seg["to"])
+        if to_min is None:
+            continue
+        if hour_start <= to_min < hour_end:
+            if latest_end is None or to_min > latest_end:
+                latest_end = to_min
+    if latest_end is None:
+        return None
+    return f"{latest_end // 60:02d}:{latest_end % 60:02d}"
+
+
+def timer_discharge_end_due(timer_txt: str, now: datetime) -> tuple[bool, str | None]:
+    """True when a discharge end time is <= *now* and still relevant for this quarter.
+
+    Covers in-hour ends (e.g. 22:45) and hour-boundary ends (e.g. 20:00 on the :00 tick).
+    """
+    if not timer_txt or not str(timer_txt).strip():
+        return False, None
+    now_min = now.hour * 60 + now.minute
+    hour_start = now.hour * 60
+    prev_hour_start = max(0, (now.hour - 1) * 60)
+    latest_due: int | None = None
+    for seg in parse_timer_schedule_segments(timer_txt):
+        if seg.get("kind") != "dis":
+            continue
+        end_min = _hhmm_to_minute_of_day(seg["to"])
+        if end_min is None or end_min > now_min:
+            continue
+        in_current_hour = end_min >= hour_start
+        boundary_prev_hour = now.minute == 0 and end_min > prev_hour_start
+        if in_current_hour or boundary_prev_hour:
+            if latest_due is None or end_min > latest_due:
+                latest_due = end_min
+    if latest_due is None:
+        return False, None
+    return True, f"{latest_due // 60:02d}:{latest_due % 60:02d}"
+
+
+def plan_row_grid_export_kwh(row: dict[str, Any] | None) -> float:
+    if not row:
+        return 0.0
+    v = row.get("grid_export")
+    if v is None:
+        return 0.0
+    return max(0.0, float(v))
 
 
 def build_sa_schedule_from_hour_row(

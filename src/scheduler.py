@@ -4,7 +4,7 @@ Balance automation scheduler.
   - Nightly at 23:59 Europe/Warsaw: build Load+PV day cache for tomorrow and day-after,
     then refresh charge-rate estimate in config (Δ).
   - Every :00/:15/:30/:45: refresh Open-Meteo PV (remaining today + tomorrow), then Plan Simulation.
-  - SA Timer Schedule at :00; Work mode at :00/:58 (hour_boundary_scheduler).
+  - SA Timer Schedule at :00; Work mode On-grid at :00, Limit home at :00/:15/:30/:45.
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ async def run_nightly_forecast_cache() -> dict[str, Any]:
 
 
 async def run_quarter_plan_refresh(*, sync_sa: bool | None = None) -> dict[str, Any]:
-    """:00/:15/:30/:45 — refresh plan cache only (SA writes at :00/:58)."""
+    """:00/:15/:30/:45 — refresh plan cache only (SA writes at :00, early export, :58)."""
     del sync_sa
     global _last_hourly_sync
 
@@ -180,7 +180,7 @@ def create_scheduler(cfg: dict) -> AsyncIOScheduler:
         misfire_grace_time=120,
     )
     log.info(
-        "Scheduler: forecast cache + balance Δ at 23:59; SA hour boundary :00/:58; "
+        "Scheduler: forecast cache + balance Δ at 23:59; SA hour boundary :00 + Limit home :00/:15/:30/:45; "
         "plan refresh at :00/:15/:30/:45 — Europe/Warsaw.",
     )
     return scheduler

@@ -31,6 +31,17 @@ _WORK_MODE_DEFAULT_OPTIONS = (
     "Limit power to home load",
     "AC coupling",
 )
+_BATTERY_DISCHARGE_MODE_DEFAULT_OPTIONS = (
+    "Standby",
+    "UPS loads only",
+    "UPS and home loads",
+    "Grid sell",
+)
+_SOLAR_POWER_PRIORITY_DEFAULT_OPTIONS = (
+    "Load first",
+    "Battery first",
+    "Grid first",
+)
 WORK_MODE_ON_GRID = "On-grid"
 WORK_MODE_LIMIT_HOME_LOAD = "Limit power to home load"
 WORK_MODE_VERIFY_TIMEOUT_S = 65.0
@@ -124,6 +135,10 @@ def _empty_rules() -> dict[str, Any]:
         "discharge_slots": [],
         "work_mode": None,
         "work_mode_options": list(_WORK_MODE_DEFAULT_OPTIONS),
+        "battery_discharge_mode": None,
+        "battery_discharge_mode_options": list(_BATTERY_DISCHARGE_MODE_DEFAULT_OPTIONS),
+        "solar_power_priority": None,
+        "solar_power_priority_options": list(_SOLAR_POWER_PRIORITY_DEFAULT_OPTIONS),
         "sa_online": False,
     }
 
@@ -145,11 +160,39 @@ def _work_mode_topic(cfg: dict) -> str:
     return cfg["sa"]["settings"].get("work_mode", f"{_INVERTER_PREFIX}/work_mode")
 
 
+def _battery_discharge_mode_topic(cfg: dict) -> str:
+    return cfg["sa"]["settings"].get(
+        "battery_discharge_mode",
+        f"{_INVERTER_PREFIX}/battery_discharge_mode",
+    )
+
+
+def _solar_power_priority_topic(cfg: dict) -> str:
+    return cfg["sa"]["settings"].get(
+        "solar_power_priority",
+        f"{_INVERTER_PREFIX}/solar_power_priority",
+    )
+
+
 def _work_mode_options(cfg: dict) -> list[str]:
     opts = cfg.get("sa", {}).get("work_mode_options")
     if isinstance(opts, list) and opts:
         return [str(o) for o in opts]
     return list(_WORK_MODE_DEFAULT_OPTIONS)
+
+
+def _battery_discharge_mode_options(cfg: dict) -> list[str]:
+    opts = cfg.get("sa", {}).get("battery_discharge_mode_options")
+    if isinstance(opts, list) and opts:
+        return [str(o) for o in opts]
+    return list(_BATTERY_DISCHARGE_MODE_DEFAULT_OPTIONS)
+
+
+def _solar_power_priority_options(cfg: dict) -> list[str]:
+    opts = cfg.get("sa", {}).get("solar_power_priority_options")
+    if isinstance(opts, list) and opts:
+        return [str(o) for o in opts]
+    return list(_SOLAR_POWER_PRIORITY_DEFAULT_OPTIONS)
 
 
 def _build_client(cfg: dict):
@@ -321,6 +364,12 @@ async def get_rules(cfg: dict, *, fresh: bool = False) -> dict[str, Any]:
             work_topic = _work_mode_topic(cfg)
             work_mode_raw = by_topic.get(work_topic)
             work_mode = str(work_mode_raw).strip() if work_mode_raw is not None else None
+            bdm_topic = _battery_discharge_mode_topic(cfg)
+            bdm_raw = by_topic.get(bdm_topic)
+            battery_discharge_mode = str(bdm_raw).strip() if bdm_raw is not None else None
+            spp_topic = _solar_power_priority_topic(cfg)
+            spp_raw = by_topic.get(spp_topic)
+            solar_power_priority = str(spp_raw).strip() if spp_raw is not None else None
             result = {
                 "grid_charge_enabled": _truthy(by_topic.get(settings["grid_charge_switch"])),
                 "grid_export_enabled": _truthy(by_topic.get(settings["grid_export_switch"])),
@@ -331,6 +380,10 @@ async def get_rules(cfg: dict, *, fresh: bool = False) -> dict[str, Any]:
                 "discharge_slots": schedule["discharge_slots"],
                 "work_mode": work_mode,
                 "work_mode_options": _work_mode_options(cfg),
+                "battery_discharge_mode": battery_discharge_mode,
+                "battery_discharge_mode_options": _battery_discharge_mode_options(cfg),
+                "solar_power_priority": solar_power_priority,
+                "solar_power_priority_options": _solar_power_priority_options(cfg),
                 "sa_online": True,
             }
             _rules_cache = result
@@ -475,15 +528,73 @@ async def set_work_mode(
     verify_timeout_s: float = WORK_MODE_VERIFY_TIMEOUT_S,
 ) -> bool:
     """Write inverter Work mode to SA; poll until SA applies it (SRNE can take 30–60s)."""
-    value = str(mode).strip()
+    return await _set_inverter_enum_setting(
+        cfg,
+        topic=_work_mode_topic(cfg),
+        value=mode,
+        rules_field="work_mode",
+        label="Work mode",
+        verify=verify,
+        verify_timeout_s=verify_timeout_s,
+    )
+
+
+async def set_battery_discharge_mode(
+    cfg: dict,
+    mode: str,
+    *,
+    verify: bool = True,
+    verify_timeout_s: float = WORK_MODE_VERIFY_TIMEOUT_S,
+) -> bool:
+    """Write Battery discharge mode to SA."""
+    return await _set_inverter_enum_setting(
+        cfg,
+        topic=_battery_discharge_mode_topic(cfg),
+        value=mode,
+        rules_field="battery_discharge_mode",
+        label="Battery discharge mode",
+        verify=verify,
+        verify_timeout_s=verify_timeout_s,
+    )
+
+
+async def set_solar_power_priority(
+    cfg: dict,
+    priority: str,
+    *,
+    verify: bool = True,
+    verify_timeout_s: float = WORK_MODE_VERIFY_TIMEOUT_S,
+) -> bool:
+    """Write Solar power priority to SA."""
+    return await _set_inverter_enum_setting(
+        cfg,
+        topic=_solar_power_priority_topic(cfg),
+        value=priority,
+        rules_field="solar_power_priority",
+        label="Solar power priority",
+        verify=verify,
+        verify_timeout_s=verify_timeout_s,
+    )
+
+
+async def _set_inverter_enum_setting(
+    cfg: dict,
+    *,
+    topic: str,
+    value: str,
+    rules_field: str,
+    label: str,
+    verify: bool,
+    verify_timeout_s: float,
+) -> bool:
+    value = str(value).strip()
     if not value:
         return False
-    topic = _work_mode_topic(cfg)
     try:
         await _write_metrics(cfg, [(topic, value)], lock_wait_s=90.0)
         if not verify:
             invalidate_rules_cache()
-            log.info("Work mode write sent — %s (no verify)", value)
+            log.info("%s write sent — %s (no verify)", label, value)
             return True
 
         deadline = time.monotonic() + max(verify_timeout_s, WORK_MODE_VERIFY_INTERVAL_S)
@@ -491,16 +602,16 @@ async def set_work_mode(
             await asyncio.sleep(WORK_MODE_VERIFY_INTERVAL_S)
             invalidate_rules_cache()
             rules = await get_rules(cfg, fresh=True)
-            after = rules.get("work_mode")
+            after = rules.get(rules_field)
             if after == value:
-                log.info("Work mode set to %s (SA confirmed)", value)
+                log.info("%s set to %s (SA confirmed)", label, value)
                 return True
-            log.info("Work mode pending — want %r, SA has %r", value, after)
+            log.info("%s pending — want %r, SA has %r", label, value, after)
 
-        log.error("Work mode verify timeout after %.0fs — wanted %r", verify_timeout_s, value)
+        log.error("%s verify timeout after %.0fs — wanted %r", label, verify_timeout_s, value)
         return False
     except Exception as exc:
-        log.error("Failed to set work mode: %r", exc)
+        log.error("Failed to set %s: %r", label, exc)
         return False
 
 

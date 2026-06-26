@@ -33,6 +33,29 @@ def _work_mode_options_for_template() -> list[str]:
     ]
 
 
+def _battery_discharge_mode_options_for_template() -> list[str]:
+    opts = load_config().get("sa", {}).get("battery_discharge_mode_options")
+    if isinstance(opts, list) and opts:
+        return [str(o) for o in opts]
+    return [
+        "Standby",
+        "UPS loads only",
+        "UPS and home loads",
+        "Grid sell",
+    ]
+
+
+def _solar_power_priority_options_for_template() -> list[str]:
+    opts = load_config().get("sa", {}).get("solar_power_priority_options")
+    if isinstance(opts, list) and opts:
+        return [str(o) for o in opts]
+    return [
+        "Load first",
+        "Battery first",
+        "Grid first",
+    ]
+
+
 def _render_index(request: Request, initial_tab: str = "dashboard") -> HTMLResponse:
     if initial_tab not in _VALID_TABS:
         initial_tab = "dashboard"
@@ -43,6 +66,8 @@ def _render_index(request: Request, initial_tab: str = "dashboard") -> HTMLRespo
         "debug_tab_enabled": _debug_tab_enabled(),
         "today_date": now_warsaw().strftime("%Y-%m-%d"),
         "work_mode_options": _work_mode_options_for_template(),
+        "battery_discharge_mode_options": _battery_discharge_mode_options_for_template(),
+        "solar_power_priority_options": _solar_power_priority_options_for_template(),
     }
     # Starlette 0.36+ new signature; fall back to old signature if needed.
     try:

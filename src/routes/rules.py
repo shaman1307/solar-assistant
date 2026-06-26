@@ -13,7 +13,7 @@ from ..timer_plan import build_sa_schedule_from_hour_row, hour_has_timer_schedul
 from ..scheduler import get_last_hourly_sync, run_hourly_plan_sync
 from ..hour_boundary_scheduler import (
     get_last_hour_boundary_sync,
-    run_hour_boundary_end,
+    run_hour_boundary_limit_home,
     run_hour_boundary_start,
 )
 from ..work_mode_scheduler import get_last_work_mode_sync
@@ -60,6 +60,26 @@ async def api_set_work_mode(body: dict) -> dict[str, Any]:
         return {"ok": False, "error": "work_mode required"}
     ok = await sa_client.set_work_mode(cfg, mode)
     return {"ok": ok, "work_mode": mode if ok else None}
+
+
+@router.post("/api/rules/battery-discharge-mode")
+async def api_set_battery_discharge_mode(body: dict) -> dict[str, Any]:
+    cfg = load_config()
+    mode = str(body.get("battery_discharge_mode", "")).strip()
+    if not mode:
+        return {"ok": False, "error": "battery_discharge_mode required"}
+    ok = await sa_client.set_battery_discharge_mode(cfg, mode)
+    return {"ok": ok, "battery_discharge_mode": mode if ok else None}
+
+
+@router.post("/api/rules/solar-power-priority")
+async def api_set_solar_power_priority(body: dict) -> dict[str, Any]:
+    cfg = load_config()
+    priority = str(body.get("solar_power_priority", "")).strip()
+    if not priority:
+        return {"ok": False, "error": "solar_power_priority required"}
+    ok = await sa_client.set_solar_power_priority(cfg, priority)
+    return {"ok": ok, "solar_power_priority": priority if ok else None}
 
 
 @router.post("/api/rules/timed-power")
@@ -171,7 +191,7 @@ async def api_sync_hour() -> dict[str, Any]:
 
 @router.get("/api/work-mode-sync/status")
 async def api_work_mode_sync_status() -> dict[str, Any]:
-    """Last work-mode job result (:00 On-grid / :58 Limit home)."""
+    """Last work-mode job result (On-grid / Limit home)."""
     cfg = load_config()
     return {
         **get_last_work_mode_sync(),
@@ -181,7 +201,7 @@ async def api_work_mode_sync_status() -> dict[str, Any]:
 
 @router.get("/api/hour-boundary-sync/status")
 async def api_hour_boundary_sync_status() -> dict[str, Any]:
-    """Last :00/:58 hour-boundary SA sync (timer row + work mode)."""
+    """Last hour-boundary SA sync (timer row + work mode)."""
     cfg = load_config()
     return {
         **get_last_hour_boundary_sync(),
@@ -197,5 +217,5 @@ async def api_work_mode_start() -> dict[str, Any]:
 
 @router.post("/api/rules/work-mode-end")
 async def api_work_mode_end() -> dict[str, Any]:
-    """Manual trigger — same as :58 hour-boundary end."""
-    return await run_hour_boundary_end()
+    """Manual trigger — same as :15/:30/:45 Limit home boundary job."""
+    return await run_hour_boundary_limit_home()

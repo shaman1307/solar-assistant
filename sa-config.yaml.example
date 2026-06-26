@@ -67,16 +67,27 @@ sa:
     grid_sell_energy:  "total/grid_energy_out"
     battery_charged_today:    "total/battery_energy_in"
     battery_discharged_today: "total/battery_energy_out"
-  settings:
+    settings:
     charge_current_limit: "inverter_1/max_grid_charge_current"
     grid_charge_switch:   "inverter_1/grid_charge"
     grid_export_switch:   "inverter_1/timed_discharge"
     work_mode:            "inverter_1/work_mode"
+    battery_discharge_mode: "inverter_1/battery_discharge_mode"
+    solar_power_priority:   "inverter_1/solar_power_priority"
   work_mode_options:
     - "On-grid"
     - "Limit power to UPS load"
     - "Limit power to home load"
     - "AC coupling"
+  battery_discharge_mode_options:
+    - "Standby"
+    - "UPS loads only"
+    - "UPS and home loads"
+    - "Grid sell"
+  solar_power_priority_options:
+    - "Load first"
+    - "Battery first"
+    - "Grid first"
 
 load:
   hourly_profile_kwh:

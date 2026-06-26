@@ -22,8 +22,11 @@ from .debug_smart_plan import (
 )
 from .inverter_sim import _initial_soc_kwh
 from .plan_hourly_actuals import (
+    apply_current_hour_blend,
+    blend_current_hour_end,
     build_completed_history_rows,
     build_h0_carryover_row,
+    forecast_soc_hour_start_pct,
     hour_in_progress,
     interval_end_label,
 )
@@ -171,17 +174,24 @@ def run_simulation(
 
     actual_step0 = hour_in_progress(now, start_dt)
     today_hourly = live_metrics.get("today_hourly")
+    series_10min = live_metrics.get("series_10min")
 
-    # Optimizer: Influx for completed hours only; forecast from plan_from_hour onward.
+    # Optimizer: Influx for completed hours only; current hour blended actual+forecast.
     pv_merged, load_merged = merge_today_hourly_profile(
         pv_forecast_today,
         load_forecast_today,
         today_hourly,
         until_hour=plan_from_hour,
     )
+    forecast_pv_q15 = forecast["today"].get("pv_forecast_q15") or forecast["today"].get("pv_q15")
+    forecast_load_q15 = forecast["today"].get("load_q15")
     day_start_soc, _ = _initial_soc_kwh(today_hourly or {}, battery_cap)
     if not today_hourly:
         day_start_soc = soc_kwh
+    day_start_soc_pct = max(
+        min_soc_pct,
+        min(100.0, (day_start_soc / battery_cap) * 100.0 if battery_cap else 50.0),
+    )
 
     rce_today = quarters_by_date.get(today_str) or []
     smart_today = run_today_smart_q15_plan(
@@ -196,6 +206,25 @@ def run_simulation(
         day_start_soc_kwh=day_start_soc,
         live_soc_kwh=soc_kwh,
     )
+
+    forecast_soc_start_pct = forecast_soc_hour_start_pct(
+        smart_today,
+        plan_from_hour,
+        day_start_soc_pct=day_start_soc_pct,
+        min_soc_pct=min_soc_pct,
+    )
+    if 0 <= plan_from_hour < 24:
+        pv_merged, load_merged, _, _ = apply_current_hour_blend(
+            pv_merged,
+            load_merged,
+            plan_from_hour,
+            now,
+            forecast_pv_q15=forecast_pv_q15,
+            forecast_load_q15=forecast_load_q15,
+            series_10min=series_10min,
+            soc_start_pct=initial_soc_pct,
+            forecast_soc_hour_start_pct=forecast_soc_start_pct,
+        )
 
     hours_today_in_plan = max(0, 24 - plan_from_hour)
     need_tomorrow_hours = max(0, hour_steps - hours_today_in_plan)
@@ -259,8 +288,23 @@ def run_simulation(
                 display_load=disp_load,
             )
             if h == plan_from_hour:
-                row["soc"] = round(initial_soc_pct, 1)
-                row["soc_live"] = True
+                slots_now = smart_today["q15_by_hour"].get(h) or []
+                pv_blend, load_blend, soc_blend = blend_current_hour_end(
+                    h,
+                    now,
+                    forecast_pv_q15=forecast_pv_q15,
+                    forecast_load_q15=forecast_load_q15,
+                    forecast_pv_hourly=float(pv_forecast_today[h]) if h < len(pv_forecast_today) else 0.0,
+                    forecast_load_hourly=float(load_forecast_today[h]) if h < len(load_forecast_today) else 0.0,
+                    series_10min=series_10min,
+                    soc_start_pct=initial_soc_pct,
+                    forecast_q15_slots=slots_now,
+                    forecast_soc_hour_start_pct=forecast_soc_start_pct,
+                )
+                row["production"] = pv_blend
+                row["consumption"] = load_blend
+                row["soc"] = soc_blend
+                row["soc_blended"] = True
             all_rows.append(row)
             if row.get("export_planned"):
                 export_hours.add(h)
