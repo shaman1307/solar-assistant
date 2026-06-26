@@ -444,6 +444,9 @@
       .timer-power-select,
       #work-mode-select {
         grid-column: 2;
+        width: var(--timer-power-select-w, auto);
+        min-width: var(--timer-power-select-w, auto);
+        max-width: var(--timer-power-select-w, auto);
         justify-self: start;
       }
       .timer-power-field .timer-slot-apply-btn {
@@ -5929,6 +5932,7 @@ function renderRules(r) {
   renderTimedPowerSelects(r);
   renderTimerSlots('charge-slots-body', r.charge_slots || [], true);
   renderTimerSlots('discharge-slots-body', r.discharge_slots || [], false);
+  requestAnimationFrame(syncTimerPowerSelectWidths);
 }
 
 function renderInverterEnumSelect(selectId, options, current) {
@@ -5945,7 +5949,6 @@ function renderInverterEnumSelect(selectId, options, current) {
   }).join('');
   if (cur && opts.includes(cur)) sel.value = cur;
   else if (prev && opts.includes(prev)) sel.value = prev;
-  syncTimerPowerSelectWidths();
 }
 
 function renderWorkModeSelect(r) {
@@ -5957,20 +5960,56 @@ function syncTimerPowerSelectWidths() {
   if (!root) return;
   if (window.matchMedia('(max-width: 767px)').matches) {
     root.style.removeProperty('--timer-power-select-w');
+    for (const sel of root.querySelectorAll('.timer-power-select')) {
+      sel.style.removeProperty('width');
+      sel.style.removeProperty('min-width');
+      sel.style.removeProperty('max-width');
+    }
     return;
   }
-  let maxW = 0;
+
+  const sample = root.querySelector('.timer-power-select');
+  if (!sample) return;
+  const cs = getComputedStyle(sample);
+  const probe = document.createElement('span');
+  probe.style.cssText = [
+    'position:absolute',
+    'left:-9999px',
+    'top:0',
+    'visibility:hidden',
+    'white-space:nowrap',
+    'pointer-events:none',
+    `font-size:${cs.fontSize}`,
+    `font-family:${cs.fontFamily}`,
+    `font-weight:${cs.fontWeight}`,
+    `letter-spacing:${cs.letterSpacing}`,
+  ].join(';');
+  document.body.appendChild(probe);
+
+  let maxText = 0;
   for (const sel of root.querySelectorAll('.timer-power-select')) {
-    if (!sel.options.length) continue;
-    const prev = sel.value;
-    sel.style.width = 'auto';
     for (const opt of sel.options) {
-      sel.value = opt.value;
-      maxW = Math.max(maxW, sel.offsetWidth);
+      if (opt.disabled && !opt.value) continue;
+      const label = (opt.textContent || opt.value || '').trim();
+      if (!label || label === '—') continue;
+      probe.textContent = label;
+      maxText = Math.max(maxText, probe.offsetWidth);
     }
-    sel.value = prev;
   }
-  if (maxW > 0) root.style.setProperty('--timer-power-select-w', `${maxW}px`);
+  document.body.removeChild(probe);
+
+  const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+  const border = parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth);
+  const arrow = 22;
+  const total = Math.ceil(maxText + padX + border + arrow);
+  if (total > 0) {
+    root.style.setProperty('--timer-power-select-w', `${total}px`);
+    for (const sel of root.querySelectorAll('.timer-power-select')) {
+      sel.style.width = `${total}px`;
+      sel.style.minWidth = `${total}px`;
+      sel.style.maxWidth = `${total}px`;
+    }
+  }
 }
 
 function setApplyButtonBusy(btn, busy) {
