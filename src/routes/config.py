@@ -10,6 +10,7 @@ from fastapi import APIRouter
 from .. import forecast as forecast_mod
 from ..cache_registry import invalidate_all_caches
 from ..config import load_config, save_config
+from ..simulation_config import normalize_battery_power_limits
 from ..plan_simulation import build_plan_simulation, invalidate_plan_cache
 
 router = APIRouter()
@@ -38,6 +39,7 @@ async def api_save_config(body: dict) -> dict[str, str]:
         body["_charge_rate_kw"] = existing["_charge_rate_kw"]
     if "debug_tab_enabled" not in body and "debug_tab_enabled" in existing:
         body["debug_tab_enabled"] = existing["debug_tab_enabled"]
+    normalize_battery_power_limits(body)
     save_config(body)
     forecast_mod.invalidate_cache()
     invalidate_plan_cache()

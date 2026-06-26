@@ -16,6 +16,63 @@ DEFAULT_SIMULATION: dict[str, Any] = {
     },
 }
 
+MAX_BATTERY_CHARGE_POWER_KW = 5.0
+MAX_BATTERY_DISCHARGE_POWER_KW = 8.0
+DEFAULT_BATTERY_MAX_CHARGE_POWER_KW = 5.0
+DEFAULT_BATTERY_MAX_DISCHARGE_POWER_KW = 8.0
+
+
+def merge_battery_defaults(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Ensure cfg['battery'] has timer power limit fields."""
+    bat = cfg.setdefault("battery", {})
+    bat.setdefault("max_charge_power_kw", DEFAULT_BATTERY_MAX_CHARGE_POWER_KW)
+    bat.setdefault("max_discharge_power_kw", DEFAULT_BATTERY_MAX_DISCHARGE_POWER_KW)
+    return cfg
+
+
+def normalize_battery_power_limits(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Clamp battery timer power limits to allowed hardware ceilings."""
+    merge_battery_defaults(cfg)
+    bat = cfg["battery"]
+    bat["max_charge_power_kw"] = round(
+        min(MAX_BATTERY_CHARGE_POWER_KW, max(0.1, float(bat["max_charge_power_kw"]))),
+        2,
+    )
+    bat["max_discharge_power_kw"] = round(
+        min(MAX_BATTERY_DISCHARGE_POWER_KW, max(0.1, float(bat["max_discharge_power_kw"]))),
+        2,
+    )
+    return cfg
+
+
+def plan_timer_charge_power_kw(cfg: dict[str, Any]) -> float:
+    """SA timer charge power (kW DC into battery)."""
+    normalize_battery_power_limits(cfg)
+    ac_kw = float(cfg["inverter"]["ac_capacity_kw"])
+    return round(min(ac_kw, float(cfg["battery"]["max_charge_power_kw"])), 2)
+
+
+def plan_timer_discharge_power_kw(cfg: dict[str, Any]) -> float:
+    """SA timer discharge power (kW DC from battery)."""
+    normalize_battery_power_limits(cfg)
+    ac_kw = float(cfg["inverter"]["ac_capacity_kw"])
+    return round(min(ac_kw, float(cfg["battery"]["max_discharge_power_kw"])), 2)
+
+
+def plan_timer_discharge_ac_kw(cfg: dict[str, Any]) -> float:
+    """AC output cap (kW) at timer DC discharge — DC × (1 − battery_out loss %)."""
+    eta_out = get_simulation_params(cfg)["eta_battery_out"]
+    return round(plan_timer_discharge_power_kw(cfg) * float(eta_out), 2)
+
+
+def plan_timer_charge_grid_kw(cfg: dict[str, Any]) -> float:
+    """Grid import (kW AC) to sustain timer DC charge — DC / (1 − grid_to_battery loss %)."""
+    eta_grid = get_simulation_params(cfg)["eta_grid_battery"]
+    dc_kw = plan_timer_charge_power_kw(cfg)
+    if eta_grid <= 0:
+        return dc_kw
+    return round(dc_kw / float(eta_grid), 2)
+
 
 def merge_simulation_defaults(cfg: dict[str, Any]) -> dict[str, Any]:
     """Ensure cfg['simulation'] exists with default values (in-memory merge only)."""

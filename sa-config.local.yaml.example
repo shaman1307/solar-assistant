@@ -36,6 +36,10 @@ inverter:
 battery:
   # Usable battery capacity in kWh.
   capacity_kwh: 43.0
+  # SA timer charge power cap (kW), max 5.
+  max_charge_power_kw: 5.0
+  # SA timer discharge power cap (kW), max 8.
+  max_discharge_power_kw: 8.0
 
 ev:
   # Maximum EV charging power (kW) for Forecast Overrides panel.

@@ -9,7 +9,12 @@ from .config import load_config
 from .g12_pricing import get_buy_price
 from .plan_optimizer import HourControl, optimize_horizon, reserve_soc_per_step, simulate_hour
 from .plan_hourly_actuals import interval_end_label
-from .simulation_config import get_simulation_params, merge_simulation_defaults, plan_min_soc_kwh
+from .simulation_config import (
+    get_simulation_params,
+    merge_simulation_defaults,
+    plan_min_soc_kwh,
+    plan_timer_discharge_ac_kw,
+)
 from .timer_plan import (
     classify_action as timer_classify_action,
     build_hour_timer_schedule,
@@ -171,7 +176,7 @@ def run_day_smart_q15_plan(
     params = get_simulation_params(cfg)
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     min_kwh = plan_min_soc_kwh(cfg)
-    ac_cap_kw = float(cfg["inverter"]["ac_capacity_kw"])
+    discharge_ac_kw = plan_timer_discharge_ac_kw(cfg)
     epsilon = float(params["epsilon_kwh"])
     eps_q = max(epsilon * STEP_SCALE, 0.001)
     eta_grid = float(params["eta_grid_battery"])
@@ -260,7 +265,7 @@ def run_day_smart_q15_plan(
             soc, pv_q[step], load_q[step], ctrl,
             battery_cap=battery_cap,
             min_kwh=min_kwh,
-            ac_cap_kw=ac_cap_kw * STEP_SCALE,
+            ac_cap_kw=discharge_ac_kw * STEP_SCALE,
             eta_grid=eta_grid,
             eta_out=eta_out,
             eta_pv_grid=eta_pv_grid,

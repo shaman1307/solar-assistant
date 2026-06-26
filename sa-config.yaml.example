@@ -30,6 +30,8 @@ inverter:
 
 battery:
   capacity_kwh: 43.0
+  max_charge_power_kw: 5.0
+  max_discharge_power_kw: 8.0
 
 ev:
   max_power_kw: 11.0

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from .simulation_config import merge_simulation_defaults
+from .simulation_config import merge_simulation_defaults, normalize_battery_power_limits
 
 BASE_DIR = Path(__file__).parent.parent
 DEFAULT_CONFIG_PATH = BASE_DIR / "sa-config.yaml"
@@ -31,6 +31,7 @@ def load_config() -> dict:
         with open(path, "w", encoding="utf-8") as fh:
             yaml.dump(cfg, fh, allow_unicode=True, default_flow_style=False)
     cfg = merge_simulation_defaults(cfg)
+    normalize_battery_power_limits(cfg)
     ev = cfg.setdefault("ev", {})
     ev.setdefault("max_power_kw", 11.0)
     return cfg

@@ -1916,7 +1916,11 @@
         </div>
         <!-- PV blocks -->
         <div>
-          <p class="text-xs text-gray-500 mb-2">PV Blocks</p>
+          <div class="flex items-center justify-between gap-2 mb-2">
+            <p class="text-xs text-gray-500">PV Blocks</p>
+            <button type="button" id="pv-blocks-add" onclick="addPvBlock()"
+              class="text-xs font-medium text-amber-700 hover:text-amber-900 shrink-0">+ Add block</button>
+          </div>
           <div class="space-y-2" id="pv-blocks">
             <!-- filled by JS -->
           </div>
@@ -1935,6 +1939,16 @@
           <div>
             <label class="text-xs text-gray-500 block mb-1">Battery Capacity (kWh)</label>
             <input name="battery.capacity_kwh" type="number" step="0.1" required
+              class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 block mb-1">Max battery charge power (kW DC)</label>
+            <input name="battery.max_charge_power_kw" type="number" step="0.1" min="0.1" max="5" required value="5"
+              class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 block mb-1">Max battery discharge power (kW DC)</label>
+            <input name="battery.max_discharge_power_kw" type="number" step="0.1" min="0.1" max="8" required value="8"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
         </div>
@@ -4137,6 +4151,64 @@ async function loadConfig() {
   }
 }
 
+function getPvBlocksFromDom() {
+  const rows = document.querySelectorAll('#pv-blocks [data-pv-block]');
+  return Array.from(rows).map(row => ({
+    power_kwp: parseFloat(row.querySelector('[data-pv-kwp]')?.value) || 0,
+    tilt: parseFloat(row.querySelector('[data-pv-tilt]')?.value) || 0,
+  }));
+}
+
+function pvBlockRowHtml(i, block, canRemove) {
+  const kwp = block?.power_kwp ?? 0;
+  const tilt = block?.tilt ?? 0;
+  const removeBtn = canRemove
+    ? `<button type="button" onclick="removePvBlock(this)" aria-label="Remove block ${i + 1}"
+         class="px-2 py-1 text-sm text-red-600 hover:text-red-800 hover:bg-red-50 rounded shrink-0">×</button>`
+    : '';
+  return `
+    <div class="flex gap-2 items-end bg-gray-100 rounded-lg p-3" data-pv-block>
+      <div class="flex-1 grid grid-cols-2 gap-3 min-w-0">
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Block ${i + 1} kWp</label>
+          <input data-pv-kwp type="number" step="0.1" min="0" required value="${kwp}"
+            class="w-full bg-white border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Tilt (°)</label>
+          <input data-pv-tilt type="number" step="1" min="0" max="90" required value="${tilt}"
+            class="w-full bg-white border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+        </div>
+      </div>
+      ${removeBtn}
+    </div>`;
+}
+
+function renderPvBlocks(blocks) {
+  const blocksEl = document.getElementById('pv-blocks');
+  if (!blocksEl) return;
+  const list = Array.isArray(blocks) && blocks.length ? blocks : [{ power_kwp: 1.5, tilt: 35 }];
+  const canRemove = list.length > 1;
+  blocksEl.innerHTML = list.map((b, i) => pvBlockRowHtml(i, b, canRemove)).join('');
+}
+
+function addPvBlock() {
+  const blocks = getPvBlocksFromDom();
+  blocks.push({ power_kwp: 0, tilt: 0 });
+  renderPvBlocks(blocks);
+}
+
+function removePvBlock(btn) {
+  const blocks = getPvBlocksFromDom();
+  if (blocks.length <= 1) return;
+  const row = btn.closest('[data-pv-block]');
+  const rows = [...document.querySelectorAll('#pv-blocks [data-pv-block]')];
+  const idx = rows.indexOf(row);
+  if (idx < 0) return;
+  blocks.splice(idx, 1);
+  renderPvBlocks(blocks);
+}
+
 function populateForm(cfg) {
   const SIM_DEFAULTS = {
     'simulation.min_soc_pct': 15,
@@ -4144,6 +4216,8 @@ function populateForm(cfg) {
     'simulation.losses_pct.grid_to_battery': 7.5,
     'simulation.losses_pct.battery_to_load_or_grid': 7.5,
     'simulation.losses_pct.pv_to_grid': 7.5,
+    'battery.max_charge_power_kw': 5,
+    'battery.max_discharge_power_kw': 8,
   };
   const form = document.getElementById('cfg-form');
   form.querySelectorAll('[name]').forEach(el => {
@@ -4151,24 +4225,7 @@ function populateForm(cfg) {
     if (val !== undefined && val !== null) el.value = val;
     else if (SIM_DEFAULTS[el.name] !== undefined) el.value = SIM_DEFAULTS[el.name];
   });
-  // Render PV blocks.
-  const blocksEl = document.getElementById('pv-blocks');
-  blocksEl.innerHTML = '';
-  (cfg.solar?.blocks || []).forEach((b, i) => {
-    blocksEl.insertAdjacentHTML('beforeend', `
-      <div class="grid grid-cols-2 gap-3 items-end bg-gray-100 rounded-lg p-3">
-        <div>
-          <label class="text-xs text-gray-500 block mb-1">Block ${i+1} kWp</label>
-          <input name="solar.blocks.${i}.power_kwp" type="number" step="0.1" value="${b.power_kwp}"
-            class="w-full bg-white border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
-        </div>
-        <div>
-          <label class="text-xs text-gray-500 block mb-1">Tilt (°)</label>
-          <input name="solar.blocks.${i}.tilt" type="number" step="1" value="${b.tilt}"
-            class="w-full bg-white border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
-        </div>
-      </div>`);
-  });
+  renderPvBlocks(cfg.solar?.blocks);
   const presetEl = document.getElementById('tariff-preset');
   if (presetEl) presetEl.value = cfg.grid?.g12?.tariff_preset || '';
   const debugTabEl = document.getElementById('debug-tab-enabled');
@@ -4186,15 +4243,8 @@ async function saveConfig(event) {
   form.querySelectorAll('[name]').forEach(el => {
     deepSet(updated, el.name, coerce(el.value, el.type));
   });
-  // Update block values.
-  (configData.solar?.blocks || []).forEach((_, i) => {
-    const kWp = form.querySelector(`[name="solar.blocks.${i}.power_kwp"]`);
-    const tilt = form.querySelector(`[name="solar.blocks.${i}.tilt"]`);
-    if (kWp && tilt && updated.solar?.blocks?.[i]) {
-      updated.solar.blocks[i].power_kwp = parseFloat(kWp.value);
-      updated.solar.blocks[i].tilt = parseFloat(tilt.value);
-    }
-  });
+  if (!updated.solar) updated.solar = {};
+  updated.solar.blocks = getPvBlocksFromDom();
   const presetEl = document.getElementById('tariff-preset');
   const presetKey = presetEl?.value || '';
   if (updated.grid?.g12) {
@@ -6452,7 +6502,8 @@ function renderHistoryMonthTable(data) {
     return;
   }
 
-  data.rows.forEach(r => bodyDays.appendChild(makeHistoryMonthRow(r, false)));
+  const dayRows = [...data.rows].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  dayRows.forEach(r => bodyDays.appendChild(makeHistoryMonthRow(r, false)));
   if (data.totals) {
     bodyTotal.appendChild(makeHistoryMonthRow(
       { ...data.totals, start: historyMonthTotalLabel(data.month) },

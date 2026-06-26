@@ -19,7 +19,12 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
-from .simulation_config import get_simulation_params, plan_min_soc_pct
+from .simulation_config import (
+    get_simulation_params,
+    plan_min_soc_pct,
+    plan_timer_charge_power_kw,
+    plan_timer_discharge_power_kw,
+)
 
 ACTION_IDLE_GRID = "Idle - Grid Usage for Load"
 ACTION_IDLE_PV = "Idle - PV to Load. On-Grid"
@@ -328,14 +333,16 @@ def _hour_timer_segment(
     epsilon: float = 0.001,
     hour_action: str | None = None,
 ) -> str | None:
-    """One SA timer line for this clock hour from q15 energy (>=30 min, power = kWh / duration)."""
+    """One SA timer line for this clock hour from q15 energy (>=30 min).
+
+    Power is timer DC (battery) rating — inverter applies losses on AC side.
+    """
     total_kwh, active_q = _hour_q15_timer_energy(
         slots, target_action, epsilon, hour_action=hour_action,
     )
     if not active_q or total_kwh <= epsilon:
         return None
 
-    ac_kw = float(cfg["inverter"]["ac_capacity_kw"])
     min_soc = int(plan_min_soc_pct(cfg))
     hour_start = hour * 60
 
@@ -351,10 +358,11 @@ def _hour_timer_segment(
     if to_min - from_min < MIN_TIMER_BLOCK_MINUTES:
         return None
 
-    duration_h = (to_min - from_min) / 60.0
-    if duration_h <= 0:
-        return None
-    power_kw = round(min(total_kwh / duration_h, ac_kw), 2)
+    power_kw = (
+        plan_timer_charge_power_kw(cfg)
+        if target_action == ACTION_CHARGE_GRID
+        else plan_timer_discharge_power_kw(cfg)
+    )
     if power_kw <= 0:
         return None
 
@@ -388,12 +396,9 @@ def _fallback_charge_grid_timer(
     totals = _hour_slot_totals(slots)
     energy = totals["grid_import"] + totals["bat_charge"]
     if energy <= epsilon:
-        energy = max(totals["grid_import"], totals["bat_charge"], epsilon)
-    ac_kw = float(cfg["inverter"]["ac_capacity_kw"])
+        return ""
     hour_start = hour * 60
-    power_kw = round(min(energy, ac_kw), 2)
-    if power_kw <= 0:
-        power_kw = round(min(ac_kw, 1.0), 2)
+    power_kw = plan_timer_charge_power_kw(cfg)
     cap = _charge_timer_cap_pct(slots, cfg) if slots else 80
     return (
         f"Chg {_min_to_hhmm(hour_start)}-{_min_to_hhmm(hour_start + 60)} "
@@ -563,8 +568,9 @@ def _blocks_q15_to_slots(
     templates: list[dict[str, Any]],
     cfg: dict,
 ) -> list[dict[str, Any]]:
-    ac_kw = float(cfg["inverter"]["ac_capacity_kw"])
     min_soc = plan_min_soc_pct(cfg)
+    charge_kw = plan_timer_charge_power_kw(cfg)
+    discharge_kw = plan_timer_discharge_power_kw(cfg)
     slots: list[dict[str, Any]] = []
 
     for i in range(3):
@@ -574,13 +580,14 @@ def _blocks_q15_to_slots(
             continue
 
         blk = blocks[i]
+        timer_kw = charge_kw if kind == "charge" else discharge_kw
         slot: dict[str, Any] = {
             "slot": i + 1,
             "from": _min_to_hhmm(blk["from_min"]),
             "to": _min_to_hhmm(blk["to_min"]),
             "capacity_pct": int(blk["capacity_pct"]) if kind == "charge" else int(min_soc),
             "voltage_v": float(tpl.get("voltage_v", 57.6 if kind == "charge" else 42.0)),
-            "power_kw": round(min(float(blk["power_kw"]), ac_kw), 2),
+            "power_kw": timer_kw,
         }
         if kind == "charge":
             slot["grid"] = True
@@ -884,7 +891,8 @@ def build_sa_schedule_from_hour_row(
         return None
 
     existing = existing or {}
-    ac_kw = float(cfg["inverter"]["ac_capacity_kw"])
+    charge_cap = plan_timer_charge_power_kw(cfg)
+    discharge_cap = plan_timer_discharge_power_kw(cfg)
     charge_slots = _ensure_three_slots(existing.get("charge_slots", []), "charge")
     discharge_slots = _ensure_three_slots(existing.get("discharge_slots", []), "discharge")
     timed_charge = False
@@ -900,7 +908,7 @@ def build_sa_schedule_from_hour_row(
                 "to": seg["to"],
                 "capacity_pct": seg["capacity_pct"],
                 "voltage_v": float(tpl.get("voltage_v", 57.6)),
-                "power_kw": round(min(float(seg["power_kw"]), ac_kw), 2),
+                "power_kw": round(min(float(seg["power_kw"]), charge_cap), 2),
                 "grid": True,
                 "generator": False,
             }
@@ -913,7 +921,7 @@ def build_sa_schedule_from_hour_row(
                 "to": seg["to"],
                 "capacity_pct": seg["capacity_pct"],
                 "voltage_v": float(tpl.get("voltage_v", 42.0)),
-                "power_kw": round(min(float(seg["power_kw"]), ac_kw), 2),
+                "power_kw": round(min(float(seg["power_kw"]), discharge_cap), 2),
             }
 
     if not timed_charge and not timed_discharge:
@@ -955,8 +963,9 @@ def _blocks_to_slots(
     templates: list[dict[str, Any]],
     cfg: dict,
 ) -> list[dict[str, Any]]:
-    ac_kw = float(cfg["inverter"]["ac_capacity_kw"])
     min_soc = plan_min_soc_pct(cfg)
+    charge_kw = plan_timer_charge_power_kw(cfg)
+    discharge_kw = plan_timer_discharge_power_kw(cfg)
     slots: list[dict[str, Any]] = []
 
     for i in range(3):
@@ -968,13 +977,14 @@ def _blocks_to_slots(
         blk = blocks[i]
         from_h = blk["from_hour"] % 24
         to_h = blk["to_hour"] % 24
+        timer_kw = charge_kw if kind == "charge" else discharge_kw
         slot: dict[str, Any] = {
             "slot": i + 1,
             "from": f"{from_h:02d}:00",
             "to": f"{to_h:02d}:00",
             "capacity_pct": int(blk["capacity_pct"]) if kind == "charge" else int(min_soc),
             "voltage_v": float(tpl.get("voltage_v", 57.6 if kind == "charge" else 42.0)),
-            "power_kw": round(min(float(blk["power_kw"]), ac_kw), 2),
+            "power_kw": timer_kw,
         }
         if kind == "charge":
             slot["grid"] = True
@@ -1012,19 +1022,11 @@ def _ensure_three_slots(slots: list[dict], kind: str) -> list[dict[str, Any]]:
 
 
 def _row_power_kw(row: dict, action: str, cfg: dict) -> float:
-    ac_kw = float(cfg["inverter"]["ac_capacity_kw"])
-    if action == ACTION_DISCHARGE_GRID:
-        export_kwh = float(row.get("grid_export", row.get("feed_in", 0)) or 0)
-        if export_kwh > 0:
-            return round(ac_kw, 2)
-        load = float(row.get("consumption", 0) or 0)
-        return round(min(ac_kw, max(load, 1.0)), 2)
+    """Configured timer power cap — inverter splits between load and grid."""
     if action == ACTION_CHARGE_GRID:
-        charge_kw = max(float(row.get("battery", 0) or 0), 0.0) + float(
-            row.get("grid_import", row.get("buy", 0)) or 0
-        )
-        fallback = float(cfg.get("_charge_rate_kw", cfg["inverter"]["ac_capacity_kw"]))
-        return round(min(ac_kw, max(charge_kw, fallback, 1.0)), 2)
+        return plan_timer_charge_power_kw(cfg)
+    if action == ACTION_DISCHARGE_GRID:
+        return plan_timer_discharge_power_kw(cfg)
     return 0.0
 
 

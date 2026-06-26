@@ -14,7 +14,11 @@ from datetime import datetime
 from typing import Any
 
 from .plan_spill import build_tail_hour_arrays, tail_balance_cost_pln
-from .simulation_config import plan_min_soc_kwh
+from .simulation_config import (
+    plan_min_soc_kwh,
+    plan_timer_charge_power_kw,
+    plan_timer_discharge_ac_kw,
+)
 
 
 @dataclass(frozen=True)
@@ -289,7 +293,8 @@ def _control_options(
     *,
     battery_cap: float,
     min_kwh: float,
-    ac_cap_kw: float,
+    discharge_ac_cap_kw: float,
+    charge_batt_cap_kw: float,
     eta_out: float,
     epsilon: float,
     buy_p: float,
@@ -307,13 +312,13 @@ def _control_options(
         )
         and head_room > epsilon
     ):
-        rate = min(ac_cap_kw, head_room)
+        rate = min(charge_batt_cap_kw, head_room)
         if rate > epsilon:
             opts.append(HourControl(rate, 0.0))
 
     max_batt_export = _max_battery_export_kwh(
         soc_kwh, pv, load,
-        min_kwh=min_kwh, ac_cap_kw=ac_cap_kw,
+        min_kwh=min_kwh, ac_cap_kw=discharge_ac_cap_kw,
         eta_out=eta_out, reserve_soc_kwh=reserve_soc_kwh,
         epsilon=epsilon,
     )
@@ -428,13 +433,15 @@ def optimize_horizon(
 
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     min_kwh = plan_min_soc_kwh(cfg)
-    ac_cap_kw = float(cfg["inverter"]["ac_capacity_kw"])
+    discharge_ac_kw = plan_timer_discharge_ac_kw(cfg)
+    charge_dc_kw = plan_timer_charge_power_kw(cfg)
     epsilon = float(params["epsilon_kwh"])
     eta_grid = float(params["eta_grid_battery"])
     eta_out = float(params["eta_battery_out"])
     eta_pv_grid = float(params["eta_pv_grid"])
     tariff = g12_tariff_from_cfg(cfg)
-    ac_step = ac_cap_kw * step_scale
+    discharge_ac_step = discharge_ac_kw * step_scale
+    charge_dc_step = charge_dc_kw * step_scale
     eps_step = max(epsilon * step_scale, 0.001)
 
     bin_kwh = max(0.5, battery_cap / max(1, int((battery_cap - min_kwh) / 0.5)))
@@ -503,7 +510,9 @@ def optimize_horizon(
             reserve = reserves[step]
             for ctrl in _control_options(
                 soc, pv, load,
-                battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=ac_step,
+                battery_cap=battery_cap, min_kwh=min_kwh,
+                discharge_ac_cap_kw=discharge_ac_step,
+                charge_batt_cap_kw=charge_dc_step,
                 eta_out=eta_out,
                 epsilon=eps_step, buy_p=buy_p, offpeak_buy=offpeak_buy,
                 reserve_soc_kwh=reserve,
@@ -511,7 +520,7 @@ def optimize_horizon(
             ):
                 phys = simulate_hour(
                     soc, pv, load, ctrl,
-                    battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=ac_step,
+                    battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=discharge_ac_step,
                     eta_grid=eta_grid, eta_out=eta_out,
                     eta_pv_grid=eta_pv_grid, epsilon=eps_step,
                     reserve_soc_kwh=reserve,
@@ -538,7 +547,7 @@ def optimize_horizon(
         )
         tail = tail_balance_cost_pln(
             soc_end, tail_pv, tail_load, tail_buy, tail_export_credit,
-            battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=ac_cap_kw,
+            battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=discharge_ac_kw,
             eta_out=eta_out, eta_pv_grid=eta_pv_grid, epsilon=epsilon,
         )
         return path_cost + tail
