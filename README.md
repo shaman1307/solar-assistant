@@ -10,7 +10,7 @@ Runs alongside SolarAssistant (port **80**) on port **8000**. Tested with **SRNE
 
 | Dashboard — live PV / battery / grid flow | Rules — SRNE timer & inverter settings | Rules — rolling energy arbitrage plan |
 |---|---|---|
-| ![Live dashboard](docs/images/dashboard.png) | ![Timer Schedule and inverter parameters](docs/images/rules-inverter-params.png) | ![Energy arbitrage plan table](docs/images/energy-arbitrage-plan.png) |
+| <img src="docs/images/dashboard.png" width="400" alt="Live dashboard" /> | <img src="docs/images/rules-inverter-params.png" width="400" alt="Timer Schedule and inverter parameters" /> | <img src="docs/images/energy-arbitrage-plan.png" width="400" alt="Energy arbitrage plan table" /> |
 
 ## How it works
 
