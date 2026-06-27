@@ -375,7 +375,7 @@ def _forecast_energy_for_quarter(
     if quarter <= 0:
         return _q15_forecast_energy(q15, hour, 0, Q15_PER_HOUR)
     if quarter == 1:
-        return _q15_forecast_energy(q15, hour, 3, 1)
+        return _q15_forecast_energy(q15, hour, 1, 3)
     if quarter == 2:
         return _q15_forecast_energy(q15, hour, 2, 2)
     if quarter == 3:

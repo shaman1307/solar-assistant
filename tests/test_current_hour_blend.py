@@ -28,7 +28,7 @@ def test_at_hour_start_uses_full_forecast():
     now = datetime(2026, 6, 26, 18, 0)
     pv_q = _q15_hour(18, 0.25)
     load_q = _q15_hour(18, 0.5)
-    slots = [{"soc_pct": 51.0 + i} for i in range(4)]
+    slots = [{"soc_pct": 52.0 + i} for i in range(4)]  # q0..q3 → 55% end of hour
     pv, load, soc = blend_current_hour_end(
         18,
         now,
@@ -105,7 +105,7 @@ def test_at_15_blends_first_10m_scaled_and_last_q15():
     load_q = _q15_hour(hour, 0.2)
 
     actual_pv = kw * TEN_MIN_KWH_PER_KW * PARTIAL_Q15_SCALE
-    forecast_pv = 0.1  # q15 slot 3 only
+    forecast_pv = 0.1 * 3  # q1..q3 tail (HH:15–HH:00)
     pv, load, _ = blend_current_hour_end(
         hour,
         now,
@@ -117,8 +117,9 @@ def test_at_15_blends_first_10m_scaled_and_last_q15():
         soc_start_pct=50.0,
         forecast_q15_slots=None,
     )
+    actual_load = actual_pv
     assert pv == round(actual_pv + forecast_pv, 3)
-    assert load == round(actual_pv + 0.2, 3)
+    assert load == round(actual_load + 0.2 * 3, 3)
 
 
 def test_at_30_blends_first_three_10m_and_last_two_q15():
