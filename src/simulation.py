@@ -25,6 +25,7 @@ from .plan_hourly_actuals import (
     apply_current_hour_blend,
     blend_current_hour_end,
     build_blended_current_hour_q15,
+    sync_blended_current_hour_row,
     build_completed_history_rows,
     build_h0_carryover_row,
     forecast_soc_hour_start_pct,
@@ -313,11 +314,7 @@ def run_simulation(
                     forecast_q15_slots=slots_now,
                     forecast_soc_hour_start_pct=forecast_soc_start_pct,
                 )
-                row["production"] = pv_blend
-                row["consumption"] = load_blend
-                row["soc"] = soc_blend
-                row["soc_blended"] = True
-                row["q15"] = build_blended_current_hour_q15(
+                blended_q15 = build_blended_current_hour_q15(
                     h,
                     now,
                     forecast_pv_q15=forecast_pv_q15,
@@ -327,6 +324,15 @@ def run_simulation(
                     soc_end_pct=soc_blend,
                     opt_slots=slots_now,
                     cfg=cfg,
+                )
+                sync_blended_current_hour_row(
+                    row,
+                    blended_q15,
+                    production=pv_blend,
+                    consumption=load_blend,
+                    soc=soc_blend,
+                    cfg=cfg,
+                    epsilon=epsilon,
                 )
                 blended_anchor_kwh = (float(soc_blend) / 100.0) * battery_cap
                 blended_row_idx = len(all_rows)

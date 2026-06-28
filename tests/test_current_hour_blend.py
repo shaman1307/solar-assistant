@@ -6,6 +6,7 @@ from src.plan_hourly_actuals import (
     PARTIAL_Q15_SCALE,
     TEN_MIN_KWH_PER_KW,
     blend_current_hour_end,
+    sync_blended_current_hour_row,
 )
 
 
@@ -171,3 +172,64 @@ def test_at_45_blends_half_hour_plus_partial_10m():
         soc_start_pct=40.0,
     )
     assert pv == round(first + partial + forecast, 3)
+
+
+def test_sync_blended_current_hour_row_matches_q15_sums():
+    """EA current-hour row bat/grid must follow blended q15, not optimizer hour totals."""
+    q15 = [
+        {"quarter": 0, "production": 0.5, "consumption": 0.3, "soc": 70.0,
+         "battery": 0.1, "grid_import": 0.0, "grid_export": 0.0},
+        {"quarter": 1, "production": 0.2, "consumption": 0.4, "soc": 71.0,
+         "battery": -0.05, "grid_import": 0.1, "grid_export": 0.0},
+        {"quarter": 2, "production": 0.15, "consumption": 0.25, "soc": 71.5,
+         "battery": 0.02, "grid_import": 0.05, "grid_export": 0.03},
+        {"quarter": 3, "production": 0.1, "consumption": 0.2, "soc": 72.0,
+         "battery": 0.0, "grid_import": 0.0, "grid_export": 0.02},
+    ]
+    row = {
+        "production": 9.99,
+        "consumption": 8.88,
+        "battery": 0.4,
+        "bat_charge": 0.4,
+        "bat_discharge": 0.0,
+        "grid_import": 0.2,
+        "grid_export": 0.0,
+        "soc": 75.0,
+        "buy_price": 0.5,
+        "rce_price": 0.3,
+        "g12_zone": "offpeak",
+    }
+    cfg = {
+        "grid": {
+            "g12": {
+                "peak_price_pln_kwh": 1.0,
+                "offpeak_price_pln_kwh": 0.5,
+                "peak_energy_only_pln_kwh": 0.6,
+                "offpeak_energy_only_pln_kwh": 0.4,
+            },
+            "feed_in_price_pln": 0.2,
+        },
+    }
+
+    sync_blended_current_hour_row(
+        row,
+        q15,
+        production=0.95,
+        consumption=1.15,
+        soc=72.0,
+        cfg=cfg,
+        epsilon=0.05,
+    )
+
+    assert row["production"] == 0.95
+    assert row["consumption"] == 1.15
+    assert row["soc"] == 72.0
+    assert row["soc_blended"] is True
+    assert row["bat_charge"] == 0.12
+    assert row["bat_discharge"] == 0.05
+    assert row["battery"] == 0.07
+    assert row["grid_import"] == 0.15
+    assert row["grid_export"] == 0.05
+    assert row["export_planned"] is True
+    assert row["battery"] != 0.4
+    assert row["grid_import"] != 0.2

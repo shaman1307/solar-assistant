@@ -802,7 +802,7 @@ def _hour_control_from_slot(slot: dict[str, Any]) -> "HourControl":
     )
 
 
-def _apply_q15_physics_to_row(row: dict[str, Any], q15: list[dict[str, Any]]) -> None:
+def apply_q15_physics_to_row(row: dict[str, Any], q15: list[dict[str, Any]]) -> None:
     """Refresh hourly battery/grid from q15 sums; keep display production/consumption."""
     row["q15"] = q15
     row["battery"] = round(sum(float(s.get("battery") or 0) for s in q15), 3)
@@ -812,6 +812,43 @@ def _apply_q15_physics_to_row(row: dict[str, Any], q15: list[dict[str, Any]]) ->
     row["grid_export"] = round(sum(float(s.get("grid_export") or 0) for s in q15), 3)
     if q15:
         row["soc"] = q15[-1].get("soc")
+
+
+def sync_blended_current_hour_row(
+    row: dict[str, Any],
+    q15: list[dict[str, Any]],
+    *,
+    production: float,
+    consumption: float,
+    soc: float,
+    cfg: dict,
+    epsilon: float,
+) -> None:
+    """Apply blended q15 battery/grid to an in-progress EA row; keep display PV/load/SOC."""
+    apply_q15_physics_to_row(row, q15)
+    row["production"] = round(production, 3)
+    row["consumption"] = round(consumption, 3)
+    row["soc"] = round(soc, 1)
+    row["soc_blended"] = True
+
+    from .plan_cost import hour_grid_cash_pln
+
+    cash = hour_grid_cash_pln(
+        float(row["grid_import"]),
+        float(row["grid_export"]),
+        float(row.get("buy_price") or 0),
+        row.get("rce_price"),
+        cfg,
+        battery_export=0.0,
+        g12_zone=str(row.get("g12_zone") or "offpeak"),
+    )
+    row["import_cost"] = cash["import_cost"]
+    row["export_revenue"] = cash["export_revenue"]
+    row["energy_cost"] = cash["energy_cost"]
+    row["service_cost"] = cash["service_cost"]
+    row["cost"] = cash["cost"]
+    row["export_credit"] = cash["export_credit"]
+    row["export_planned"] = float(row["grid_export"]) >= epsilon
 
 
 def replay_forward_soc_on_rows(
@@ -892,7 +929,7 @@ def replay_forward_soc_on_rows(
                 "grid_export": round(phys.grid_export, 4),
             })
 
-        _apply_q15_physics_to_row(row, q15_out)
+        apply_q15_physics_to_row(row, q15_out)
 
 
 def apply_current_hour_blend(
