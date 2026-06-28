@@ -27,9 +27,12 @@ def test_pv_load_split_applies_dc_to_ac_loss():
 
 
 def test_pv_load_split_exact_cover():
-    deficit, surplus = pv_load_energy_split(2.162, 2.0, eta_pv_load=0.925)
-    assert deficit == 0.0
-    assert round(surplus, 3) == 0.0
+    eta = 0.925
+    load = 2.0
+    pv = load / eta
+    deficit, surplus = pv_load_energy_split(pv, load, eta_pv_load=eta)
+    assert round(deficit, 6) == 0.0
+    assert round(surplus, 6) == 0.0
 
 
 def test_simulate_hour_pv_to_load_increases_battery_withdraw():
