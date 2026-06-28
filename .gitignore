@@ -17,6 +17,11 @@ sa-config.local.yaml
 .cursor/
 .vscode/sftp.json
 
+# Cursor My Machines worker (local PC only — do not commit)
+scripts/start-cursor-worker.ps1
+scripts/enable-cursor-worker-autostart.ps1
+scripts/disable-cursor-worker-autostart.ps1
+
 # OS
 .DS_Store
 Thumbs.db
