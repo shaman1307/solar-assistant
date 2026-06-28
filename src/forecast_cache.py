@@ -229,7 +229,7 @@ def build_day_forecast(
 def compute_pv_profiles_for_date(date_str: str, cfg: dict) -> tuple[list[float], list[float]]:
     from .forecast import fetch_pv_for_dates_sync
 
-    batch = fetch_pv_for_dates_sync(cfg, [date_str])
+    batch, _om_failed = fetch_pv_for_dates_sync(cfg, [date_str])
     prof = batch.get(date_str) or {}
     hourly = [round(float(v), 3) for v in list(prof.get("hourly") or [0.0] * HOURS_PER_DAY)[:HOURS_PER_DAY]]
     q15_raw = list(prof.get("q15") or hourly_to_q15_equal(hourly))
@@ -258,7 +258,11 @@ def refresh_intraday_pv(cfg: dict, *, now: datetime | None = None) -> dict[str, 
     days = cache["days"]
 
     invalidate_om_mem()
-    fresh_by_date = fetch_pv_for_dates_sync(cfg, [today_str, tomorrow_str])
+    fresh_by_date, om_failed = fetch_pv_for_dates_sync(cfg, [today_str, tomorrow_str])
+
+    if om_failed:
+        log.warning("OM fetch failed, serving stale cache")
+        return refresh_effective_metrics(cfg, [today_str, tomorrow_str])
 
     for date_str in (today_str, tomorrow_str):
         prof = fresh_by_date.get(date_str)

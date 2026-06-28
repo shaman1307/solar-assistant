@@ -23,16 +23,14 @@ from .debug_smart_plan import (
 from .inverter_sim import _initial_soc_kwh
 from .plan_hourly_actuals import (
     apply_current_hour_blend,
-    blend_current_hour_end,
     build_blended_current_hour_q15,
-    sync_blended_current_hour_row,
     build_completed_history_rows,
     build_h0_carryover_row,
-    forecast_soc_hour_start_pct,
     hour_in_progress,
+    hourly_profile_to_q15,
     interval_end_label,
-    patch_row_q15_pv_load,
     replay_forward_soc_on_rows,
+    sync_blended_current_hour_row,
 )
 from .plan_optimizer import (
     battery_export_break_even_rce,
@@ -192,10 +190,6 @@ def run_simulation(
     day_start_soc, _ = _initial_soc_kwh(today_hourly or {}, battery_cap)
     if not today_hourly:
         day_start_soc = soc_kwh
-    day_start_soc_pct = max(
-        min_soc_pct,
-        min(100.0, (day_start_soc / battery_cap) * 100.0 if battery_cap else 50.0),
-    )
 
     rce_today = quarters_by_date.get(today_str) or []
     smart_today = run_today_smart_q15_plan(
@@ -211,14 +205,8 @@ def run_simulation(
         live_soc_kwh=soc_kwh,
     )
 
-    forecast_soc_start_pct = forecast_soc_hour_start_pct(
-        smart_today,
-        plan_from_hour,
-        day_start_soc_pct=day_start_soc_pct,
-        min_soc_pct=min_soc_pct,
-    )
     if 0 <= plan_from_hour < 24:
-        pv_merged, load_merged, _, _ = apply_current_hour_blend(
+        pv_merged, load_merged = apply_current_hour_blend(
             pv_merged,
             load_merged,
             plan_from_hour,
@@ -226,9 +214,21 @@ def run_simulation(
             forecast_pv_q15=forecast_pv_q15,
             forecast_load_q15=forecast_load_q15,
             series_10min=series_10min,
-            soc_start_pct=initial_soc_pct,
-            forecast_soc_hour_start_pct=forecast_soc_start_pct,
         )
+
+    merged_pv_q15_today = hourly_profile_to_q15(pv_merged)
+    merged_load_q15_today = hourly_profile_to_q15(load_merged)
+    merged_pv_q15_tomorrow = hourly_profile_to_q15([float(v) for v in pv_tomorrow])
+    merged_load_q15_tomorrow = hourly_profile_to_q15([float(v) for v in load_tomorrow])
+
+    plan_start_soc_kwh = _plan_start_soc_kwh(
+        plan_from_hour,
+        today_hourly,
+        battery_cap,
+        min_soc_pct,
+        day_start_soc,
+        soc_kwh,
+    )
 
     hours_today_in_plan = max(0, 24 - plan_from_hour)
     need_tomorrow_hours = max(0, hour_steps - hours_today_in_plan)
@@ -293,38 +293,25 @@ def run_simulation(
                 display_pv=disp_pv,
                 display_load=disp_load,
             )
-            patch_row_q15_pv_load(
-                row, h,
-                pv_q15=forecast_pv_q15,
-                load_q15=forecast_load_q15,
-                pv_hourly=disp_pv,
-                load_hourly=disp_load,
-            )
             if h == plan_from_hour:
                 slots_now = smart_today["q15_by_hour"].get(h) or []
-                pv_blend, load_blend, soc_blend = blend_current_hour_end(
-                    h,
-                    now,
-                    forecast_pv_q15=forecast_pv_q15,
-                    forecast_load_q15=forecast_load_q15,
-                    forecast_pv_hourly=float(pv_forecast_today[h]) if h < len(pv_forecast_today) else 0.0,
-                    forecast_load_hourly=float(load_forecast_today[h]) if h < len(load_forecast_today) else 0.0,
-                    series_10min=series_10min,
-                    soc_start_pct=initial_soc_pct,
-                    forecast_q15_slots=slots_now,
-                    forecast_soc_hour_start_pct=forecast_soc_start_pct,
-                )
+                fpv_h = float(pv_merged[h]) if h < len(pv_merged) else 0.0
+                flo_h = float(load_merged[h]) if h < len(load_merged) else 0.0
                 blended_q15 = build_blended_current_hour_q15(
                     h,
                     now,
                     forecast_pv_q15=forecast_pv_q15,
                     forecast_load_q15=forecast_load_q15,
                     series_10min=series_10min,
-                    soc_start_pct=initial_soc_pct,
-                    soc_end_pct=soc_blend,
+                    soc_start_kwh=plan_start_soc_kwh,
                     opt_slots=slots_now,
                     cfg=cfg,
+                    pv_hourly=fpv_h,
+                    load_hourly=flo_h,
                 )
+                pv_blend = round(sum(float(s.get("production") or 0) for s in blended_q15), 3)
+                load_blend = round(sum(float(s.get("consumption") or 0) for s in blended_q15), 3)
+                soc_blend = float(blended_q15[-1].get("soc") or initial_soc_pct)
                 sync_blended_current_hour_row(
                     row,
                     blended_q15,
@@ -334,18 +321,12 @@ def run_simulation(
                     cfg=cfg,
                     epsilon=epsilon,
                 )
-                blended_anchor_kwh = (float(soc_blend) / 100.0) * battery_cap
+                blended_anchor_kwh = (soc_blend / 100.0) * battery_cap
                 blended_row_idx = len(all_rows)
             all_rows.append(row)
             if row.get("export_planned"):
                 export_hours.add(h)
             remaining -= 1
-
-    forecast_tomorrow_pv_q15 = (
-        forecast.get("tomorrow", {}).get("pv_forecast_q15")
-        or forecast.get("tomorrow", {}).get("pv_q15")
-    )
-    forecast_tomorrow_load_q15 = forecast.get("tomorrow", {}).get("load_q15")
 
     if smart_tomorrow and remaining > 0:
         for h in range(24):
@@ -366,13 +347,6 @@ def run_simulation(
                 display_pv=disp_pv,
                 display_load=disp_load,
             )
-            patch_row_q15_pv_load(
-                row, h,
-                pv_q15=forecast_tomorrow_pv_q15,
-                load_q15=forecast_tomorrow_load_q15,
-                pv_hourly=disp_pv,
-                load_hourly=disp_load,
-            )
             all_rows.append(row)
             if row.get("export_planned"):
                 export_hours.add(h)
@@ -387,20 +361,12 @@ def run_simulation(
                 tomorrow_str: (smart_tomorrow or {}).get("q15_by_hour") or {},
             },
             pv_q15_by_date={
-                today_str: forecast_pv_q15,
-                tomorrow_str: forecast_tomorrow_pv_q15,
+                today_str: merged_pv_q15_today,
+                tomorrow_str: merged_pv_q15_tomorrow,
             },
             load_q15_by_date={
-                today_str: forecast_load_q15,
-                tomorrow_str: forecast_tomorrow_load_q15,
-            },
-            pv_hourly_by_date={
-                today_str: pv_merged,
-                tomorrow_str: pv_tomorrow,
-            },
-            load_hourly_by_date={
-                today_str: load_merged,
-                tomorrow_str: load_tomorrow,
+                today_str: merged_load_q15_today,
+                tomorrow_str: merged_load_q15_tomorrow,
             },
             cfg=cfg,
         )

@@ -1,5 +1,7 @@
 """Transfer loss physics in plan simulation."""
 
+import pytest
+
 from src.plan_optimizer import HourControl, simulate_hour
 from src.plan_spill import pv_load_energy_split
 from src.simulation_config import get_simulation_params
@@ -27,9 +29,10 @@ def test_pv_load_split_applies_dc_to_ac_loss():
 
 
 def test_pv_load_split_exact_cover():
+    # 2.162 * 0.925 = 1.99985, leaving a sub-mWh deficit — no surplus expected
     deficit, surplus = pv_load_energy_split(2.162, 2.0, eta_pv_load=0.925)
-    assert deficit == 0.0
-    assert round(surplus, 3) == 0.0
+    assert deficit == pytest.approx(0.0, abs=1e-3)
+    assert surplus == 0.0
 
 
 def test_simulate_hour_pv_to_load_increases_battery_withdraw():

@@ -5,7 +5,8 @@ from src.plan_hourly_actuals import replay_forward_soc_on_rows
 
 def _minimal_cfg() -> dict:
     return {
-        "battery": {"capacity_kwh": 10.0, "max_discharge_power_kw": 8.0},
+        "battery": {"capacity_kwh": 10.0, "max_discharge_power_kw": 8.0, "max_charge_power_kw": 5.0},
+        "inverter": {"ac_capacity_kw": 8.0},
         "simulation": {
             "min_soc_pct": 15,
             "epsilon_kwh": 0.05,
@@ -41,7 +42,6 @@ def test_replay_chains_soc_from_anchor():
             "q15": [],
         },
     ]
-    # PV charges battery: 1 kWh per q15, no load, no export control
     opt_slots = [
         {
             "quarter": q,
@@ -53,14 +53,15 @@ def test_replay_chains_soc_from_anchor():
         }
         for q in range(4)
     ]
+    pv_q15 = [0.0] * 96
+    for q in range(4):
+        pv_q15[9 * 4 + q] = 1.0
     replay_forward_soc_on_rows(
         rows,
         anchor_soc_kwh=5.0,
         q15_plan_by_date={date: {9: opt_slots}},
-        pv_q15_by_date={date: [0.0] * 96},
+        pv_q15_by_date={date: pv_q15},
         load_q15_by_date={date: [0.0] * 96},
-        pv_hourly_by_date={date: [0.0] * 9 + [4.0] + [0.0] * 14},
-        load_hourly_by_date={date: [0.0] * 24},
         cfg=_minimal_cfg(),
     )
     assert len(rows[0]["q15"]) == 4
@@ -80,8 +81,6 @@ def test_replay_stores_q15_pv_load():
         q15_plan_by_date={date: {10: [{"quarter": q} for q in range(4)]}},
         pv_q15_by_date={date: pv_q15},
         load_q15_by_date={date: [0.25] * 96},
-        pv_hourly_by_date={date: [0.0] * 10 + [2.0] + [0.0] * 13},
-        load_hourly_by_date={date: [0.0] * 10 + [1.0] + [0.0] * 13},
         cfg=_minimal_cfg(),
     )
     assert rows[0]["q15"][0]["production"] == 0.5

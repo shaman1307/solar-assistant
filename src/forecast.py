@@ -124,13 +124,19 @@ def _get_pv_profiles_sync(cfg: dict) -> dict[str, list[float]]:
     fetch_ok = False
 
     try:
-        batch = fetch_pv_for_dates_sync(cfg, [today_str, tomorrow_str])
-        today_pv = list((batch.get(today_str) or {}).get("hourly") or [0.0] * 24)
-        tomorrow_pv = list((batch.get(tomorrow_str) or {}).get("hourly") or [0.0] * 24)
-        fetch_ok = True
+        batch, om_failed = fetch_pv_for_dates_sync(cfg, [today_str, tomorrow_str])
+        if om_failed:
+            if cached:
+                log.warning("OM fetch failed, serving stale cache")
+                return cached["data"]
+        else:
+            today_pv = list((batch.get(today_str) or {}).get("hourly") or [0.0] * 24)
+            tomorrow_pv = list((batch.get(tomorrow_str) or {}).get("hourly") or [0.0] * 24)
+            fetch_ok = True
     except Exception as exc:
         log.warning("Open-Meteo PV fetch failed: %s", exc)
         if cached:
+            log.warning("OM fetch failed, serving stale cache")
             return cached["data"]
 
     data = {"today": today_pv, "tomorrow": tomorrow_pv}
@@ -141,7 +147,7 @@ def _get_pv_profiles_sync(cfg: dict) -> dict[str, list[float]]:
 
 def get_pv_hourly_for_date_sync(cfg: dict, date_str: str) -> tuple[list[float], str]:
     """Open-Meteo PV hourly kWh for any calendar date."""
-    batch = fetch_pv_for_dates_sync(cfg, [date_str])
+    batch, _om_failed = fetch_pv_for_dates_sync(cfg, [date_str])
     prof = batch.get(date_str)
     if prof is not None:
         today = now_warsaw().date()
@@ -153,7 +159,7 @@ def get_pv_hourly_for_date_sync(cfg: dict, date_str: str) -> tuple[list[float], 
 
 def fetch_pv_hourly_for_dates_sync(cfg: dict, date_strs: list[str]) -> dict[str, list[float]]:
     """Hourly PV kWh per date (derived from q15 when forecast API is used)."""
-    batch = fetch_pv_for_dates_sync(cfg, date_strs)
+    batch, _om_failed = fetch_pv_for_dates_sync(cfg, date_strs)
     return {
         d: [round(float(v), 3) for v in list(prof.get("hourly") or [0.0] * 24)[:24]]
         for d, prof in batch.items()
@@ -162,15 +168,20 @@ def fetch_pv_hourly_for_dates_sync(cfg: dict, date_strs: list[str]) -> dict[str,
 
 def fetch_pv_for_dates_sync(
     cfg: dict, date_strs: list[str],
-) -> dict[str, dict[str, list[float]]]:
-    """Fetch Open-Meteo PV: q15 kWh (forecast) + hourly sums. {date: {hourly, q15}}."""
+) -> tuple[dict[str, dict[str, list[float]]], bool]:
+    """Fetch Open-Meteo PV: q15 kWh (forecast) + hourly sums.
+
+    Returns ``(profiles_by_date, om_fetch_failed)``. On 15-min batch failure future
+    dates are omitted so callers can keep serving stale file cache.
+    """
     if not date_strs:
-        return {}
+        return {}, False
 
     lat = cfg["location"]["latitude"]
     lon = cfg["location"]["longitude"]
     today = now_warsaw().date()
     out: dict[str, dict[str, list[float]]] = {}
+    om_fetch_failed = False
 
     past = [d for d in date_strs if datetime.strptime(d, "%Y-%m-%d").date() < today]
     future = [d for d in date_strs if d not in past]
@@ -200,7 +211,7 @@ def fetch_pv_for_dates_sync(
         out[date_str] = {"hourly": hourly, "q15": q15}
 
     if not future:
-        return out
+        return out, False
 
     offsets = [
         (datetime.strptime(d, "%Y-%m-%d").date() - today).days
@@ -219,13 +230,9 @@ def fetch_pv_for_dates_sync(
             out[date_str] = {"hourly": hourly, "q15": q15}
     except Exception as exc:
         log.warning("Open-Meteo 15-min PV batch fetch failed: %s", exc)
-        for date_str in future:
-            out.setdefault(date_str, {
-                "hourly": [0.0] * 24,
-                "q15": [0.0] * fc.Q15_PER_DAY,
-            })
+        om_fetch_failed = True
 
-    return out
+    return out, om_fetch_failed
 
 
 def _fetch_irradiance_archive(lat: float, lon: float, date_str: str) -> dict[str, list]:
