@@ -338,6 +338,147 @@ def _ten_min_energy_kwh(
     return total * scale
 
 
+def _ten_min_grid_import_kwh(
+    grid_buy: list[float | None] | None,
+    hour: int,
+    start_slot: int,
+    count: int,
+    *,
+    scale: float = 1.0,
+) -> float:
+    """Positive import kWh from 10-min grid_buy (negative kW = import)."""
+    if not grid_buy or count <= 0:
+        return 0.0
+    base = _hour_10m_base(hour)
+    total = 0.0
+    for i in range(start_slot, start_slot + count):
+        idx = base + i
+        if idx < len(grid_buy) and grid_buy[idx] is not None:
+            v = float(grid_buy[idx])
+            if v < 0:
+                total += abs(v) * TEN_MIN_KWH_PER_KW
+    return total * scale
+
+
+def _ten_min_grid_export_kwh(
+    grid_sell: list[float | None] | None,
+    hour: int,
+    start_slot: int,
+    count: int,
+    *,
+    scale: float = 1.0,
+) -> float:
+    """Positive export kWh from 10-min grid_sell (positive kW = export)."""
+    if not grid_sell or count <= 0:
+        return 0.0
+    base = _hour_10m_base(hour)
+    total = 0.0
+    for i in range(start_slot, start_slot + count):
+        idx = base + i
+        if idx < len(grid_sell) and grid_sell[idx] is not None:
+            v = float(grid_sell[idx])
+            if v > 0:
+                total += v * TEN_MIN_KWH_PER_KW
+    return total * scale
+
+
+def _actual_kwh_for_quarter(
+    series: list[float | None] | None,
+    hour: int,
+    quarter: int,
+    *,
+    grid_mode: str | None = None,
+) -> float:
+    """Cumulative kWh from hour start through boundary after q15 quarter (quarter-1)."""
+    if quarter <= 0:
+        return 0.0
+    if grid_mode is None:
+        return _actual_energy_for_quarter(series, hour, quarter)
+
+    if grid_mode == "import":
+        fn = _ten_min_grid_import_kwh
+    else:
+        fn = _ten_min_grid_export_kwh
+
+    if quarter == 1:
+        return fn(series, hour, 0, 1, scale=PARTIAL_Q15_SCALE)
+    if quarter == 2:
+        return fn(series, hour, 0, 3)
+    if quarter == 3:
+        first = fn(series, hour, 0, 3)
+        partial = fn(series, hour, 3, 1, scale=PARTIAL_Q15_SCALE)
+        return first + partial
+    return 0.0
+
+
+def _elapsed_kwh_through_quarter(
+    series: list[float | None] | None,
+    hour: int,
+    q_inclusive: int,
+    *,
+    grid_mode: str | None = None,
+) -> float:
+    """kWh from hour start through end of q15 quarter q_inclusive (0..3)."""
+    if q_inclusive < 0:
+        return 0.0
+    if q_inclusive <= 2:
+        return _actual_kwh_for_quarter(
+            series, hour, q_inclusive + 1, grid_mode=grid_mode,
+        )
+    if grid_mode == "import":
+        return _ten_min_grid_import_kwh(series, hour, 0, SLOTS_PER_HOUR_10M)
+    if grid_mode == "export":
+        return _ten_min_grid_export_kwh(series, hour, 0, SLOTS_PER_HOUR_10M)
+    return _ten_min_energy_kwh(series, hour, 0, SLOTS_PER_HOUR_10M)
+
+
+def _actual_q15_slice_kwh(
+    series: list[float | None] | None,
+    hour: int,
+    q: int,
+    *,
+    grid_mode: str | None = None,
+) -> float:
+    """kWh in one completed q15 quarter from 10-min Influx (matches PV/load blend windows)."""
+    if not (0 <= q < Q15_PER_HOUR):
+        return 0.0
+    end = _elapsed_kwh_through_quarter(series, hour, q, grid_mode=grid_mode)
+    start = (
+        _elapsed_kwh_through_quarter(series, hour, q - 1, grid_mode=grid_mode)
+        if q > 0 else 0.0
+    )
+    return end - start
+
+
+def _actual_battery_flows_q15(
+    hour: int,
+    q: int,
+    series_10min: dict[str, list[float | None]] | None,
+) -> tuple[float, float, float] | None:
+    """Actual battery delta and grid flows for one elapsed q15 from Influx balance.
+
+    PV + grid_import + bat_discharge = load + grid_export + bat_charge
+    => battery_delta = PV - load + grid_import - grid_export
+    """
+    if not series_10min:
+        return None
+    pv_10 = series_10min.get("pv")
+    load_10 = series_10min.get("load")
+    if not pv_10 and not load_10:
+        return None
+
+    pv = _actual_q15_slice_kwh(pv_10, hour, q)
+    load = _actual_q15_slice_kwh(load_10, hour, q)
+    g_imp = _actual_q15_slice_kwh(
+        series_10min.get("grid_buy"), hour, q, grid_mode="import",
+    )
+    g_exp = _actual_q15_slice_kwh(
+        series_10min.get("grid_sell"), hour, q, grid_mode="export",
+    )
+    bat = round(pv - load + g_imp - g_exp, 4)
+    return bat, round(g_imp, 4), round(g_exp, 4)
+
+
 def _q15_forecast_energy(
     q15: list[float] | None,
     hour: int,
@@ -743,9 +884,13 @@ def build_blended_current_hour_q15(
             soc_pct = _clamp_soc_pct(soc_pct, min_soc_pct)
             soc_kwh = (soc_pct / 100.0) * battery_cap
             phys_soc = soc_pct
-            bat = float(opt.get("battery_delta") or 0)
-            g_imp = float(opt.get("grid_import") or 0)
-            g_exp = float(opt.get("grid_export") or 0)
+            actual = _actual_battery_flows_q15(hour, q, series_10min)
+            if actual is not None:
+                bat, g_imp, g_exp = actual
+            else:
+                bat = float(opt.get("battery_delta") or 0)
+                g_imp = float(opt.get("grid_import") or 0)
+                g_exp = float(opt.get("grid_export") or 0)
         else:
             ctrl = HourControl(
                 grid_charge_kw=float(opt.get("grid_charge_kw") or 0.0),
@@ -802,7 +947,7 @@ def _hour_control_from_slot(slot: dict[str, Any]) -> "HourControl":
     )
 
 
-def _apply_q15_physics_to_row(row: dict[str, Any], q15: list[dict[str, Any]]) -> None:
+def apply_q15_physics_to_row(row: dict[str, Any], q15: list[dict[str, Any]]) -> None:
     """Refresh hourly battery/grid from q15 sums; keep display production/consumption."""
     row["q15"] = q15
     row["battery"] = round(sum(float(s.get("battery") or 0) for s in q15), 3)
@@ -812,6 +957,43 @@ def _apply_q15_physics_to_row(row: dict[str, Any], q15: list[dict[str, Any]]) ->
     row["grid_export"] = round(sum(float(s.get("grid_export") or 0) for s in q15), 3)
     if q15:
         row["soc"] = q15[-1].get("soc")
+
+
+def sync_blended_current_hour_row(
+    row: dict[str, Any],
+    q15: list[dict[str, Any]],
+    *,
+    production: float,
+    consumption: float,
+    soc: float,
+    cfg: dict,
+    epsilon: float,
+) -> None:
+    """Apply blended q15 battery/grid to an in-progress EA row; keep display PV/load/SOC."""
+    apply_q15_physics_to_row(row, q15)
+    row["production"] = round(production, 3)
+    row["consumption"] = round(consumption, 3)
+    row["soc"] = round(soc, 1)
+    row["soc_blended"] = True
+
+    from .plan_cost import hour_grid_cash_pln
+
+    cash = hour_grid_cash_pln(
+        float(row["grid_import"]),
+        float(row["grid_export"]),
+        float(row.get("buy_price") or 0),
+        row.get("rce_price"),
+        cfg,
+        battery_export=0.0,
+        g12_zone=str(row.get("g12_zone") or "offpeak"),
+    )
+    row["import_cost"] = cash["import_cost"]
+    row["export_revenue"] = cash["export_revenue"]
+    row["energy_cost"] = cash["energy_cost"]
+    row["service_cost"] = cash["service_cost"]
+    row["cost"] = cash["cost"]
+    row["export_credit"] = cash["export_credit"]
+    row["export_planned"] = float(row["grid_export"]) >= epsilon
 
 
 def replay_forward_soc_on_rows(
@@ -892,7 +1074,7 @@ def replay_forward_soc_on_rows(
                 "grid_export": round(phys.grid_export, 4),
             })
 
-        _apply_q15_physics_to_row(row, q15_out)
+        apply_q15_physics_to_row(row, q15_out)
 
 
 def apply_current_hour_blend(
