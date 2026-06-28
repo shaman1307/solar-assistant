@@ -2,12 +2,17 @@
 
 from datetime import datetime
 
+import yaml
+
 from src.plan_hourly_actuals import (
     PARTIAL_Q15_SCALE,
     TEN_MIN_KWH_PER_KW,
+    _actual_battery_flows_q15,
     blend_current_hour_end,
+    build_blended_current_hour_q15,
     sync_blended_current_hour_row,
 )
+from src.simulation_config import merge_simulation_defaults
 
 
 def _flat_10m_kw(hour: int, kw: float) -> dict[str, list[float | None]]:
@@ -233,3 +238,74 @@ def test_sync_blended_current_hour_row_matches_q15_sums():
     assert row["export_planned"] is True
     assert row["battery"] != 0.4
     assert row["grid_import"] != 0.2
+
+
+def test_actual_battery_q15_from_influx_balance():
+    hour = 17
+    series = {
+        "pv": [None] * 144,
+        "load": [None] * 144,
+        "grid_buy": [None] * 144,
+        "grid_sell": [None] * 144,
+        "soc": [None] * 144,
+    }
+    base = hour * 6
+    series["pv"][base] = 3.0
+    series["load"][base] = 0.6
+    pv_q0 = 3.0 * TEN_MIN_KWH_PER_KW * PARTIAL_Q15_SCALE
+    load_q0 = 0.6 * TEN_MIN_KWH_PER_KW * PARTIAL_Q15_SCALE
+    bat, g_imp, g_exp = _actual_battery_flows_q15(hour, 0, series)
+    assert g_imp == 0.0
+    assert g_exp == 0.0
+    assert bat == round(pv_q0 - load_q0, 4)
+
+
+def test_blended_q15_past_quarter_uses_actual_battery_not_optimizer():
+    with open("sa-config.yaml.example") as f:
+        cfg = merge_simulation_defaults(yaml.safe_load(f))
+
+    hour = 17
+    now = datetime(2026, 6, 28, 17, 20)
+    series = {
+        "pv": [None] * 144,
+        "load": [None] * 144,
+        "grid_buy": [None] * 144,
+        "grid_sell": [None] * 144,
+        "soc": [None] * 144,
+    }
+    base = hour * 6
+    series["pv"][base] = 3.0
+    series["load"][base] = 0.6
+    series["soc"][base] = 70.0
+    series["soc"][base + 1] = 71.0
+
+    opt_slots = [
+        {
+            "quarter": q,
+            "soc_pct": 72.0 + q,
+            "pv": 0.25,
+            "load": 0.4,
+            "battery_delta": 1.5,
+            "grid_import": 0.2,
+            "grid_export": 0.0,
+            "grid_charge_kw": 0.0,
+            "ctrl_battery_export_kwh": 0.0,
+        }
+        for q in range(4)
+    ]
+
+    q15 = build_blended_current_hour_q15(
+        hour,
+        now,
+        forecast_pv_q15=[0.25] * 96,
+        forecast_load_q15=[0.4] * 96,
+        series_10min=series,
+        soc_start_pct=70.0,
+        soc_end_pct=72.0,
+        opt_slots=opt_slots,
+        cfg=cfg,
+    )
+
+    expected_q0 = _actual_battery_flows_q15(hour, 0, series)[0]
+    assert q15[0]["battery"] == expected_q0
+    assert q15[0]["battery"] != 1.5
