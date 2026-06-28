@@ -8,6 +8,20 @@ from typing import Any
 from .g12_pricing import get_buy_price
 
 
+def pv_load_energy_split(
+    pv: float,
+    load: float,
+    *,
+    eta_pv_load: float,
+) -> tuple[float, float]:
+    """AC load deficit after PV→load; remaining PV (DC kWh) for battery/export."""
+    if eta_pv_load <= 0:
+        return max(0.0, load), max(0.0, pv)
+    deficit = max(0.0, load - pv * eta_pv_load)
+    pv_surplus = max(0.0, pv - load / eta_pv_load)
+    return deficit, pv_surplus
+
+
 def _natural_hour(
     soc: float,
     pv: float,
@@ -17,6 +31,7 @@ def _natural_hour(
     min_kwh: float,
     ac_cap_kw: float,
     eta_out: float,
+    eta_pv_load: float,
     eta_pv_grid: float,
     epsilon: float,
 ) -> tuple[float, float, float]:
@@ -24,8 +39,7 @@ def _natural_hour(
     grid_import = 0.0
     grid_export = 0.0
 
-    deficit = max(0.0, load - pv)
-    pv_surplus = max(0.0, pv - load)
+    deficit, pv_surplus = pv_load_energy_split(pv, load, eta_pv_load=eta_pv_load)
     available = max(0.0, soc - min_kwh)
 
     if deficit > epsilon and available > epsilon and eta_out > 0:
@@ -101,6 +115,7 @@ def tail_balance_cost_pln(
     min_kwh: float,
     ac_cap_kw: float,
     eta_out: float,
+    eta_pv_load: float,
     eta_pv_grid: float,
     epsilon: float,
 ) -> float:
@@ -113,7 +128,8 @@ def tail_balance_cost_pln(
         soc, grid_import, grid_export = _natural_hour(
             soc, pv, load,
             battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=ac_cap_kw,
-            eta_out=eta_out, eta_pv_grid=eta_pv_grid, epsilon=epsilon,
+            eta_out=eta_out, eta_pv_load=eta_pv_load,
+            eta_pv_grid=eta_pv_grid, epsilon=epsilon,
         )
         cost += grid_import * buy
         if grid_export > epsilon:

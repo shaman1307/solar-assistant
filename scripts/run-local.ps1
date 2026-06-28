@@ -1,4 +1,4 @@
-# Run Solar Smart locally (Windows). Uses sa-config.local.yaml only - Pi sa-config.yaml untouched.
+# Run Solar Smart locally (Windows). Uses sa-config.yaml (+ optional sa-config.local.yaml overlay).
 #
 # Usage:
 #   .\scripts\run-local.ps1
@@ -19,14 +19,13 @@ if (-not (Test-Path $python)) {
     exit 1
 }
 
-$localCfg = Join-Path $Root "sa-config.local.yaml"
-if (-not (Test-Path $localCfg)) {
-    Write-Host "Missing sa-config.local.yaml - copy sa-config.local.yaml.example and set sa.password."
+$mainCfg = Join-Path $Root "sa-config.yaml"
+if (-not (Test-Path $mainCfg)) {
+    Write-Host "Missing sa-config.yaml — copy sa-config.yaml.example and edit."
     exit 1
 }
 
 $key = Join-Path $env:USERPROFILE ".ssh\id_ed25519"
-$env:SOLAR_CONFIG_PATH = "sa-config.local.yaml"
 $env:INFLUXDB_URL = "http://127.0.0.1:8086"
 
 function Test-LocalPort($Port) {

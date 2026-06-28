@@ -13,6 +13,7 @@ DEFAULT_SIMULATION: dict[str, Any] = {
         "grid_to_battery": 7.5,
         "battery_to_load_or_grid": 7.5,
         "pv_to_grid": 7.5,
+        "pv_to_load": 7.5,
     },
 }
 
@@ -105,6 +106,7 @@ def get_simulation_params(cfg: dict[str, Any]) -> dict[str, float | int]:
         "eta_grid_battery": eta("grid_to_battery"),
         "eta_battery_out": eta("battery_to_load_or_grid"),
         "eta_pv_grid": eta("pv_to_grid"),
+        "eta_pv_load": eta("pv_to_load"),
     }
 
 

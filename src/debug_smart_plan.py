@@ -181,6 +181,7 @@ def run_day_smart_q15_plan(
     eps_q = max(epsilon * STEP_SCALE, 0.001)
     eta_grid = float(params["eta_grid_battery"])
     eta_out = float(params["eta_battery_out"])
+    eta_pv_load = float(params["eta_pv_load"])
     eta_pv_grid = float(params["eta_pv_grid"])
 
     if sum(pv_hourly) + sum(load_hourly) <= epsilon:
@@ -248,7 +249,7 @@ def run_day_smart_q15_plan(
 
     reserves = reserve_soc_per_step(
         steps, pv_q, load_q,
-        min_kwh=min_kwh, eta_out=eta_out, epsilon=epsilon,
+        min_kwh=min_kwh, eta_out=eta_out, eta_pv_load=eta_pv_load, epsilon=epsilon,
         step_scale=STEP_SCALE, end_dt=end_dt, today_date=today_date, forecast=forecast,
     )
 
@@ -268,6 +269,7 @@ def run_day_smart_q15_plan(
             ac_cap_kw=discharge_ac_kw * STEP_SCALE,
             eta_grid=eta_grid,
             eta_out=eta_out,
+            eta_pv_load=eta_pv_load,
             eta_pv_grid=eta_pv_grid,
             epsilon=eps_q,
             reserve_soc_kwh=reserves[step],

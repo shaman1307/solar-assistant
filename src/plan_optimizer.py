@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from .plan_spill import build_tail_hour_arrays, tail_balance_cost_pln
+from .plan_spill import build_tail_hour_arrays, pv_load_energy_split, tail_balance_cost_pln
 from .simulation_config import (
     plan_min_soc_kwh,
     plan_timer_charge_power_kw,
@@ -144,19 +144,19 @@ def simulate_hour(
     ac_cap_kw: float,
     eta_grid: float,
     eta_out: float,
+    eta_pv_load: float,
     eta_pv_grid: float,
     epsilon: float,
     reserve_soc_kwh: float | None = None,
 ) -> HourPhysics:
-    """One step: PV charge is 1:1 kWh (losses already in meter data)."""
+    """One step: PV (DC) vs load (AC); PV→battery is 1:1 (DC/DC)."""
     reserve = min_kwh if reserve_soc_kwh is None else max(min_kwh, reserve_soc_kwh)
     soc = soc_kwh
     grid_import = 0.0
     grid_export = 0.0
     battery_delta = 0.0
 
-    deficit = max(0.0, load - pv)
-    pv_surplus = max(0.0, pv - load)
+    deficit, pv_surplus = pv_load_energy_split(pv, load, eta_pv_load=eta_pv_load)
     available = max(0.0, soc - min_kwh)
 
     if deficit > epsilon:
@@ -223,15 +223,18 @@ def _reserve_soc_kwh_from_step(
     load_series: list[float],
     min_kwh: float,
     eta_out: float,
+    eta_pv_load: float,
     epsilon: float,
 ) -> float:
     """Battery kWh that must remain after step (load until PV covers house)."""
     need = 0.0
     for j in range(step + 1, len(pv_series)):
-        deficit = max(0.0, load_series[j] - pv_series[j])
+        deficit, _ = pv_load_energy_split(
+            pv_series[j], load_series[j], eta_pv_load=eta_pv_load,
+        )
         if deficit > epsilon:
             need += deficit / eta_out if eta_out > 0 else deficit
-        if pv_series[j] >= load_series[j] - epsilon:
+        if pv_series[j] * eta_pv_load >= load_series[j] - epsilon:
             break
     return need + min_kwh
 
@@ -244,6 +247,7 @@ def _max_battery_export_kwh(
     min_kwh: float,
     ac_cap_kw: float,
     eta_out: float,
+    eta_pv_load: float,
     reserve_soc_kwh: float,
     epsilon: float,
 ) -> float:
@@ -252,7 +256,7 @@ def _max_battery_export_kwh(
     if export_headroom <= epsilon or eta_out <= 0:
         return 0.0
     soc = soc_kwh
-    deficit = max(0.0, load - pv)
+    deficit, _ = pv_load_energy_split(pv, load, eta_pv_load=eta_pv_load)
     if deficit > epsilon and eta_out > 0:
         withdraw = min(deficit / eta_out, max(0.0, soc - min_kwh))
         soc -= withdraw
@@ -269,6 +273,7 @@ def _allow_grid_charge(
     reserve_soc_kwh: float,
     min_kwh: float,
     eta_out: float,
+    eta_pv_load: float,
     epsilon: float,
 ) -> bool:
     """Grid charge at offpeak only to restore load reserve or cover load deficit."""
@@ -276,10 +281,10 @@ def _allow_grid_charge(
         return False
     if reserve_soc_kwh > soc_kwh + epsilon:
         return True
-    pv_surplus = max(0.0, pv - load)
+    _, pv_surplus = pv_load_energy_split(pv, load, eta_pv_load=eta_pv_load)
     if pv_surplus > epsilon:
         return False
-    deficit = max(0.0, load - pv)
+    deficit, _ = pv_load_energy_split(pv, load, eta_pv_load=eta_pv_load)
     if deficit <= epsilon or eta_out <= 0:
         return False
     available = max(0.0, soc_kwh - min_kwh)
@@ -296,6 +301,7 @@ def _control_options(
     discharge_ac_cap_kw: float,
     charge_batt_cap_kw: float,
     eta_out: float,
+    eta_pv_load: float,
     epsilon: float,
     buy_p: float,
     offpeak_buy: float,
@@ -308,7 +314,7 @@ def _control_options(
     if (
         _allow_grid_charge(
             soc_kwh, pv, load, buy_p, offpeak_buy, reserve_soc_kwh,
-            min_kwh, eta_out, epsilon,
+            min_kwh, eta_out, eta_pv_load, epsilon,
         )
         and head_room > epsilon
     ):
@@ -319,7 +325,8 @@ def _control_options(
     max_batt_export = _max_battery_export_kwh(
         soc_kwh, pv, load,
         min_kwh=min_kwh, ac_cap_kw=discharge_ac_cap_kw,
-        eta_out=eta_out, reserve_soc_kwh=reserve_soc_kwh,
+        eta_out=eta_out, eta_pv_load=eta_pv_load,
+        reserve_soc_kwh=reserve_soc_kwh,
         epsilon=epsilon,
     )
     if max_batt_export > epsilon and allow_battery_export:
@@ -378,6 +385,7 @@ def reserve_soc_per_step(
     *,
     min_kwh: float,
     eta_out: float,
+    eta_pv_load: float,
     epsilon: float,
     step_scale: float = 1.0,
     end_dt: datetime | None = None,
@@ -392,7 +400,9 @@ def reserve_soc_per_step(
     )
     eps_step = max(epsilon * step_scale, 0.001)
     return [
-        _reserve_soc_kwh_from_step(s, pv_r, load_r, min_kwh, eta_out, eps_step)
+        _reserve_soc_kwh_from_step(
+            s, pv_r, load_r, min_kwh, eta_out, eta_pv_load, eps_step,
+        )
         for s in range(steps)
     ]
 
@@ -438,6 +448,7 @@ def optimize_horizon(
     epsilon = float(params["epsilon_kwh"])
     eta_grid = float(params["eta_grid_battery"])
     eta_out = float(params["eta_battery_out"])
+    eta_pv_load = float(params["eta_pv_load"])
     eta_pv_grid = float(params["eta_pv_grid"])
     tariff = g12_tariff_from_cfg(cfg)
     discharge_ac_step = discharge_ac_kw * step_scale
@@ -484,7 +495,7 @@ def optimize_horizon(
 
     reserves = [
         _reserve_soc_kwh_from_step(
-            s, pv_for_reserve, load_for_reserve, min_kwh, eta_out, eps_step,
+            s, pv_for_reserve, load_for_reserve, min_kwh, eta_out, eta_pv_load, eps_step,
         )
         for s in range(steps)
     ]
@@ -514,6 +525,7 @@ def optimize_horizon(
                 discharge_ac_cap_kw=discharge_ac_step,
                 charge_batt_cap_kw=charge_dc_step,
                 eta_out=eta_out,
+                eta_pv_load=eta_pv_load,
                 epsilon=eps_step, buy_p=buy_p, offpeak_buy=offpeak_buy,
                 reserve_soc_kwh=reserve,
                 allow_battery_export=allow_battery_export,
@@ -522,6 +534,7 @@ def optimize_horizon(
                     soc, pv, load, ctrl,
                     battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=discharge_ac_step,
                     eta_grid=eta_grid, eta_out=eta_out,
+                    eta_pv_load=eta_pv_load,
                     eta_pv_grid=eta_pv_grid, epsilon=eps_step,
                     reserve_soc_kwh=reserve,
                 )
@@ -548,7 +561,8 @@ def optimize_horizon(
         tail = tail_balance_cost_pln(
             soc_end, tail_pv, tail_load, tail_buy, tail_export_credit,
             battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=discharge_ac_kw,
-            eta_out=eta_out, eta_pv_grid=eta_pv_grid, epsilon=epsilon,
+            eta_out=eta_out, eta_pv_load=eta_pv_load,
+            eta_pv_grid=eta_pv_grid, epsilon=epsilon,
         )
         return path_cost + tail
 

@@ -1,37 +1,30 @@
 ##############################################################################
-# Solar Smart — example configuration.
-# Copy to sa-config.yaml on the Pi (or sa-config.local.yaml for Windows dev).
+# Solar Smart — example configuration (no site-specific values).
+# Copy to sa-config.yaml and fill in your installation.
+# Windows dev: same file + optional sa-config.local.yaml overlay (see its .example).
 ##############################################################################
 
 smart_mode_enabled: false
 debug_tab_enabled: false
 
-# Plan simulation cache refreshes every hour at :00 Europe/Warsaw. When
-# smart_mode_enabled is true, the same job also pushes the next-hour plan to
-# SA Timer Schedule slot 1 (see README — Smart energy planning).
-
 location:
-  latitude: 54.50
-  longitude: 18.50
+  latitude: 52.0
+  longitude: 21.0
 
 solar:
-  azimuth: 187
+  azimuth: 180
   system_loss_factor: 0.93
   blocks:
-    - power_kwp: 1.5
-      tilt: 35
     - power_kwp: 5.0
-      tilt: 25
-    - power_kwp: 2.5
-      tilt: 65
+      tilt: 30
 
 inverter:
-  ac_capacity_kw: 8.0
+  ac_capacity_kw: 5.0
 
 battery:
-  capacity_kwh: 43.0
+  capacity_kwh: 10.0
   max_charge_power_kw: 5.0
-  max_discharge_power_kw: 8.0
+  max_discharge_power_kw: 5.0
 
 ev:
   max_power_kw: 11.0
@@ -44,38 +37,39 @@ simulation:
     grid_to_battery: 7.5
     battery_to_load_or_grid: 7.5
     pv_to_grid: 7.5
+    pv_to_load: 7.5
 
 grid:
   g12:
-    tariff_name: "Energa G12"
-    peak_price_pln_kwh: 1.2444
-    offpeak_price_pln_kwh: 0.6229
-    peak_energy_only_pln_kwh: 0.7182
-    offpeak_energy_only_pln_kwh: 0.4678
+    tariff_name: "G12"
+    peak_price_pln_kwh: 1.0
+    offpeak_price_pln_kwh: 0.5
+    peak_energy_only_pln_kwh: 0.6
+    offpeak_energy_only_pln_kwh: 0.4
   feed_in_price_pln: 0.20
 
 sa:
   host: "localhost"
-  password: "CHANGE_ME"
+  password: "YOUR_SA_WEB_PASSWORD"
   metrics:
-    battery_soc:       "battery_1/state_of_charge"
-    battery_power:     "battery_1/power"
-    pv_power:          "total/pv_power"
-    load_power:        "total/load_power"
-    grid_power:        "total/grid_power"
-    pv_energy_today:   "total/pv_energy"
+    battery_soc: "battery_1/state_of_charge"
+    battery_power: "battery_1/power"
+    pv_power: "total/pv_power"
+    load_power: "total/load_power"
+    grid_power: "total/grid_power"
+    pv_energy_today: "total/pv_energy"
     load_energy_today: "total/load_energy"
-    grid_buy_energy:   "total/grid_energy_in"
-    grid_sell_energy:  "total/grid_energy_out"
-    battery_charged_today:    "total/battery_energy_in"
+    grid_buy_energy: "total/grid_energy_in"
+    grid_sell_energy: "total/grid_energy_out"
+    battery_charged_today: "total/battery_energy_in"
     battery_discharged_today: "total/battery_energy_out"
-    settings:
+  settings:
     charge_current_limit: "inverter_1/max_grid_charge_current"
-    grid_charge_switch:   "inverter_1/grid_charge"
-    grid_export_switch:   "inverter_1/timed_discharge"
-    work_mode:            "inverter_1/work_mode"
+    grid_charge_switch: "inverter_1/grid_charge"
+    grid_export_switch: "inverter_1/timed_discharge"
+    work_mode: "inverter_1/work_mode"
     battery_discharge_mode: "inverter_1/battery_discharge_mode"
-    solar_power_priority:   "inverter_1/solar_power_priority"
+    solar_power_priority: "inverter_1/solar_power_priority"
   work_mode_options:
     - "On-grid"
     - "Limit power to UPS load"
@@ -93,30 +87,30 @@ sa:
 
 load:
   hourly_profile_kwh:
-    - 0.50
-    - 0.50
-    - 0.48
-    - 0.38
-    - 0.38
+    - 0.30
+    - 0.30
+    - 0.30
+    - 0.30
+    - 0.30
+    - 0.30
     - 0.40
-    - 0.40
+    - 0.50
     - 0.60
+    - 0.60
+    - 0.60
+    - 0.60
+    - 0.60
+    - 0.60
+    - 0.60
+    - 0.60
+    - 0.70
+    - 0.80
     - 0.80
     - 0.70
     - 0.60
-    - 0.60
-    - 0.70
-    - 0.70
-    - 0.60
-    - 0.60
-    - 0.70
-    - 0.90
-    - 1.00
-    - 1.90
-    - 1.80
-    - 1.70
-    - 0.60
     - 0.50
+    - 0.40
+    - 0.30
 
 overrides:
   today_pv_kwh: null

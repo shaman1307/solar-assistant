@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -14,8 +16,23 @@ DEFAULT_CONFIG_PATH = BASE_DIR / "sa-config.yaml"
 LOCAL_CONFIG_PATH = BASE_DIR / "sa-config.local.yaml"
 
 
+def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge *overlay* onto a copy of *base* (overlay wins)."""
+    merged = deepcopy(base)
+    for key, value in overlay.items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, dict)
+        ):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
 def config_path() -> Path:
-    """Active config file. Pi default: sa-config.yaml. Local dev: set SOLAR_CONFIG_PATH."""
+    """Primary config file (read/write). Optional SOLAR_CONFIG_PATH for tests."""
     override = os.environ.get("SOLAR_CONFIG_PATH", "").strip()
     if override:
         p = Path(override)
@@ -23,10 +40,19 @@ def config_path() -> Path:
     return DEFAULT_CONFIG_PATH
 
 
-def load_config() -> dict:
-    path = config_path()
+def _load_yaml(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
     with open(path, encoding="utf-8") as fh:
-        cfg = yaml.safe_load(fh) or {}
+        return yaml.safe_load(fh) or {}
+
+
+def load_config() -> dict:
+    """Load sa-config.yaml; merge sa-config.local.yaml overlay when present."""
+    path = config_path()
+    cfg = _load_yaml(path)
+    if path == DEFAULT_CONFIG_PATH and LOCAL_CONFIG_PATH.is_file():
+        cfg = _deep_merge(cfg, _load_yaml(LOCAL_CONFIG_PATH))
     if cfg.pop("plan_overrides", None) is not None:
         with open(path, "w", encoding="utf-8") as fh:
             yaml.dump(cfg, fh, allow_unicode=True, default_flow_style=False)
