@@ -1,5 +1,5 @@
 ##############################################################################
-# Solar Smart — example configuration (no site-specific values).
+# Solar Smart — example configuration.
 # Copy to sa-config.yaml and fill in your installation.
 # Windows dev: same file + optional sa-config.local.yaml overlay (see its .example).
 ##############################################################################

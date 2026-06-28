@@ -68,22 +68,47 @@ def extract_plan_soc_hourly(plan: dict[str, Any] | None) -> dict[str, list[float
     return out
 
 
+def _optimizer_soc_q15(plan: dict[str, Any] | None, label: str) -> list[float | None]:
+    """Raw 96-slot SOC from the 15-min optimizer replay."""
+    direct = (plan or {}).get("plan_soc_q15") or {}
+    if not isinstance(direct, dict):
+        return [None] * 96
+    raw = list(direct.get(label) or [])
+    while len(raw) < 96:
+        raw.append(None)
+    out: list[float | None] = []
+    for v in raw[:96]:
+        out.append(round(float(v), 1) if v is not None else None)
+    return out
+
+
 def extract_plan_soc_q15(plan: dict[str, Any] | None) -> dict[str, list[float | None]]:
-    direct = (plan or {}).get("plan_soc_q15")
-    if isinstance(direct, dict) and any(k in direct for k in ("today", "tomorrow")):
-        return {
-            "today": list((direct.get("today") or [])[:96]) + [None] * max(0, 96 - len(direct.get("today") or [])),
-            "tomorrow": list((direct.get("tomorrow") or [])[:96]) + [None] * max(0, 96 - len(direct.get("tomorrow") or [])),
-        }
-    hourly = extract_plan_soc_hourly(plan)
-    q15_out: dict[str, list[float | None]] = {}
-    for label, series in hourly.items():
-        slots: list[float | None] = []
+    """Today: q15 SOC from Energy arbitrage rows. Tomorrow: optimizer q15."""
+    today_str = now_warsaw().strftime("%Y-%m-%d")
+    today_slots: list[float | None] = [None] * 96
+    if plan:
+        for row in (plan.get("history_rows") or []) + (plan.get("rows") or []):
+            date_key = row.get("plan_date") or row.get("date")
+            if date_key != today_str:
+                continue
+            h = row.get("hour")
+            if h is None or not (0 <= int(h) < 24):
+                continue
+            for slot in row.get("q15") or []:
+                q = int(slot.get("quarter", 0))
+                idx = int(h) * 4 + q
+                soc = slot.get("soc")
+                if 0 <= idx < 96 and soc is not None:
+                    today_slots[idx] = round(float(soc), 1)
+    if not any(v is not None for v in today_slots):
+        hourly = extract_plan_soc_hourly(plan)
         for h in range(24):
-            v = series[h]
-            slots.extend([v] * 4)
-        q15_out[label] = slots
-    return q15_out
+            v = hourly["today"][h]
+            today_slots[h * 4:(h + 1) * 4] = [v] * 4
+    return {
+        "today": today_slots,
+        "tomorrow": _optimizer_soc_q15(plan, "tomorrow"),
+    }
 
 
 def _plan_cache_stale(cached: dict[str, Any]) -> bool:

@@ -2706,6 +2706,30 @@ function socToY(soc, minP, maxP) {
   return Math.max(2, Math.round(100 - ((minP + t * range - minP) / range) * 96));
 }
 
+/** SOC q15 for Power Management chart — today from EA row.q15 slots (not flat hourly). */
+function planSocQ15FromEaRows(simData, dayKey) {
+  if (!simData || dayKey !== 'today') return null;
+  const dateStr = simData.today_date;
+  if (!dateStr) return null;
+  const slots = new Array(CHART_SLOTS_Q15).fill(null);
+  let found = false;
+  for (const row of [...(simData.history_rows || []), ...(simData.rows || [])]) {
+    if (row.plan_date !== dateStr) continue;
+    const h = row.hour;
+    if (h == null || h < 0 || h > 23) continue;
+    for (const q of (row.q15 || [])) {
+      const qi = Number(q.quarter);
+      if (!Number.isFinite(qi) || qi < 0 || qi > 3) continue;
+      const idx = h * 4 + qi;
+      if (q.soc != null && idx >= 0 && idx < slots.length) {
+        slots[idx] = Number(q.soc);
+        found = true;
+      }
+    }
+  }
+  return found ? slots : null;
+}
+
 function renderFcSocBands(container, socQ15, slotCount, minP, maxP) {
   if (!container) return;
   container.innerHTML = '';
@@ -3347,9 +3371,12 @@ function renderForecast() {
     loadActualKw = actualLoadQ15ToKw(forecastData);
   }
 
-  const planSocQ15 = (forecastData.plan_soc_q15?.[currentForecastDay]?.some(v => v != null)
+  const planSocQ15 = (isToday ? planSocQ15FromEaRows(simData, 'today') : null)
+    || (simData?.plan_soc_q15?.[currentForecastDay]?.some(v => v != null)
+    ? simData.plan_soc_q15[currentForecastDay]
+    : null) || (forecastData.plan_soc_q15?.[currentForecastDay]?.some(v => v != null)
     ? forecastData.plan_soc_q15[currentForecastDay]
-    : null) || simData?.plan_soc_q15?.[currentForecastDay] || [];
+    : null) || [];
 
   const fcYEl = document.getElementById('fc-y-axis');
   const fcSocYEl = document.getElementById('fc-y-axis-soc');
@@ -6371,6 +6398,7 @@ async function preloadSimulation(forceRefresh = false) {
     if (currentTab === 'simulation') renderSimulationBundle(simData);
     refreshEnergyOverviewPlanFill();
     refreshEnergyOverviewCosts();
+    if (forecastData) renderForecast();
   } catch (e) {
     console.warn('simulation preload', e);
   }

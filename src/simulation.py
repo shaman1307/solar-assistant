@@ -24,11 +24,14 @@ from .inverter_sim import _initial_soc_kwh
 from .plan_hourly_actuals import (
     apply_current_hour_blend,
     blend_current_hour_end,
+    build_blended_current_hour_q15,
     build_completed_history_rows,
     build_h0_carryover_row,
     forecast_soc_hour_start_pct,
     hour_in_progress,
     interval_end_label,
+    patch_row_q15_pv_load,
+    replay_forward_soc_on_rows,
 )
 from .plan_optimizer import (
     battery_export_break_even_rce,
@@ -245,6 +248,8 @@ def run_simulation(
     export_hours: set[int] = set()
     all_rows: list[dict] = []
     remaining = hour_steps
+    blended_anchor_kwh: float | None = None
+    blended_row_idx: int | None = None
 
     if smart_today:
         for h in range(plan_from_hour, 24):
@@ -287,6 +292,13 @@ def run_simulation(
                 display_pv=disp_pv,
                 display_load=disp_load,
             )
+            patch_row_q15_pv_load(
+                row, h,
+                pv_q15=forecast_pv_q15,
+                load_q15=forecast_load_q15,
+                pv_hourly=disp_pv,
+                load_hourly=disp_load,
+            )
             if h == plan_from_hour:
                 slots_now = smart_today["q15_by_hour"].get(h) or []
                 pv_blend, load_blend, soc_blend = blend_current_hour_end(
@@ -305,10 +317,29 @@ def run_simulation(
                 row["consumption"] = load_blend
                 row["soc"] = soc_blend
                 row["soc_blended"] = True
+                row["q15"] = build_blended_current_hour_q15(
+                    h,
+                    now,
+                    forecast_pv_q15=forecast_pv_q15,
+                    forecast_load_q15=forecast_load_q15,
+                    series_10min=series_10min,
+                    soc_start_pct=initial_soc_pct,
+                    soc_end_pct=soc_blend,
+                    opt_slots=slots_now,
+                    cfg=cfg,
+                )
+                blended_anchor_kwh = (float(soc_blend) / 100.0) * battery_cap
+                blended_row_idx = len(all_rows)
             all_rows.append(row)
             if row.get("export_planned"):
                 export_hours.add(h)
             remaining -= 1
+
+    forecast_tomorrow_pv_q15 = (
+        forecast.get("tomorrow", {}).get("pv_forecast_q15")
+        or forecast.get("tomorrow", {}).get("pv_q15")
+    )
+    forecast_tomorrow_load_q15 = forecast.get("tomorrow", {}).get("load_q15")
 
     if smart_tomorrow and remaining > 0:
         for h in range(24):
@@ -329,10 +360,44 @@ def run_simulation(
                 display_pv=disp_pv,
                 display_load=disp_load,
             )
+            patch_row_q15_pv_load(
+                row, h,
+                pv_q15=forecast_tomorrow_pv_q15,
+                load_q15=forecast_tomorrow_load_q15,
+                pv_hourly=disp_pv,
+                load_hourly=disp_load,
+            )
             all_rows.append(row)
             if row.get("export_planned"):
                 export_hours.add(h)
             remaining -= 1
+
+    if blended_anchor_kwh is not None and blended_row_idx is not None:
+        replay_forward_soc_on_rows(
+            all_rows[blended_row_idx + 1:],
+            anchor_soc_kwh=blended_anchor_kwh,
+            q15_plan_by_date={
+                today_str: (smart_today or {}).get("q15_by_hour") or {},
+                tomorrow_str: (smart_tomorrow or {}).get("q15_by_hour") or {},
+            },
+            pv_q15_by_date={
+                today_str: forecast_pv_q15,
+                tomorrow_str: forecast_tomorrow_pv_q15,
+            },
+            load_q15_by_date={
+                today_str: forecast_load_q15,
+                tomorrow_str: forecast_tomorrow_load_q15,
+            },
+            pv_hourly_by_date={
+                today_str: pv_merged,
+                tomorrow_str: pv_tomorrow,
+            },
+            load_hourly_by_date={
+                today_str: load_merged,
+                tomorrow_str: load_tomorrow,
+            },
+            cfg=cfg,
+        )
 
     def _soc_q15_from_q15_by_hour(plan: dict[str, Any] | None) -> list[float | None]:
         out: list[float | None] = [None] * 96

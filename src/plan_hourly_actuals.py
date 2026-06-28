@@ -112,10 +112,18 @@ def _row_from_hourly_actual(
         grid_import, grid_export, buy_price, rce_price, cfg, g12_zone=g12_zone,
     )
 
+    battery_cap = float(cfg["battery"]["capacity_kwh"])
+    q15 = build_history_hour_q15(
+        h, hourly, battery_cap=battery_cap, min_soc_pct=min_soc_pct,
+        bat_in_kwh=bat_in_kwh, bat_out_kwh=bat_out_kwh,
+        grid_import=grid_import, grid_export=grid_export,
+    )
+
     return {
         "hour": h,
         "plan_date": plan_date,
         "start": interval_end_label(hour_dt),
+        "q15": q15,
         "production": round(pv, 3),
         "consumption": round(load, 3),
         "battery": round(battery_delta, 3),
@@ -531,6 +539,360 @@ def forecast_soc_hour_start_pct(
             if v is not None:
                 return max(min_soc_pct, min(100.0, float(v)))
     return day_start_soc_pct
+
+
+def optimizer_hour_end_soc(slots: list[dict[str, Any]]) -> float:
+    """SOC (%) at end of hour from optimizer q15 slots."""
+    if not slots:
+        return 0.0
+    v = slots[-1].get("soc_pct")
+    return float(v) if v is not None else 0.0
+
+
+def display_soc_rebased_from_prior(
+    anchor_soc: float,
+    optimizer_soc_curr: float,
+    optimizer_soc_prev: float,
+    min_soc_pct: float,
+) -> float:
+    """Legacy hour-to-hour SOC shift (superseded by replay_forward_soc_on_rows)."""
+    soc = anchor_soc + (optimizer_soc_curr - optimizer_soc_prev)
+    return round(max(min_soc_pct, min(100.0, soc)), 1)
+
+
+def _clamp_soc_pct(pct: float, min_soc_pct: float) -> float:
+    return round(max(min_soc_pct, min(100.0, pct)), 1)
+
+
+def _q15_slot_energy(
+    q15: list[float] | None,
+    hour: int,
+    quarter: int,
+    hourly_fallback: float,
+) -> float:
+    idx = hour * Q15_PER_HOUR + quarter
+    if q15 and 0 <= idx < len(q15):
+        return float(q15[idx])
+    return float(hourly_fallback) / Q15_PER_HOUR
+
+
+def build_history_hour_q15(
+    hour: int,
+    hourly: dict[str, list[float | None]],
+    *,
+    battery_cap: float,
+    min_soc_pct: float,
+    bat_in_kwh: float,
+    bat_out_kwh: float,
+    grid_import: float,
+    grid_export: float,
+) -> list[dict[str, Any]]:
+    """Completed hour: equal q15 energy split; SOC linear between hour boundaries."""
+    pv_h = float(_hourly_slot(hourly, hour, "pv") or 0.0)
+    load_h = float(_hourly_slot(hourly, hour, "load") or 0.0)
+    soc_end = _hourly_slot(hourly, hour, "soc")
+    soc_end_pct = (
+        _clamp_soc_pct(float(soc_end), min_soc_pct)
+        if soc_end is not None
+        else min_soc_pct
+    )
+    if hour > 0:
+        soc_prev = _hourly_slot(hourly, hour - 1, "soc")
+        soc_start_pct = (
+            _clamp_soc_pct(float(soc_prev), min_soc_pct)
+            if soc_prev is not None
+            else soc_end_pct
+        )
+    else:
+        soc_start_pct = soc_end_pct
+
+    battery_delta = bat_in_kwh - bat_out_kwh
+    q15: list[dict[str, Any]] = []
+    for q in range(Q15_PER_HOUR):
+        t = (q + 1) / Q15_PER_HOUR
+        soc = soc_start_pct + (soc_end_pct - soc_start_pct) * t
+        q15.append({
+            "quarter": q,
+            "production": round(pv_h / Q15_PER_HOUR, 4),
+            "consumption": round(load_h / Q15_PER_HOUR, 4),
+            "soc": _clamp_soc_pct(soc, min_soc_pct),
+            "battery": round(battery_delta / Q15_PER_HOUR, 4),
+            "grid_import": round(grid_import / Q15_PER_HOUR, 4),
+            "grid_export": round(grid_export / Q15_PER_HOUR, 4),
+        })
+    return q15
+
+
+def ea_q15_from_optimizer_slots(
+    slots: list[dict[str, Any]],
+    battery_cap: float,
+    *,
+    min_soc_pct: float = 15.0,
+) -> list[dict[str, Any]]:
+    """Convert optimizer q15 slots to Energy arbitrage row storage."""
+    out: list[dict[str, Any]] = []
+    for slot in slots:
+        q = int(slot.get("quarter", len(out)))
+        out.append({
+            "quarter": q,
+            "production": round(float(slot.get("pv") or 0), 4),
+            "consumption": round(float(slot.get("load") or 0), 4),
+            "soc": _clamp_soc_pct(float(slot.get("soc_pct") or 0), min_soc_pct),
+            "battery": round(float(slot.get("battery_delta") or 0), 4),
+            "grid_import": round(float(slot.get("grid_import") or 0), 4),
+            "grid_export": round(float(slot.get("grid_export") or 0), 4),
+        })
+    while len(out) < Q15_PER_HOUR:
+        out.append({
+            "quarter": len(out),
+            "production": 0.0,
+            "consumption": 0.0,
+            "soc": out[-1]["soc"] if out else 0.0,
+            "battery": 0.0,
+            "grid_import": 0.0,
+            "grid_export": 0.0,
+        })
+    return out[:Q15_PER_HOUR]
+
+
+def patch_row_q15_pv_load(
+    row: dict[str, Any],
+    hour: int,
+    *,
+    pv_q15: list[float] | None,
+    load_q15: list[float] | None,
+    pv_hourly: float,
+    load_hourly: float,
+) -> None:
+    """Set q15 production/consumption from forecast q15 (hourly display unchanged)."""
+    q15 = row.get("q15")
+    if not q15:
+        return
+    for slot in q15:
+        q = int(slot.get("quarter", 0))
+        slot["production"] = round(
+            _q15_slot_energy(pv_q15, hour, q, pv_hourly), 4,
+        )
+        slot["consumption"] = round(
+            _q15_slot_energy(load_q15, hour, q, load_hourly), 4,
+        )
+
+
+def _soc_pct_at_quarter_end(
+    soc_series: list[float | None] | None,
+    hour: int,
+    quarter: int,
+    fallback_pct: float,
+) -> float:
+    """SOC at end of q15 quarter from 10-min Influx (slot index 1,3,5 for q0..q2)."""
+    if not soc_series or quarter < 0:
+        return fallback_pct
+    slot_idx = (quarter + 1) * 2 - 1
+    return _soc_pct_at_10m(soc_series, hour, slot_idx, fallback_pct)
+
+
+def build_blended_current_hour_q15(
+    hour: int,
+    now: datetime,
+    *,
+    forecast_pv_q15: list[float] | None,
+    forecast_load_q15: list[float] | None,
+    series_10min: dict[str, list[float | None]] | None,
+    soc_start_pct: float,
+    soc_end_pct: float,
+    opt_slots: list[dict[str, Any]],
+    cfg: dict,
+) -> list[dict[str, Any]]:
+    """q15 slots for the in-progress hour; end SOC matches blended hourly value."""
+    from .plan_optimizer import HourControl, simulate_hour
+    from .simulation_config import (
+        get_simulation_params,
+        plan_min_soc_kwh,
+        plan_min_soc_pct,
+        plan_timer_discharge_ac_kw,
+    )
+
+    params = get_simulation_params(cfg)
+    battery_cap = float(cfg["battery"]["capacity_kwh"])
+    min_soc_pct = plan_min_soc_pct(cfg)
+    min_kwh = plan_min_soc_kwh(cfg)
+    discharge_ac_kw = plan_timer_discharge_ac_kw(cfg)
+    epsilon = float(params["epsilon_kwh"])
+    eps_q = max(epsilon / Q15_PER_HOUR, 0.001)
+    eta_grid = float(params["eta_grid_battery"])
+    eta_out = float(params["eta_battery_out"])
+    eta_pv_load = float(params["eta_pv_load"])
+    eta_pv_grid = float(params["eta_pv_grid"])
+
+    quarter_now = (
+        min(3, max(0, now.minute // 15))
+        if now.hour == hour
+        else 0
+    )
+    soc_10 = (series_10min or {}).get("soc")
+    soc_kwh = (soc_start_pct / 100.0) * battery_cap
+    q15: list[dict[str, Any]] = []
+
+    for q in range(Q15_PER_HOUR):
+        pv = _q15_slot_energy(forecast_pv_q15, hour, q, 0.0)
+        load = _q15_slot_energy(forecast_load_q15, hour, q, 0.0)
+        opt = opt_slots[q] if q < len(opt_slots) else {}
+
+        if now.hour == hour and q < quarter_now:
+            soc_pct = _soc_pct_at_quarter_end(soc_10, hour, q, soc_start_pct)
+            soc_pct = _clamp_soc_pct(soc_pct, min_soc_pct)
+            soc_kwh = (soc_pct / 100.0) * battery_cap
+            phys_soc = soc_pct
+            bat = float(opt.get("battery_delta") or 0)
+            g_imp = float(opt.get("grid_import") or 0)
+            g_exp = float(opt.get("grid_export") or 0)
+        else:
+            ctrl = HourControl(
+                grid_charge_kw=float(opt.get("grid_charge_kw") or 0.0),
+                battery_export_kwh=float(
+                    opt.get("ctrl_battery_export_kwh")
+                    or opt.get("battery_export_kwh")
+                    or 0.0
+                ),
+            )
+            reserve = opt.get("reserve_kwh")
+            phys = simulate_hour(
+                soc_kwh, pv, load, ctrl,
+                battery_cap=battery_cap,
+                min_kwh=min_kwh,
+                ac_cap_kw=discharge_ac_kw / Q15_PER_HOUR,
+                eta_grid=eta_grid,
+                eta_out=eta_out,
+                eta_pv_load=eta_pv_load,
+                eta_pv_grid=eta_pv_grid,
+                epsilon=eps_q,
+                reserve_soc_kwh=float(reserve) if reserve is not None else None,
+            )
+            soc_kwh = phys.soc_end
+            phys_soc = _clamp_soc_pct((soc_kwh / battery_cap) * 100.0, min_soc_pct)
+            bat = phys.battery_delta
+            g_imp = phys.grid_import
+            g_exp = phys.grid_export
+
+        q15.append({
+            "quarter": q,
+            "production": round(pv, 4),
+            "consumption": round(load, 4),
+            "soc": phys_soc,
+            "battery": round(bat, 4),
+            "grid_import": round(g_imp, 4),
+            "grid_export": round(g_exp, 4),
+        })
+
+    if q15:
+        q15[-1]["soc"] = _clamp_soc_pct(soc_end_pct, min_soc_pct)
+    return q15
+
+
+def _hour_control_from_slot(slot: dict[str, Any]) -> "HourControl":
+    from .plan_optimizer import HourControl
+
+    return HourControl(
+        grid_charge_kw=float(slot.get("grid_charge_kw") or 0.0),
+        battery_export_kwh=float(
+            slot.get("ctrl_battery_export_kwh")
+            or slot.get("battery_export_kwh")
+            or 0.0
+        ),
+    )
+
+
+def _apply_q15_physics_to_row(row: dict[str, Any], q15: list[dict[str, Any]]) -> None:
+    """Refresh hourly battery/grid from q15 sums; keep display production/consumption."""
+    row["q15"] = q15
+    row["battery"] = round(sum(float(s.get("battery") or 0) for s in q15), 3)
+    row["bat_charge"] = round(sum(max(0.0, float(s.get("battery") or 0)) for s in q15), 3)
+    row["bat_discharge"] = round(sum(max(0.0, -float(s.get("battery") or 0)) for s in q15), 3)
+    row["grid_import"] = round(sum(float(s.get("grid_import") or 0) for s in q15), 3)
+    row["grid_export"] = round(sum(float(s.get("grid_export") or 0) for s in q15), 3)
+    if q15:
+        row["soc"] = q15[-1].get("soc")
+
+
+def replay_forward_soc_on_rows(
+    rows: list[dict[str, Any]],
+    *,
+    anchor_soc_kwh: float,
+    q15_plan_by_date: dict[str, dict[int, list[dict[str, Any]]]],
+    pv_q15_by_date: dict[str, list[float] | None],
+    load_q15_by_date: dict[str, list[float] | None],
+    pv_hourly_by_date: dict[str, list[float]],
+    load_hourly_by_date: dict[str, list[float]],
+    cfg: dict,
+) -> None:
+    """Forward replay (play) from anchor SOC through future plan rows."""
+    from .plan_optimizer import simulate_hour
+    from .simulation_config import (
+        get_simulation_params,
+        plan_min_soc_kwh,
+        plan_min_soc_pct,
+        plan_timer_discharge_ac_kw,
+    )
+
+    if not rows:
+        return
+
+    params = get_simulation_params(cfg)
+    battery_cap = float(cfg["battery"]["capacity_kwh"])
+    min_soc_pct = plan_min_soc_pct(cfg)
+    min_kwh = plan_min_soc_kwh(cfg)
+    discharge_ac_kw = plan_timer_discharge_ac_kw(cfg)
+    epsilon = float(params["epsilon_kwh"])
+    eps_q = max(epsilon / Q15_PER_HOUR, 0.001)
+    eta_grid = float(params["eta_grid_battery"])
+    eta_out = float(params["eta_battery_out"])
+    eta_pv_load = float(params["eta_pv_load"])
+    eta_pv_grid = float(params["eta_pv_grid"])
+
+    soc_kwh = anchor_soc_kwh
+    for row in rows:
+        date_key = str(row.get("plan_date") or "")
+        hour = int(row.get("hour", 0))
+        plan = q15_plan_by_date.get(date_key) or {}
+        opt_slots = plan.get(hour) or []
+        pv_hourly = pv_hourly_by_date.get(date_key) or []
+        load_hourly = load_hourly_by_date.get(date_key) or []
+        pv_q15 = pv_q15_by_date.get(date_key)
+        load_q15 = load_q15_by_date.get(date_key)
+        pv_h = float(pv_hourly[hour]) if hour < len(pv_hourly) else 0.0
+        load_h = float(load_hourly[hour]) if hour < len(load_hourly) else 0.0
+
+        q15_out: list[dict[str, Any]] = []
+        for q in range(Q15_PER_HOUR):
+            opt = opt_slots[q] if q < len(opt_slots) else {}
+            pv = _q15_slot_energy(pv_q15, hour, q, pv_h)
+            load = _q15_slot_energy(load_q15, hour, q, load_h)
+            ctrl = _hour_control_from_slot(opt)
+            reserve = opt.get("reserve_kwh")
+            phys = simulate_hour(
+                soc_kwh, pv, load, ctrl,
+                battery_cap=battery_cap,
+                min_kwh=min_kwh,
+                ac_cap_kw=discharge_ac_kw / Q15_PER_HOUR,
+                eta_grid=eta_grid,
+                eta_out=eta_out,
+                eta_pv_load=eta_pv_load,
+                eta_pv_grid=eta_pv_grid,
+                epsilon=eps_q,
+                reserve_soc_kwh=float(reserve) if reserve is not None else None,
+            )
+            soc_kwh = phys.soc_end
+            q15_out.append({
+                "quarter": q,
+                "production": round(pv, 4),
+                "consumption": round(load, 4),
+                "soc": _clamp_soc_pct((soc_kwh / battery_cap) * 100.0, min_soc_pct),
+                "battery": round(phys.battery_delta, 4),
+                "grid_import": round(phys.grid_import, 4),
+                "grid_export": round(phys.grid_export, 4),
+            })
+
+        _apply_q15_physics_to_row(row, q15_out)
 
 
 def apply_current_hour_blend(

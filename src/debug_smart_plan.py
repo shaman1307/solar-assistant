@@ -294,6 +294,8 @@ def run_day_smart_q15_plan(
             "grid_export": phys.grid_export,
             "battery_delta": phys.battery_delta,
             "battery_export_kwh": batt_exp,
+            "grid_charge_kw": ctrl.grid_charge_kw,
+            "ctrl_battery_export_kwh": ctrl.battery_export_kwh,
             "soc_pct": soc_pct,
             "soc_end": phys.soc_end,
             "reserve_kwh": reserves[step],
@@ -541,10 +543,17 @@ def build_smart_plan_hour_row(
     )
 
     action = summarize_hour_actions_debug(slots, hour, cfg, epsilon=epsilon)
+    from .plan_hourly_actuals import ea_q15_from_optimizer_slots
+    from .simulation_config import plan_min_soc_pct
+
+    battery_cap = float(cfg["battery"]["capacity_kwh"])
     return {
         "hour": hour,
         "plan_date": date_str,
         "start": interval_end_label(dt),
+        "q15": ea_q15_from_optimizer_slots(
+            slots, battery_cap, min_soc_pct=plan_min_soc_pct(cfg),
+        ),
         "production": round(production, 3),
         "consumption": round(consumption, 3),
         "battery": round(battery, 3),
