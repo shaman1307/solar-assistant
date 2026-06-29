@@ -4,5 +4,6 @@
   "python.terminal.activateEnvInCurrentTerminal": true,
   "terminal.integrated.env.windows": {
     "PATH": "${workspaceFolder}\\.venv\\Scripts;${env:LOCALAPPDATA}\\Programs\\Python\\Python312;${env:LOCALAPPDATA}\\Programs\\Python\\Python312\\Scripts;${env:PATH}"
-  }
+  },
+  "markdown.mermaid.enabled": true
 }

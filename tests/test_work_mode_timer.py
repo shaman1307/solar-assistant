@@ -9,7 +9,7 @@ from src.timer_plan import (
     timer_discharge_end_due,
     timer_discharge_end_times_hhmm,
 )
-from src.work_mode_scheduler import limit_home_due_for_timer
+from src.work_mode_scheduler import limit_home_due_for_timer, on_grid_job_applied
 
 
 def test_full_hour_discharge_not_early():
@@ -114,3 +114,20 @@ def test_limit_home_not_due_when_current_discharge_active():
     due, end = limit_home_due_for_timer(txt, now, plan_hour=21)
     assert due is False
     assert end is None
+
+
+def test_on_grid_applied_only_when_trigger_this_slot():
+    assert on_grid_job_applied({
+        "on_grid_trigger_this_slot": True,
+        "skipped": True,
+        "skip_reason": "already_set",
+    })
+    assert not on_grid_job_applied({
+        "on_grid_trigger_this_slot": False,
+        "skipped": True,
+        "skip_reason": "already_set",
+    })
+    assert on_grid_job_applied({
+        "on_grid_trigger_this_slot": True,
+        "ok": True,
+    })

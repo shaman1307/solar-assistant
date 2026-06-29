@@ -4,7 +4,7 @@ Hour boundary SA sync — :00, :15/:30/:45 Europe/Warsaw.
 Writes to SA from the current hour's Energy arbitrage Timer Schedule cell
 (e.g. Dis 19:30-20:00 6.51kW cap16%), not merged multi-hour proposed_schedule.
 Work mode: On-grid at :00 when Timer Schedule (not charge-grid) or SOC is 100%;
-Limit home load at :00/:15/:30/:45 when discharge ended and live PV is zero.
+Limit home load at :00/:15/:30/:45 when timer empty or discharge ended.
 """
 
 from __future__ import annotations
@@ -281,5 +281,5 @@ def register_hour_boundary_jobs(scheduler: AsyncIOScheduler) -> None:
     )
     log.info(
         "Hour boundary SA sync: :00 On-grid + hour Timer Schedule (after plan refresh); "
-        ":00/:15/:30/:45 Limit home when discharge ended and PV=0.",
+        ":00/:15/:30/:45 Limit home when timer empty or discharge ended.",
     )

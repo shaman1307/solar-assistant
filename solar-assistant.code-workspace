@@ -26,12 +26,14 @@
         "icon": "remote"
       }
     },
-    "terminal.integrated.defaultProfile.windows": "Local PowerShell"
+    "terminal.integrated.defaultProfile.windows": "Local PowerShell",
+    "markdown.mermaid.enabled": true
   },
   "extensions": {
     "recommendations": [
       "ms-python.python",
-      "Natizyskunk.sftp"
+      "Natizyskunk.sftp",
+      "bierner.markdown-mermaid"
     ]
   }
 }

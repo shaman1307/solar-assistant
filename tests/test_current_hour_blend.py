@@ -148,6 +148,39 @@ def test_at_45_blends_half_hour_plus_partial_10m():
     assert pv == round(first + partial + forecast, 3)
 
 
+def test_at_30_blended_battery_db_on_completed_q_sim_on_tail():
+    """At :30 q0-q1 bat/grid from DB; q2-q3 from sim (frozen q0 is deterministic)."""
+    from src.plan_hourly_actuals import simulate_blended_current_hour_q15
+
+    cfg = _minimal_cfg()
+    hour = 18
+    now = datetime(2026, 6, 26, 18, 30)
+    kw = 2.0
+    series = _flat_10m_kw(hour, kw)
+    for key in ("bat_charge", "bat_discharge", "grid_buy", "grid_sell"):
+        series[key] = [None] * 144
+    base = hour * 6
+    series["bat_charge"][base] = 1.0
+    series["bat_charge"][base + 1] = 1.0
+    series["bat_charge"][base + 2] = 0.5
+    series["grid_buy"][base + 2] = -2.0
+
+    pv_by_q = [0.2, 0.2, 0.3, 0.3]
+    load_by_q = [0.1, 0.1, 0.1, 0.1]
+    opt = [{"grid_charge_kw": 0.0, "ctrl_battery_export_kwh": 0.0}] * 4
+
+    q15, _ = simulate_blended_current_hour_q15(
+        5.0, hour, now, pv_by_q, load_by_q, opt, series, cfg,
+    )
+
+    assert q15[0]["from_actual"] is True
+    assert q15[1]["from_actual"] is True
+    assert q15[2]["from_actual"] is False
+    assert q15[3]["from_actual"] is False
+    assert q15[1]["battery"] > 0
+    assert q15[2]["battery"] != q15[1]["battery"] or q15[2]["production"] != q15[1]["production"]
+
+
 def test_sim_chain_soc_accumulates_from_start():
     """SOC at each q15 = previous + sim delta (not Influx / optimizer override)."""
     cfg = _minimal_cfg()

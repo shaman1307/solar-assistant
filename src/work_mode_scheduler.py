@@ -2,8 +2,8 @@
 Work mode scheduler — SRNE grid export requires On-grid during timed discharge hours.
 
 At :00 Europe/Warsaw: On-grid when Timer Schedule present (except charge-grid) or SOC is 100%.
-At :00/:15/:30/:45: Limit power to home load when live PV is zero and the current
-hour has no Timer Schedule, or a planned discharge has ended.
+At :00/:15/:30/:45: Limit power to home load when the current hour has no Timer
+Schedule, or a planned discharge has ended.
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ from .timer_plan import (
 
 log = logging.getLogger(__name__)
 
-LIVE_PV_ZERO_KW = 0.01
 SOC_FULL_PCT = 100.0
 
 _last_work_mode_sync: dict[str, Any] = {
@@ -52,13 +51,17 @@ def get_last_work_mode_sync() -> dict[str, Any]:
 
 
 def on_grid_job_applied(status: dict[str, Any] | None) -> bool:
-    """True when the :00 On-grid job set or already had On-grid."""
+    """True when :00 On-grid job ran for discharge/SOC-full trigger in this slot.
+
+    Stale On-grid left from a previous hour (empty Timer Schedule, no trigger here)
+    does not block Limit home in the same :00 slot.
+    """
     if not status:
         return False
-    if status.get("work_mode_target") != sa_client.WORK_MODE_ON_GRID:
+    if not status.get("on_grid_trigger_this_slot"):
         return False
-    if status.get("skipped"):
-        return status.get("skip_reason") == "already_set"
+    if status.get("skipped") and status.get("skip_reason") == "already_set":
+        return True
     return status.get("ok") is not False
 
 
@@ -147,6 +150,7 @@ async def run_work_mode_hour_start() -> dict[str, Any]:
         "work_mode_target": sa_client.WORK_MODE_ON_GRID,
         "work_mode_before": None,
         "work_mode_after": None,
+        "on_grid_trigger_this_slot": False,
         "skipped": False,
         "skip_reason": None,
         "ok": None,
@@ -182,8 +186,10 @@ async def run_work_mode_hour_start() -> dict[str, Any]:
         has_timer = hour_has_timer_schedule(rows, hour)
         charge_grid = normalize_action(row.get("action") or "") == ACTION_CHARGE_GRID
         timer_on_grid = has_timer and not charge_grid
+        on_grid_trigger = timer_on_grid or soc_full
+        status["on_grid_trigger_this_slot"] = on_grid_trigger
 
-        if not (timer_on_grid or soc_full):
+        if not on_grid_trigger:
             status["skipped"] = True
             status["skip_reason"] = "no_on_grid_trigger"
             status["ok"] = True
@@ -229,7 +235,7 @@ def limit_home_due_for_timer(
 
 
 async def run_work_mode_limit_home() -> dict[str, Any]:
-    """:00/:15/:30/:45 — Limit home load when discharge ended and live PV is zero."""
+    """:00/:15/:30/:45 — Limit home when timer empty or discharge ended."""
     global _last_work_mode_sync
 
     now = now_warsaw()
@@ -265,17 +271,6 @@ async def run_work_mode_limit_home() -> dict[str, Any]:
         metrics = await sa_client.get_live_metrics(cfg)
         pv_kw = float(metrics.get("pv_power", 0.0))
         status["production_kw"] = round(pv_kw, 3)
-        if pv_kw > LIVE_PV_ZERO_KW:
-            status["skipped"] = True
-            status["skip_reason"] = "production_not_zero"
-            status["ok"] = True
-            log.info(
-                "Work mode limit_home skipped — hour %02d production=%.3f kW",
-                hour,
-                pv_kw,
-            )
-            _last_work_mode_sync = status
-            return status
 
         rows = await _plan_rows(cfg)
         row = _hour_row(rows, hour)

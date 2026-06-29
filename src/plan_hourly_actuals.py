@@ -560,6 +560,122 @@ def _hour_control_from_slot(slot: dict[str, Any]) -> "HourControl":
     )
 
 
+def _actual_q15_battery_grid(
+    series_10min: dict[str, list[float | None]] | None,
+    hour: int,
+    q: int,
+) -> tuple[float, float, float]:
+    """Per-q15 battery delta and grid kWh from 10-min Influx (same windows as PV blend)."""
+    s = series_10min or {}
+    bat_in = _actual_q15_slice_kwh(s.get("bat_charge"), hour, q)
+    bat_out = _actual_q15_slice_kwh(s.get("bat_discharge"), hour, q)
+    grid_import = _actual_q15_slice_kwh(
+        s.get("grid_buy"), hour, q, grid_mode="import",
+    )
+    grid_export = _actual_q15_slice_kwh(
+        s.get("grid_sell"), hour, q, grid_mode="export",
+    )
+    return round(bat_in - bat_out, 4), round(grid_import, 4), round(grid_export, 4)
+
+
+def _soc_kwh_after_battery_delta(
+    soc_kwh: float,
+    battery_delta_kwh: float,
+    *,
+    min_kwh: float,
+    battery_cap: float,
+) -> float:
+    return max(min_kwh, min(battery_cap, soc_kwh + battery_delta_kwh))
+
+
+def simulate_blended_current_hour_q15(
+    soc_start_kwh: float,
+    hour: int,
+    now: datetime,
+    pv_by_q: list[float],
+    load_by_q: list[float],
+    opt_slots: list[dict[str, Any]],
+    series_10min: dict[str, list[float | None]] | None,
+    cfg: dict,
+) -> tuple[list[dict[str, Any]], float]:
+    """Blended hour: DB bat/grid on frozen+refresh q slots; sim on tail; SOC chains both."""
+    from .plan_optimizer import simulate_hour
+    from .simulation_config import (
+        get_simulation_params,
+        plan_min_soc_kwh,
+        plan_min_soc_pct,
+        plan_timer_discharge_ac_kw,
+    )
+
+    params = get_simulation_params(cfg)
+    battery_cap = float(cfg["battery"]["capacity_kwh"])
+    min_soc_pct = plan_min_soc_pct(cfg)
+    min_kwh = plan_min_soc_kwh(cfg)
+    discharge_ac_kw = plan_timer_discharge_ac_kw(cfg)
+    epsilon = float(params["epsilon_kwh"])
+    eps_q = max(epsilon / Q15_PER_HOUR, 0.001)
+    eta_grid = float(params["eta_grid_battery"])
+    eta_out = float(params["eta_battery_out"])
+    eta_pv_load = float(params["eta_pv_load"])
+    eta_pv_grid = float(params["eta_pv_grid"])
+
+    refresh = _refresh_slot_index(now, hour)
+    soc_kwh = soc_start_kwh
+    q15: list[dict[str, Any]] = []
+
+    for q in range(Q15_PER_HOUR):
+        pv = float(pv_by_q[q]) if q < len(pv_by_q) else 0.0
+        load = float(load_by_q[q]) if q < len(load_by_q) else 0.0
+
+        if refresh >= 0 and q <= refresh:
+            bat_delta, grid_import, grid_export = _actual_q15_battery_grid(
+                series_10min, hour, q,
+            )
+            soc_kwh = _soc_kwh_after_battery_delta(
+                soc_kwh, bat_delta, min_kwh=min_kwh, battery_cap=battery_cap,
+            )
+            q15.append({
+                "quarter": q,
+                "production": round(pv, 4),
+                "consumption": round(load, 4),
+                "soc": _clamp_soc_pct((soc_kwh / battery_cap) * 100.0, min_soc_pct),
+                "battery": bat_delta,
+                "grid_import": grid_import,
+                "grid_export": grid_export,
+                "from_actual": True,
+            })
+            continue
+
+        opt = opt_slots[q] if q < len(opt_slots) else {}
+        ctrl = _hour_control_from_slot(opt)
+        reserve = opt.get("reserve_kwh")
+        phys = simulate_hour(
+            soc_kwh, pv, load, ctrl,
+            battery_cap=battery_cap,
+            min_kwh=min_kwh,
+            ac_cap_kw=discharge_ac_kw / Q15_PER_HOUR,
+            eta_grid=eta_grid,
+            eta_out=eta_out,
+            eta_pv_load=eta_pv_load,
+            eta_pv_grid=eta_pv_grid,
+            epsilon=eps_q,
+            reserve_soc_kwh=float(reserve) if reserve is not None else None,
+        )
+        soc_kwh = phys.soc_end
+        q15.append({
+            "quarter": q,
+            "production": round(pv, 4),
+            "consumption": round(load, 4),
+            "soc": _clamp_soc_pct((soc_kwh / battery_cap) * 100.0, min_soc_pct),
+            "battery": round(phys.battery_delta, 4),
+            "grid_import": round(phys.grid_import, 4),
+            "grid_export": round(phys.grid_export, 4),
+            "from_actual": False,
+        })
+
+    return q15, soc_kwh
+
+
 def simulate_q15_slots(
     soc_start_kwh: float,
     hour: int,
@@ -776,8 +892,15 @@ def build_blended_current_hour_q15(
     )
     pv_by_q = [s[0] for s in slots]
     load_by_q = [s[1] for s in slots]
-    q15, _ = simulate_q15_slots(
-        soc_start_kwh, hour, pv_by_q, load_by_q, opt_slots, cfg,
+    q15, _ = simulate_blended_current_hour_q15(
+        soc_start_kwh,
+        hour,
+        now,
+        pv_by_q,
+        load_by_q,
+        opt_slots,
+        series_10min,
+        cfg,
     )
     return q15
 
