@@ -13,6 +13,7 @@ from .simulation_config import (
     get_simulation_params,
     merge_simulation_defaults,
     plan_min_soc_kwh,
+    plan_reserve_min_soc_kwh,
     plan_timer_discharge_ac_kw,
 )
 from .timer_plan import (
@@ -249,7 +250,8 @@ def run_day_smart_q15_plan(
 
     reserves = reserve_soc_per_step(
         steps, pv_q, load_q,
-        min_kwh=min_kwh, eta_out=eta_out, eta_pv_load=eta_pv_load, epsilon=epsilon,
+        reserve_floor_kwh=plan_reserve_min_soc_kwh(cfg),
+        eta_out=eta_out, eta_pv_load=eta_pv_load, epsilon=epsilon,
         step_scale=STEP_SCALE, end_dt=end_dt, today_date=today_date, forecast=forecast,
     )
 
@@ -509,6 +511,7 @@ def build_smart_plan_hour_row(
     epsilon: float,
     display_pv: float | None = None,
     display_load: float | None = None,
+    manual_timer_schedule: str | None = None,
 ) -> dict[str, Any]:
     """Hourly PROD row from smart q15 slots (same action/timer logic as debug)."""
     from .plan_cost import hour_grid_cash_pln
@@ -568,9 +571,14 @@ def build_smart_plan_hour_row(
         "service_cost": cash["service_cost"],
         "cost": cash["cost"],
         "action": action,
-        "timer_schedule": build_hour_timer_schedule(
-            hour, slots, cfg, epsilon=epsilon, action=action, grid_export=grid_export,
+        "timer_schedule": (
+            manual_timer_schedule
+            if manual_timer_schedule is not None
+            else build_hour_timer_schedule(
+                hour, slots, cfg, epsilon=epsilon, action=action, grid_export=grid_export,
+            )
         ),
+        "timer_schedule_manual": manual_timer_schedule is not None,
         "rce_price": rce_price,
         "rce_q15": rce_q15,
         "export_credit": cash["export_credit"],

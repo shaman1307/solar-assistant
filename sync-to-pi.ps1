@@ -44,6 +44,7 @@ $files = @(
     "src\g12_pricing.py",
     "src\simulation_config.py",
     "src\plan_simulation.py",
+    "src\plan_timer_override.py",
     "src\scheduler.py",
     "src\hour_boundary_scheduler.py",
     "src\work_mode_scheduler.py",

@@ -11,7 +11,7 @@ from .. import forecast as forecast_mod
 from .. import influxdb as influxdb_mod
 from .. import rce as rce_mod
 from .. import sa_client
-from ..config import load_config
+from ..config import load_config, save_config
 from ..influxdb import now_warsaw
 from ..plan_monthly_history import build_month_history
 from ..plan_simulation import (
@@ -21,7 +21,10 @@ from ..plan_simulation import (
     get_cached_buy_tariff,
     get_cached_plan,
     get_cached_rce,
+    invalidate_plan_cache,
 )
+from ..plan_timer_override import is_timer_schedule_hour_editable, set_timer_schedule_override
+from ..timer_plan import parse_timer_schedule_segments
 from .. import forecast_cache as fc
 
 router = APIRouter()
@@ -116,6 +119,50 @@ async def api_simulation(refresh: bool = False) -> dict[str, Any]:
         force_refresh=refresh,
         invalidate_inputs=refresh,
     )
+
+
+@router.post("/api/plan/timer-schedule")
+async def api_set_plan_timer_schedule(body: dict[str, Any]) -> dict[str, Any]:
+    """Save manual Timer Schedule cell; replay from that hour onward."""
+    plan_date = str(body.get("plan_date") or "").strip()
+    if not plan_date or len(plan_date) != 10:
+        return {"ok": False, "error": "plan_date required (YYYY-MM-DD)"}
+    try:
+        hour = int(body["hour"])
+    except (KeyError, TypeError, ValueError):
+        return {"ok": False, "error": "hour required (0-23)"}
+    if not (0 <= hour <= 23):
+        return {"ok": False, "error": "hour must be 0-23"}
+
+    now = now_warsaw()
+    today_date = now.strftime("%Y-%m-%d")
+    if not is_timer_schedule_hour_editable(
+        plan_date, hour, today_date=today_date, plan_from_hour=now.hour,
+    ):
+        return {"ok": False, "error": "Only future plan hours can be edited"}
+
+    reset = bool(body.get("reset"))
+    timer_raw = body.get("timer_schedule")
+    if reset:
+        timer_schedule: str | None = None
+    elif timer_raw is None:
+        timer_schedule = ""
+    else:
+        timer_schedule = str(timer_raw).strip()
+
+    if timer_schedule:
+        if not parse_timer_schedule_segments(timer_schedule):
+            return {
+                "ok": False,
+                "error": "Invalid timer format. Example: Chg 14:00-15:00 5kW cap80%",
+            }
+
+    cfg = load_config()
+    set_timer_schedule_override(cfg, plan_date, hour, timer_schedule)
+    save_config(cfg)
+    invalidate_plan_cache()
+    plan = await build_plan_simulation(cfg, force_refresh=True, invalidate_inputs=False)
+    return {"ok": True, "plan_date": plan_date, "hour": hour, "timer_schedule": timer_schedule, "plan": plan}
 
 
 @router.get("/api/accruals")

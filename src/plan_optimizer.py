@@ -16,6 +16,7 @@ from typing import Any
 from .plan_spill import build_tail_hour_arrays, pv_load_energy_split, tail_balance_cost_pln
 from .simulation_config import (
     plan_min_soc_kwh,
+    plan_reserve_min_soc_kwh,
     plan_timer_charge_power_kw,
     plan_timer_discharge_ac_kw,
 )
@@ -221,7 +222,7 @@ def _reserve_soc_kwh_from_step(
     step: int,
     pv_series: list[float],
     load_series: list[float],
-    min_kwh: float,
+    reserve_floor_kwh: float,
     eta_out: float,
     eta_pv_load: float,
     epsilon: float,
@@ -236,7 +237,7 @@ def _reserve_soc_kwh_from_step(
             need += deficit / eta_out if eta_out > 0 else deficit
         if pv_series[j] * eta_pv_load >= load_series[j] - epsilon:
             break
-    return need + min_kwh
+    return need + reserve_floor_kwh
 
 
 def _max_battery_export_kwh(
@@ -383,7 +384,7 @@ def reserve_soc_per_step(
     pv_series: list[float],
     load_series: list[float],
     *,
-    min_kwh: float,
+    reserve_floor_kwh: float,
     eta_out: float,
     eta_pv_load: float,
     epsilon: float,
@@ -401,7 +402,7 @@ def reserve_soc_per_step(
     eps_step = max(epsilon * step_scale, 0.001)
     return [
         _reserve_soc_kwh_from_step(
-            s, pv_r, load_r, min_kwh, eta_out, eta_pv_load, eps_step,
+            s, pv_r, load_r, reserve_floor_kwh, eta_out, eta_pv_load, eps_step,
         )
         for s in range(steps)
     ]
@@ -443,6 +444,7 @@ def optimize_horizon(
 
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     min_kwh = plan_min_soc_kwh(cfg)
+    reserve_floor_kwh = plan_reserve_min_soc_kwh(cfg)
     discharge_ac_kw = plan_timer_discharge_ac_kw(cfg)
     charge_dc_kw = plan_timer_charge_power_kw(cfg)
     epsilon = float(params["epsilon_kwh"])
@@ -495,7 +497,8 @@ def optimize_horizon(
 
     reserves = [
         _reserve_soc_kwh_from_step(
-            s, pv_for_reserve, load_for_reserve, min_kwh, eta_out, eta_pv_load, eps_step,
+            s, pv_for_reserve, load_for_reserve, reserve_floor_kwh,
+            eta_out, eta_pv_load, eps_step,
         )
         for s in range(steps)
     ]

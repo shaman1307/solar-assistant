@@ -87,3 +87,54 @@ def test_replay_stores_q15_pv_load():
     assert rows[0]["q15"][0]["consumption"] == 0.25
     assert rows[0]["production"] == 2.0
     assert rows[0]["consumption"] == 1.0
+
+
+def test_replay_refreshes_cost_when_grid_import_zeroed():
+    """Stale optimizer import_cost must clear when replay sets grid_import to 0."""
+    date = "2026-06-30"
+    rows = [
+        {
+            "hour": 5,
+            "plan_date": date,
+            "production": 0.092,
+            "consumption": 0.496,
+            "soc": 16.8,
+            "buy_price": 0.6229,
+            "g12_zone": "offpeak",
+            "grid_import": 0.08,
+            "grid_export": 0.0,
+            "import_cost": 0.0501,
+            "energy_cost": 0.04,
+            "service_cost": 0.0125,
+            "cost": 0.0501,
+        },
+    ]
+    opt_slots = [
+        {
+            "quarter": q,
+            "pv": 0.023,
+            "load": 0.124,
+            "grid_charge_kw": 0.0,
+            "ctrl_battery_export_kwh": 0.0,
+            "reserve_kwh": 1.5,
+        }
+        for q in range(4)
+    ]
+    pv_q15 = [0.0] * 96
+    load_q15 = [0.0] * 96
+    for q in range(4):
+        pv_q15[5 * 4 + q] = 0.023
+        load_q15[5 * 4 + q] = 0.124
+    replay_forward_soc_on_rows(
+        rows,
+        anchor_soc_kwh=3.0,
+        q15_plan_by_date={date: {5: opt_slots}},
+        pv_q15_by_date={date: pv_q15},
+        load_q15_by_date={date: load_q15},
+        cfg=_minimal_cfg(),
+    )
+    assert rows[0]["grid_import"] == 0.0
+    assert rows[0]["import_cost"] == 0.0
+    assert rows[0]["energy_cost"] == 0.0
+    assert rows[0]["service_cost"] == 0.0
+    assert rows[0]["cost"] == 0.0

@@ -17,6 +17,8 @@ DEFAULT_SIMULATION: dict[str, Any] = {
     },
 }
 
+RESERVE_MIN_SOC_MARGIN = 1.2
+
 MAX_BATTERY_CHARGE_POWER_KW = 5.0
 MAX_BATTERY_DISCHARGE_POWER_KW = 8.0
 DEFAULT_BATTERY_MAX_CHARGE_POWER_KW = 5.0
@@ -117,3 +119,14 @@ def plan_min_soc_pct(cfg: dict[str, Any]) -> float:
 def plan_min_soc_kwh(cfg: dict[str, Any]) -> float:
     cap = float(cfg["battery"]["capacity_kwh"])
     return (plan_min_soc_pct(cfg) / 100.0) * cap
+
+
+def plan_reserve_min_soc_pct(cfg: dict[str, Any]) -> float:
+    """Night-reserve floor: min_soc_pct × RESERVE_MIN_SOC_MARGIN (e.g. 15% → 18%)."""
+    return min(100.0, plan_min_soc_pct(cfg) * RESERVE_MIN_SOC_MARGIN)
+
+
+def plan_reserve_min_soc_kwh(cfg: dict[str, Any]) -> float:
+    """kWh floor for survive-until-PV reserve; charging/discharge hard limit stays min_soc."""
+    cap = float(cfg["battery"]["capacity_kwh"])
+    return (plan_reserve_min_soc_pct(cfg) / 100.0) * cap

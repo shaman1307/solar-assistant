@@ -86,9 +86,6 @@ def load_config() -> dict:
     _recover_legacy_smart_mode(cfg, path)
     if path == DEFAULT_CONFIG_PATH and LOCAL_CONFIG_PATH.is_file():
         cfg = _deep_merge(cfg, _load_yaml(LOCAL_CONFIG_PATH))
-    if cfg.pop("plan_overrides", None) is not None:
-        with open(path, "w", encoding="utf-8") as fh:
-            yaml.dump(cfg, fh, allow_unicode=True, default_flow_style=False)
     cfg = merge_simulation_defaults(cfg)
     normalize_battery_power_limits(cfg)
     ev = cfg.setdefault("ev", {})

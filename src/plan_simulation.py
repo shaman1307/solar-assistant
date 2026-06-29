@@ -242,7 +242,11 @@ async def build_plan_simulation(
     cfg = merge_simulation_defaults(cfg)
 
     if not force_refresh and _cache is not None and not _plan_cache_stale(_cache):
-        return _cache
+        cached = dict(_cache)
+        if cached.get("rce"):
+            rce_mod._refresh_current_price(cached["rce"])
+            cached["rce_current"] = cached["rce"].get("current_price_pln_kwh")
+        return cached
 
     forecast, metrics, rules, rce_prices = await fetch_plan_inputs(
         cfg, invalidate=invalidate_inputs or force_refresh,
@@ -275,6 +279,10 @@ async def build_plan_simulation(
         "buy_tariff": build_buy_tariff_payload(cfg, sim["rows"]),
         "plan_soc_q15": extract_plan_soc_q15(sim),
     }
+
+    if result.get("rce"):
+        rce_mod._refresh_current_price(result["rce"])
+        result["rce_current"] = result["rce"].get("current_price_pln_kwh")
 
     if store_cache:
         _cache = result

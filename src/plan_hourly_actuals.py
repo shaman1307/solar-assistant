@@ -917,6 +917,43 @@ def apply_q15_physics_to_row(row: dict[str, Any], q15: list[dict[str, Any]]) -> 
         row["soc"] = q15[-1].get("soc")
 
 
+def refresh_row_grid_cash(
+    row: dict[str, Any],
+    cfg: dict,
+    *,
+    epsilon: float | None = None,
+) -> None:
+    """Recompute import/export cash columns from row grid flows."""
+    from .plan_cost import hour_grid_cash_pln, infer_battery_export_kwh
+    from .simulation_config import get_simulation_params
+
+    if epsilon is None:
+        epsilon = float(get_simulation_params(cfg)["epsilon_kwh"])
+
+    batt_exp = infer_battery_export_kwh(
+        float(row.get("grid_export") or 0),
+        float(row.get("battery") or 0),
+        epsilon=epsilon,
+        bat_discharge=float(row.get("bat_discharge") or 0),
+    )
+    cash = hour_grid_cash_pln(
+        float(row.get("grid_import") or 0),
+        float(row.get("grid_export") or 0),
+        float(row.get("buy_price") or 0),
+        row.get("rce_price"),
+        cfg,
+        battery_export=batt_exp,
+        g12_zone=str(row.get("g12_zone") or "offpeak"),
+    )
+    row["import_cost"] = cash["import_cost"]
+    row["export_revenue"] = cash["export_revenue"]
+    row["energy_cost"] = cash["energy_cost"]
+    row["service_cost"] = cash["service_cost"]
+    row["cost"] = cash["cost"]
+    row["export_credit"] = cash["export_credit"]
+    row["export_planned"] = float(row.get("grid_export") or 0) >= epsilon
+
+
 def sync_blended_current_hour_row(
     row: dict[str, Any],
     q15: list[dict[str, Any]],
@@ -934,24 +971,7 @@ def sync_blended_current_hour_row(
     row["soc"] = round(soc, 1)
     row["soc_blended"] = True
 
-    from .plan_cost import hour_grid_cash_pln
-
-    cash = hour_grid_cash_pln(
-        float(row["grid_import"]),
-        float(row["grid_export"]),
-        float(row.get("buy_price") or 0),
-        row.get("rce_price"),
-        cfg,
-        battery_export=0.0,
-        g12_zone=str(row.get("g12_zone") or "offpeak"),
-    )
-    row["import_cost"] = cash["import_cost"]
-    row["export_revenue"] = cash["export_revenue"]
-    row["energy_cost"] = cash["energy_cost"]
-    row["service_cost"] = cash["service_cost"]
-    row["cost"] = cash["cost"]
-    row["export_credit"] = cash["export_credit"]
-    row["export_planned"] = float(row["grid_export"]) >= epsilon
+    refresh_row_grid_cash(row, cfg, epsilon=epsilon)
 
 
 def replay_forward_soc_on_rows(
@@ -982,6 +1002,7 @@ def replay_forward_soc_on_rows(
             soc_kwh, hour, pv_by_q, load_by_q, opt_slots, cfg,
         )
         apply_q15_physics_to_row(row, q15_out)
+        refresh_row_grid_cash(row, cfg)
 
 
 def apply_current_hour_blend(

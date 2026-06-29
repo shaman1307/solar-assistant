@@ -37,6 +37,10 @@ from .plan_optimizer import (
     g12_tariff_from_cfg,
 )
 from .rce import quarter_rce_for_dates
+from .plan_timer_override import (
+    apply_plan_timer_overrides_if_any,
+    get_timer_overrides_for_date,
+)
 from .simulation_config import get_simulation_params, plan_min_soc_pct
 from .timer_plan import derive_timer_schedule_q15, build_hour_timer_schedule
 
@@ -246,6 +250,55 @@ def run_simulation(
             initial_soc_kwh=float(smart_today["end_soc_kwh"]),
         )
 
+    today_timer_ov = get_timer_overrides_for_date(cfg, today_str)
+    tomorrow_timer_ov = get_timer_overrides_for_date(cfg, tomorrow_str)
+    rce_today_full = rce_today if len(rce_today) >= Q15_PER_HOUR * 24 else None
+    rce_tomorrow_full = (
+        quarters_by_date.get(tomorrow_str) or []
+    )
+    rce_tomorrow_full = (
+        rce_tomorrow_full if len(rce_tomorrow_full) >= Q15_PER_HOUR * 24 else None
+    )
+
+    if smart_today and today_timer_ov:
+        smart_today = apply_plan_timer_overrides_if_any(
+            smart_today,
+            date_str=today_str,
+            pv_hourly=pv_merged,
+            load_hourly=load_merged,
+            tomorrow_pv=[float(v) for v in pv_tomorrow],
+            tomorrow_load=[float(v) for v in load_tomorrow],
+            cfg=cfg,
+            from_hour=plan_from_hour,
+            rce_quarters=rce_today_full,
+        )
+
+    if smart_tomorrow and today_timer_ov and smart_today:
+        smart_tomorrow = run_day_smart_q15_plan(
+            date_str=tomorrow_str,
+            pv_hourly=[float(v) for v in pv_tomorrow],
+            load_hourly=[float(v) for v in load_tomorrow],
+            tomorrow_pv=[float(v) for v in pv_tomorrow],
+            tomorrow_load=[float(v) for v in load_tomorrow],
+            cfg=cfg,
+            rce_quarters=rce_tomorrow_full,
+            initial_soc_kwh=float(smart_today["end_soc_kwh"]),
+            from_hour=0,
+        )
+
+    if smart_tomorrow and tomorrow_timer_ov:
+        smart_tomorrow = apply_plan_timer_overrides_if_any(
+            smart_tomorrow,
+            date_str=tomorrow_str,
+            pv_hourly=[float(v) for v in pv_tomorrow],
+            load_hourly=[float(v) for v in load_tomorrow],
+            tomorrow_pv=[float(v) for v in pv_tomorrow],
+            tomorrow_load=[float(v) for v in load_tomorrow],
+            cfg=cfg,
+            from_hour=0,
+            rce_quarters=rce_tomorrow_full,
+        )
+
     export_hours: set[int] = set()
     all_rows: list[dict] = []
     remaining = hour_steps
@@ -292,6 +345,9 @@ def run_simulation(
                 epsilon=epsilon,
                 display_pv=disp_pv,
                 display_load=disp_load,
+                manual_timer_schedule=(
+                    today_timer_ov[h] if h in today_timer_ov else None
+                ),
             )
             if h == plan_from_hour:
                 slots_now = smart_today["q15_by_hour"].get(h) or []
@@ -346,6 +402,9 @@ def run_simulation(
                 epsilon=epsilon,
                 display_pv=disp_pv,
                 display_load=disp_load,
+                manual_timer_schedule=(
+                    tomorrow_timer_ov[h] if h in tomorrow_timer_ov else None
+                ),
             )
             all_rows.append(row)
             if row.get("export_planned"):

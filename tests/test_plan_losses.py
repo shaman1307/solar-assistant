@@ -4,7 +4,12 @@ import pytest
 
 from src.plan_optimizer import HourControl, simulate_hour
 from src.plan_spill import pv_load_energy_split
-from src.simulation_config import get_simulation_params
+from src.simulation_config import (
+    RESERVE_MIN_SOC_MARGIN,
+    get_simulation_params,
+    plan_min_soc_pct,
+    plan_reserve_min_soc_pct,
+)
 
 
 def _cfg(losses: dict | None = None) -> dict:
@@ -91,3 +96,9 @@ def test_simulate_hour_ev_as_ac_load_no_double_loss():
 def test_get_simulation_params_includes_pv_to_load():
     params = get_simulation_params(_cfg())
     assert params["eta_pv_load"] == 0.925
+
+
+def test_reserve_min_soc_margin():
+    cfg = _cfg()
+    assert plan_min_soc_pct(cfg) == 15.0
+    assert plan_reserve_min_soc_pct(cfg) == 15.0 * RESERVE_MIN_SOC_MARGIN

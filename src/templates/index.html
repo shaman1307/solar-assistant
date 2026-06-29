@@ -63,6 +63,206 @@
     .sim-table-ea .sim-col-cost { width: 6%; }
     .sim-table-ea .sim-col-timer { width: 12%; }
     .sim-table-ea .sim-col-action { width: 12%; }
+    .sim-table-ea.sim-ea-price-collapsed col.sim-col-price,
+    .sim-table-ea.sim-ea-price-collapsed col.sim-col-rce {
+      width: 0 !important;
+      visibility: collapse;
+    }
+    .sim-table-ea.sim-ea-price-collapsed .sim-col-buy,
+    .sim-table-ea.sim-ea-price-collapsed .sim-col-sell {
+      visibility: collapse;
+      padding: 0 !important;
+      border: 0 !important;
+      width: 0 !important;
+      max-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+    /* Redistribute Buy/Sell width (~14%) to remaining columns */
+    .sim-table-ea.sim-ea-price-collapsed col.sim-col-start { width: 15%; }
+    .sim-table-ea.sim-ea-price-collapsed col.sim-col-kwh { width: 6%; }
+    .sim-table-ea.sim-ea-price-collapsed col.sim-col-soc { width: 5%; }
+    .sim-table-ea.sim-ea-price-collapsed col.sim-col-cost { width: 7%; }
+    .sim-table-ea.sim-ea-price-collapsed col.sim-col-timer { width: 19%; }
+    .sim-table-ea.sim-ea-price-collapsed col.sim-col-action { width: 14%; }
+    .sim-timer-cell {
+      cursor: default;
+      vertical-align: top;
+    }
+    .sim-timer-cell-inner {
+      display: flex;
+      width: 100%;
+      justify-content: flex-end;
+      align-items: flex-start;
+      gap: 0.05em;
+    }
+    .sim-timer-cell-text {
+      flex: 0 1 auto;
+      min-width: 0;
+      text-align: right;
+    }
+    .sim-timer-pencil {
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.1em;
+      height: 1.1em;
+      margin: 0;
+      margin-inline-start: -0.02em;
+      padding: 0;
+      border: none;
+      border-radius: 0.15em;
+      background: transparent;
+      color: #9ca3af;
+      cursor: pointer;
+      font-size: inherit;
+      line-height: 1;
+      vertical-align: top;
+    }
+    .sim-timer-pencil svg {
+      width: 0.95em;
+      height: 0.95em;
+      display: block;
+    }
+    .sim-timer-pencil:hover {
+      color: #d97706;
+      background: #fffbeb;
+    }
+    .sim-timer-manual {
+      font-weight: 600;
+    }
+    .sim-timer-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .sim-timer-modal.hidden {
+      display: none;
+    }
+    .sim-timer-modal-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(17, 24, 39, 0.45);
+    }
+    .sim-timer-modal-panel {
+      position: relative;
+      z-index: 1;
+      width: min(100%, 28rem);
+      background: #fff;
+      border-radius: 0.75rem;
+      border: 1px solid #e5e7eb;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+      padding: 1rem 1.1rem;
+    }
+    .sim-timer-modal-form {
+      margin-top: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+    }
+    .sim-timer-modal-form.is-disabled .sim-timer-modal-fields {
+      opacity: 0.45;
+      pointer-events: none;
+    }
+    .sim-timer-modal-enable {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-size: 0.8125rem;
+      color: #374151;
+      cursor: pointer;
+      user-select: none;
+    }
+    .sim-timer-modal-fields {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem 0.65rem;
+    }
+    .sim-timer-modal-field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+      min-width: 0;
+    }
+    .sim-timer-modal-field--full {
+      grid-column: 1 / -1;
+    }
+    .sim-timer-modal-field label {
+      font-size: 0.6875rem;
+      font-weight: 500;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+    .sim-timer-modal-field input,
+    .sim-timer-modal-field select {
+      width: 100%;
+      padding: 0.4rem 0.5rem;
+      border: 1px solid #d1d5db;
+      border-radius: 0.375rem;
+      font-size: 0.8125rem;
+      line-height: 1.25;
+      background: #fff;
+      color: #111827;
+    }
+    .sim-timer-modal-field input:focus,
+    .sim-timer-modal-field select:focus {
+      outline: none;
+      border-color: #f59e0b;
+      box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
+    }
+    .sim-timer-modal-preview {
+      grid-column: 1 / -1;
+      font-size: 0.75rem;
+      color: #92400e;
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-radius: 0.375rem;
+      padding: 0.4rem 0.55rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      word-break: break-all;
+    }
+    .sim-timer-modal-preview.is-empty {
+      color: #9ca3af;
+      background: #f9fafb;
+      border-color: #e5e7eb;
+    }
+    .sim-timer-modal-error {
+      font-size: 0.75rem;
+      color: #b91c1c;
+      min-height: 1rem;
+    }
+    .sim-timer-modal-actions {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+    .sim-timer-modal-btn {
+      font-size: 0.75rem;
+      padding: 0.35rem 0.7rem;
+      border-radius: 0.375rem;
+      border: 1px solid #d1d5db;
+      background: #fff;
+      color: #374151;
+    }
+    .sim-timer-modal-btn:hover {
+      background: #f3f4f6;
+    }
+    .sim-timer-modal-btn--primary {
+      border-color: #d97706;
+      background: #f59e0b;
+      color: #fff;
+    }
+    .sim-timer-modal-btn--primary:hover {
+      background: #d97706;
+    }
     .sim-table-month {
       table-layout: fixed;
       width: 100%;
@@ -98,6 +298,55 @@
       .sim-history-block--ea .sim-table-ea .sim-col-wrap,
       .sim-history-block--ea .sim-table-ea .sim-col-action-cell {
         line-height: 1.1;
+      }
+      .sim-history-block--ea .sim-table-ea .sim-timer-cell,
+      .sim-history-block--ea .sim-table-ea thead th:nth-child(13) {
+        font-size: calc(var(--sim-table-font-size, 8px) - 1px);
+      }
+      .sim-history-block--ea .sim-table-ea .sim-col-rce-cell,
+      .sim-history-block--ea .sim-table-ea #sim-hdr-sell {
+        font-size: calc(var(--sim-table-font-size, 8px) - 1px);
+      }
+      .sim-history-block--ea .sim-table-ea #sim-hdr-energy,
+      .sim-history-block--ea .sim-table-ea #sim-hdr-service,
+      .sim-history-block--ea .sim-table-ea .sim-col-energy-cell,
+      .sim-history-block--ea .sim-table-ea .sim-col-service-cell {
+        font-size: calc(var(--sim-table-font-size, 8px) - 1px);
+      }
+      .sim-history-block--ea .sim-table-ea col.sim-col-rce {
+        width: 9%;
+      }
+      .sim-history-block--ea .sim-table-ea.sim-ea-price-collapsed col.sim-col-rce {
+        width: 0 !important;
+        visibility: collapse;
+      }
+      .sim-history-block--ea .sim-table-ea.sim-ea-price-collapsed col.sim-col-price {
+        width: 0 !important;
+        visibility: collapse;
+      }
+      .sim-history-block--ea .sim-table-ea.sim-ea-price-collapsed col.sim-col-timer {
+        width: 22%;
+      }
+      .sim-history-block--ea .sim-table-ea.sim-ea-price-collapsed col.sim-col-action {
+        width: 16%;
+      }
+      .sim-history-block--ea .sim-table-ea.sim-ea-price-collapsed col.sim-col-start {
+        width: 16%;
+      }
+      .sim-history-block--ea .sim-table-ea.sim-ea-price-collapsed col.sim-col-kwh {
+        width: 6.2%;
+      }
+      .sim-history-block--ea .sim-table-ea.sim-ea-price-collapsed col.sim-col-cost {
+        width: 7%;
+      }
+      .sim-history-block--ea .sim-table-ea col.sim-col-cost {
+        width: 6%;
+      }
+      .sim-history-block--ea .sim-table-ea .sim-col-rce-cell,
+      .sim-history-block--ea .sim-table-ea .sim-col-energy-cell {
+        white-space: normal;
+        overflow: hidden;
+        line-height: 1.05;
       }
     }
     .sim-table thead th {
@@ -2362,11 +2611,14 @@
     <div class="sim-history-block sim-history-block--ea">
     <div class="sim-history-head-row">
       <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider truncate min-w-0" id="sim-title">Energy arbitrage — minimize net bill</h2>
-      <button type="button" onclick="loadSimulation(true)"
+      <button type="button" id="sim-price-cols-toggle"
+        class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0"
+        title="Show or hide Buy Price and Sell Price columns">Buy/Sell ▶</button>
+      <button type="button" onclick="refreshQuarterCycle({ silent: false })"
         class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0">Refresh</button>
     </div>
     <div class="sim-history-table-wrap sim-table-wrap bg-white rounded-xl border border-gray-200">
-      <table class="sim-table sim-table-ea">
+      <table class="sim-table sim-table-ea sim-ea-price-collapsed">
         <colgroup>
           <col class="sim-col-start">
           <col class="sim-col-kwh" span="6">
@@ -2387,8 +2639,8 @@
             <th class="font-medium text-right">Grid import<br><span class="font-normal">(kWh)</span></th>
             <th class="font-medium text-right">Grid export<br><span class="font-normal">(kWh)</span></th>
             <th class="font-medium text-right">SOC<br><span class="font-normal">(%)</span></th>
-            <th class="font-medium text-right" id="sim-hdr-buy">Buy Price<br><span class="font-normal">(PLN/kWh)</span></th>
-            <th class="font-medium text-right" id="sim-hdr-sell">Sell Price<br><span class="font-normal">(PLN/kWh)</span></th>
+            <th class="font-medium text-right sim-col-buy" id="sim-hdr-buy">Buy Price<br><span class="font-normal">(PLN/kWh)</span></th>
+            <th class="font-medium text-right sim-col-sell" id="sim-hdr-sell">Sell Price<br><span class="font-normal">(PLN/kWh)</span></th>
             <th class="font-medium text-right" id="sim-hdr-energy">Energy Cost<br><span class="font-normal">(PLN)</span></th>
             <th class="font-medium text-right" id="sim-hdr-service">Service Cost<br><span class="font-normal">(PLN)</span></th>
             <th class="font-medium">Timer Schedule</th>
@@ -3159,22 +3411,24 @@ function showSimulationTab() {
 }
 
 function renderSimulationBundle(data) {
-  if (data.buy_tariff) {
-    buyTariffData = data.buy_tariff;
-    updateBuyTariffLabels(data.buy_tariff.tariff_name);
-  } else if (!buyTariffData?.rows?.length) {
-    loadBuyTariffChart();
-  }
-  if (data.rce?.series_15min?.length) {
-    rceData = data.rce;
-    renderRCEHeader(rceData);
-    renderTariffRceChartsPair();
-  } else if (!rceData?.series_15min?.length) {
-    loadRCE();
-  }
+  applyPlanPricesFromSimulation(data);
   renderSimulationView(data);
   refreshEnergyOverviewPlanFill();
   refreshAcrPriceBgIfDashboard();
+}
+
+/** RCE + G12 buy tariff from plan simulation (no separate price API). */
+function applyPlanPricesFromSimulation(data) {
+  if (!data) return;
+  if (data.buy_tariff) {
+    buyTariffData = data.buy_tariff;
+    updateBuyTariffLabels(data.buy_tariff.tariff_name);
+  }
+  if (data.rce) {
+    rceData = data.rce;
+    renderRCEHeader(rceData);
+    renderTariffRceChartsPair();
+  }
 }
 
 function markSaRulesWrite() {
@@ -4298,7 +4552,7 @@ async function saveConfig(event) {
   const msg = document.getElementById('cfg-msg');
   msg.classList.remove('hidden');
   setTimeout(() => msg.classList.add('hidden'), 3000);
-  if (currentTab === 'simulation') loadBuyTariffChart();
+  if (currentTab === 'simulation') void refreshQuarterCycle({ syncSliders: false });
 }
 
 // ---------------------------------------------------------------------------
@@ -4962,27 +5216,6 @@ function bindTariffChartResize() {
 // Combined RCE vs G12 buy tariff chart
 // ---------------------------------------------------------------------------
 let buyTariffData = null;
-
-async function loadBuyTariffChart() {
-  if (buyTariffData?.rows?.length) {
-    updateBuyTariffLabels(buyTariffData.tariff_name);
-    const rows = simData?.rows?.length ? simData.rows : buyTariffData.rows;
-    renderTariffRceChartsPair();
-    refreshAcrPriceBgIfDashboard();
-    renderAcrChartLegend();
-    return;
-  }
-  try {
-    const res = await fetch('api/buy-tariff');
-    buyTariffData = await res.json();
-    updateBuyTariffLabels(buyTariffData.tariff_name);
-    renderTariffRceChartsPair();
-    refreshAcrPriceBgIfDashboard();
-    renderAcrChartLegend();
-  } catch (e) {
-    console.warn('buy-tariff error', e);
-  }
-}
 
 function updateBuyTariffLabels(tariffName) {
   const name = tariffName || configData?.grid?.g12?.tariff_name || '';
@@ -5788,29 +6021,39 @@ function renderAccrualsChart(d) {
 }
 
 // ---------------------------------------------------------------------------
-// RCE prices
+// RCE prices (from plan simulation bundle)
 // ---------------------------------------------------------------------------
 let rceData = null;
 
-async function loadRCE() {
-  try {
-    const res = await fetch('api/rce?_=' + Date.now());
-    rceData = await res.json();
-    renderRCEHeader(rceData);
-    renderTariffRceChartsPair();
-    refreshAcrPriceBgIfDashboard();
-  } catch(e) { console.warn('RCE error', e); }
+function msUntilNextQuarterBoundary() {
+  const now = new Date();
+  const elapsedInQuarter = (now.getMinutes() % 15) * 60_000
+    + now.getSeconds() * 1000
+    + now.getMilliseconds();
+  const wait = QUARTER_REFRESH_MS - elapsedInQuarter;
+  return wait > 0 ? wait : QUARTER_REFRESH_MS;
 }
 
-let quarterRefreshBoot = true;
+function scheduleQuarterRefresh() {
+  const tick = () => {
+    refreshQuarterCycle().catch((e) => console.warn('quarter refresh', e));
+    setTimeout(tick, msUntilNextQuarterBoundary());
+  };
+  setTimeout(tick, msUntilNextQuarterBoundary());
+}
 
-/** RCE + forecast + EA simulation — one 15-min cycle (and on page load). */
-async function refreshQuarterCycle() {
-  await loadRCE();
-  await loadForecast(true, { syncSliders: quarterRefreshBoot });
-  const forceSim = quarterRefreshBoot;
-  quarterRefreshBoot = false;
-  await preloadSimulation(forceSim);
+/** Forecast + EA simulation, then RCE/G12 from simulation (every :00/:15/:30/:45 and Refresh). */
+async function refreshQuarterCycle(options = {}) {
+  const { silent = false, syncSliders = false } = options;
+  if (silent === false && currentTab === 'simulation') {
+    const bodyTotal = document.getElementById('sim-body-total');
+    if (bodyTotal && (!simData?.rows?.length || simData.cache_miss)) {
+      bodyTotal.innerHTML = `<tr><td colspan="${SIM_TABLE_COLS}" class="px-3 py-6 text-center text-gray-600">Loading…</td></tr>`;
+      simHistoryApplyCachedFont(document.querySelector('.sim-table-ea'));
+    }
+  }
+  await loadForecast(true, { syncSliders });
+  await preloadSimulation(true);
   if (currentTab === 'simulation' && simData) {
     renderSimulationBundle(simData);
   }
@@ -6347,6 +6590,44 @@ async function applyTimerSlot(kind, slotNum) {
 // Simulation
 // ---------------------------------------------------------------------------
 const SIM_TABLE_COLS = 14;
+const SIM_PRICE_COLS_KEY = 'sa_sim_ea_price_cols_expanded';
+
+function simEaPriceColsExpanded() {
+  const table = document.querySelector('.sim-table-ea');
+  return table != null && !table.classList.contains('sim-ea-price-collapsed');
+}
+
+function setSimEaPriceColsExpanded(expanded) {
+  const table = document.querySelector('.sim-table-ea');
+  const btn = document.getElementById('sim-price-cols-toggle');
+  if (!table) return;
+  table.classList.toggle('sim-ea-price-collapsed', !expanded);
+  table.classList.toggle('sim-ea-price-expanded', expanded);
+  if (btn) btn.textContent = expanded ? 'Buy/Sell ▼' : 'Buy/Sell ▶';
+  try { sessionStorage.setItem(SIM_PRICE_COLS_KEY, expanded ? '1' : '0'); } catch (_) {}
+  table.style.removeProperty('--sim-table-font-size');
+  table.style.removeProperty('--sim-table-pad-x');
+  table.style.removeProperty('--sim-table-pad-y');
+  delete table.dataset.simFontPx;
+  requestAnimationFrame(fitSimHistoryTables);
+}
+
+function toggleSimEaPriceCols() {
+  setSimEaPriceColsExpanded(!simEaPriceColsExpanded());
+}
+
+function initSimEaPriceCols() {
+  let expanded = false;
+  try { expanded = sessionStorage.getItem(SIM_PRICE_COLS_KEY) === '1'; } catch (_) {}
+  setSimEaPriceColsExpanded(expanded);
+}
+
+function bindSimPriceColsToggle() {
+  const btn = document.getElementById('sim-price-cols-toggle');
+  if (!btn || btn.dataset.bound === '1') return;
+  btn.dataset.bound = '1';
+  btn.addEventListener('click', toggleSimEaPriceCols);
+}
 
 function renderSimulationView(data) {
   if (!data || data.cache_miss || !data.rows || !data.rows.length) {
@@ -6354,7 +6635,6 @@ function renderSimulationView(data) {
     if (bodyTotal) {
       bodyTotal.innerHTML = `<tr><td colspan="${SIM_TABLE_COLS}" class="px-3 py-6 text-center text-gray-500">Loading plan…</td></tr>`;
     }
-    loadBuyTariffChart();
     simHistoryApplyCachedFont(document.querySelector('.sim-table-ea'));
     return;
   }
@@ -6364,6 +6644,10 @@ function renderSimulationView(data) {
 async function loadSimulation(forceRefresh = false, silent = false) {
   if (!forceRefresh && simData && simData.rows && simData.rows.length && !simData.cache_miss) {
     renderSimulationBundle(simData);
+    return;
+  }
+  if (forceRefresh) {
+    await refreshQuarterCycle({ silent, syncSliders: false });
     return;
   }
   const bodyTotal = document.getElementById('sim-body-total');
@@ -6390,11 +6674,7 @@ async function preloadSimulation(forceRefresh = false) {
     const res = await fetch('api/simulation' + q);
     const data = await res.json();
     simData = data;
-    if (data.rce && !rceData) {
-      rceData = data.rce;
-      renderRCEHeader(rceData);
-    }
-    if (data.buy_tariff) buyTariffData = data.buy_tariff;
+    applyPlanPricesFromSimulation(data);
     if (currentTab === 'simulation') renderSimulationBundle(simData);
     refreshEnergyOverviewPlanFill();
     refreshEnergyOverviewCosts();
@@ -6483,6 +6763,7 @@ function renderSimulation(data) {
   if (planBody && !planBody.classList.contains('hidden')) {
     requestAnimationFrame(() => scrollSimPlanToCurrentHour());
   }
+  bindSimTimerCellActions();
 }
 
 function historyMonthTotalLabel(month) {
@@ -6721,11 +7002,16 @@ function simHistoryEaHasPlanRows(table) {
 
 function simHistoryOverflowCells(table) {
   const cells = [];
-  table.querySelectorAll('thead th').forEach(c => cells.push(c));
+  const priceCollapsed = table?.classList.contains('sim-ea-price-collapsed');
+  table.querySelectorAll('thead th').forEach(c => {
+    if (priceCollapsed && (c.classList.contains('sim-col-buy') || c.classList.contains('sim-col-sell'))) return;
+    cells.push(c);
+  });
   table.querySelectorAll('tbody tr').forEach(row => {
     if (row.querySelector('td[colspan]')) return;
     for (const cell of row.cells) {
       if (!cell || cell.colSpan > 1) continue;
+      if (priceCollapsed && (cell.classList.contains('sim-col-buy') || cell.classList.contains('sim-col-sell'))) continue;
       cells.push(cell);
     }
   });
@@ -6988,17 +7274,21 @@ function simRowRceAboveOffpeak(r) {
 
 function simRceCell(r, isTotal) {
   if (isTotal) {
-    return '<td class="text-right text-gray-600 tabular-nums"></td>';
+    return '<td class="text-right text-gray-600 tabular-nums sim-col-sell"></td>';
   }
   const qs = r.rce_q15;
   if (Array.isArray(qs) && qs.length) {
     const parts = qs.map((p) => (p != null ? Number(p).toFixed(3) : '—'));
+    const mobile = window.matchMedia('(max-width: 767px)').matches;
+    if (mobile) {
+      return `<td class="text-right text-gray-600 tabular-nums sim-col-rce-cell sim-col-sell leading-tight">${parts.join('<br>')}</td>`;
+    }
     const line1 = parts.slice(0, 2).join(' ');
     const line2 = parts.slice(2, 4).join(' ');
-    return `<td class="text-right text-gray-600 tabular-nums sim-col-rce-cell leading-tight whitespace-nowrap">${line1}<br>${line2}</td>`;
+    return `<td class="text-right text-gray-600 tabular-nums sim-col-rce-cell sim-col-sell leading-tight whitespace-nowrap">${line1}<br>${line2}</td>`;
   }
   const rce = r.rce_price != null ? Number(r.rce_price).toFixed(3) : '—';
-  return `<td class="text-right text-gray-600 tabular-nums sim-col-rce-cell">${rce}</td>`;
+  return `<td class="text-right text-gray-600 tabular-nums sim-col-rce-cell sim-col-sell">${rce}</td>`;
 }
 
 function makeSimRow(r, isTotal, isTomorrowRemainder, isHistory) {
@@ -7025,34 +7315,327 @@ function makeSimRow(r, isTotal, isTomorrowRemainder, isHistory) {
 
   const timerHtml = isTotal
     ? '<td></td>'
-    : simTimerCell(r.timer_schedule);
+    : simTimerCell(r, isHistory);
   const socCls = r.soc_blended
     ? 'text-violet-700 font-semibold sim-soc-blended'
     : 'text-gray-600';
   tr.innerHTML = `
     <td class="text-gray-600 whitespace-nowrap tabular-nums">${simRowTimeRange(r)}</td>
-    <td class="text-right text-gray-600 tabular-nums">${fmt(r.production, 3)}</td>
-    <td class="text-right text-gray-600 tabular-nums">${fmt(r.consumption, 3)}</td>
-    <td class="text-right text-gray-600 tabular-nums">${fmt(r.bat_charge, 3)}</td>
-    <td class="text-right text-gray-600 tabular-nums">${fmt(r.bat_discharge, 3)}</td>
-    <td class="text-right text-gray-600 tabular-nums">${fmt(r.grid_import ?? r.buy, 3)}</td>
-    <td class="text-right text-gray-600 tabular-nums">${fmt(r.grid_export ?? r.feed_in, 3)}</td>
+    <td class="text-right text-gray-600 tabular-nums">${fmt(r.production, 2)}</td>
+    <td class="text-right text-gray-600 tabular-nums">${fmt(r.consumption, 2)}</td>
+    <td class="text-right text-gray-600 tabular-nums">${fmt(r.bat_charge, 2)}</td>
+    <td class="text-right text-gray-600 tabular-nums">${fmt(r.bat_discharge, 2)}</td>
+    <td class="text-right text-gray-600 tabular-nums">${fmt(r.grid_import ?? r.buy, 2)}</td>
+    <td class="text-right text-gray-600 tabular-nums">${fmt(r.grid_export ?? r.feed_in, 2)}</td>
     <td class="text-right tabular-nums sim-soc-cell ${socCls}">${fmt(r.soc, 1)}</td>
-    <td class="text-right text-gray-600 tabular-nums">${r.buy_price != null ? r.buy_price.toFixed(4) : '—'}</td>
+    <td class="text-right text-gray-600 tabular-nums sim-col-buy">${r.buy_price != null ? Number(r.buy_price).toFixed(2) : '—'}</td>
     ${simRceCell(r, isTotal)}
-    <td class="text-right tabular-nums ${energyCls}" title="${energyTitle}">${simEnergyFmt(energyCash)}</td>
-    <td class="text-right tabular-nums ${serviceCls}" title="${serviceTitle}">${simServiceFmt(serviceVal)}</td>
+    <td class="text-right tabular-nums sim-col-energy-cell ${energyCls}" title="${energyTitle}">${simEnergyFmt(energyCash)}</td>
+    <td class="text-right tabular-nums sim-col-service-cell ${serviceCls}" title="${serviceTitle}">${simServiceFmt(serviceVal)}</td>
     ${timerHtml}
     <td class="leading-snug sim-col-action-cell">${isTotal ? '' : formatActionSpans(r.action)}</td>`;
   return tr;
 }
 
-function simTimerCell(timerText) {
-  if (!timerText) {
-    return '<td class="text-gray-300 sim-col-wrap">—</td>';
-  }
+function simTimerRowEditable(r, isHistory) {
+  if (isHistory || r.hour == null || !simData) return false;
+  const date = r.plan_date || simData.today_date;
+  if (!date) return false;
+  const fromH = simData.plan_from_hour ?? 0;
+  if (date === simData.today_date) return Number(r.hour) > fromH;
+  return date > (simData.today_date || '');
+}
+
+const SIM_TIMER_PENCIL_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`;
+
+function simTimerCell(r, isHistory) {
+  const timerText = r.timer_schedule || '';
   const esc = String(timerText).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return `<td class="text-amber-800 leading-snug sim-col-wrap">${esc}</td>`;
+  const editable = simTimerRowEditable(r, isHistory);
+  if (!editable) {
+    if (!timerText) return '<td class="text-gray-300 sim-col-wrap">—</td>';
+    return `<td class="text-amber-800 leading-snug sim-col-wrap">${esc}</td>`;
+  }
+  const date = r.plan_date || simData.today_date;
+  const manualCls = r.timer_schedule_manual ? ' sim-timer-manual' : '';
+  const textHtml = timerText
+    ? `<div class="sim-timer-cell-text${manualCls}">${esc}</div>`
+    : '<div class="sim-timer-cell-text text-gray-300">—</div>';
+  return `<td class="text-amber-800 leading-snug sim-col-wrap sim-timer-cell"
+    data-sim-timer-date="${date}"
+    data-sim-timer-hour="${r.hour}"
+    data-sim-timer-manual="${r.timer_schedule_manual ? '1' : '0'}"><div class="sim-timer-cell-inner">${textHtml}<button type="button" class="sim-timer-pencil" data-sim-timer-edit="1" aria-label="Edit Timer Schedule" title="Edit Timer Schedule">${SIM_TIMER_PENCIL_SVG}</button></div></td>`;
+}
+
+let _simTimerEditCtx = null;
+
+const SIM_TIMER_SEG_RE = /^(Chg|Dis)\s+(\d{1,2}:\d{2})-(\d{1,2}:\d{2})\s+([\d.]+)kW\s+cap(\d+)%/i;
+
+function simTimerNormalizeHhmm(timeStr) {
+  const parts = String(timeStr || '').trim().split(':');
+  if (parts.length !== 2) return '';
+  const h = Number(parts[0]);
+  const m = Number(parts[1]);
+  if (!Number.isFinite(h) || !Number.isFinite(m) || h < 0 || h > 23 || m < 0 || m > 59) return '';
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function parseSimTimerScheduleText(text) {
+  const part = String(text || '').split('|').map((p) => p.trim()).find(Boolean);
+  if (!part) return null;
+  const match = part.match(SIM_TIMER_SEG_RE);
+  if (!match) return null;
+  const [, kindRaw, fromT, toT, powerS, capS] = match;
+  return {
+    kind: kindRaw.toLowerCase() === 'chg' ? 'chg' : 'dis',
+    from: simTimerNormalizeHhmm(fromT),
+    to: simTimerNormalizeHhmm(toT),
+    power_kw: Number(powerS),
+    capacity_pct: Number(capS),
+  };
+}
+
+function formatSimTimerPowerKw(value) {
+  const v = Number(value);
+  if (!Number.isFinite(v) || v <= 0) return '';
+  return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
+}
+
+function buildSimTimerScheduleText({ kind, from, to, power_kw, capacity_pct }) {
+  const fromNorm = simTimerNormalizeHhmm(from);
+  const toNorm = simTimerNormalizeHhmm(to);
+  const power = formatSimTimerPowerKw(power_kw);
+  const cap = Math.round(Number(capacity_pct));
+  if (!fromNorm || !toNorm || !power || !Number.isFinite(cap)) return '';
+  const prefix = kind === 'chg' ? 'Chg' : 'Dis';
+  return `${prefix} ${fromNorm}-${toNorm} ${power}kW cap${cap}%`;
+}
+
+function simTimerDefaultFields(hour) {
+  const hh = String(hour).padStart(2, '0');
+  const nextH = String((hour + 1) % 24).padStart(2, '0');
+  return {
+    kind: 'dis',
+    from: `${hh}:00`,
+    to: `${nextH}:00`,
+    power_kw: 8,
+    capacity_pct: 16,
+  };
+}
+
+function readSimTimerEditForm() {
+  const enabled = document.getElementById('sim-timer-edit-enabled')?.checked ?? false;
+  if (!enabled) return { enabled: false, text: '' };
+  const kind = document.getElementById('sim-timer-edit-kind')?.value === 'chg' ? 'chg' : 'dis';
+  const from = document.getElementById('sim-timer-edit-from')?.value ?? '';
+  const to = document.getElementById('sim-timer-edit-to')?.value ?? '';
+  const power_kw = Number(document.getElementById('sim-timer-edit-power')?.value);
+  const capacity_pct = Number(document.getElementById('sim-timer-edit-cap')?.value);
+  return {
+    enabled: true,
+    kind,
+    from,
+    to,
+    power_kw,
+    capacity_pct,
+    text: buildSimTimerScheduleText({ kind, from, to, power_kw, capacity_pct }),
+  };
+}
+
+function updateSimTimerEditPreview() {
+  const preview = document.getElementById('sim-timer-edit-preview');
+  const errorEl = document.getElementById('sim-timer-edit-error');
+  const form = document.getElementById('sim-timer-edit-form');
+  if (!preview) return;
+  const data = readSimTimerEditForm();
+  const enabled = data.enabled;
+  if (form) form.classList.toggle('is-disabled', !enabled);
+  if (!enabled) {
+    preview.textContent = 'No timer for this hour';
+    preview.classList.add('is-empty');
+    if (errorEl) errorEl.textContent = '';
+    return;
+  }
+  if (!data.text) {
+    preview.textContent = 'Fill all fields';
+    preview.classList.add('is-empty');
+    if (errorEl) errorEl.textContent = '';
+    return;
+  }
+  if (!parseSimTimerScheduleText(data.text)) {
+    preview.textContent = data.text;
+    preview.classList.remove('is-empty');
+    if (errorEl) errorEl.textContent = 'Invalid values';
+    return;
+  }
+  preview.textContent = data.text;
+  preview.classList.remove('is-empty');
+  if (errorEl) errorEl.textContent = '';
+}
+
+function validateSimTimerEditForm() {
+  const data = readSimTimerEditForm();
+  if (!data.enabled) return { ok: true, text: '' };
+  if (!data.text || !parseSimTimerScheduleText(data.text)) {
+    return { ok: false, error: 'Check type, times (HH:MM), power (kW), and cap (%).' };
+  }
+  const fromMin = simTimerHhmmToMinutes(data.from);
+  const toMin = simTimerHhmmToMinutes(data.to);
+  if (fromMin == null || toMin == null) {
+    return { ok: false, error: 'Times must be HH:MM (00:00–23:59).' };
+  }
+  if (toMin <= fromMin) {
+    return { ok: false, error: 'End time must be after start time.' };
+  }
+  if (data.power_kw <= 0 || data.power_kw > 8) {
+    return { ok: false, error: 'Power must be between 0.1 and 8 kW.' };
+  }
+  if (data.capacity_pct < 0 || data.capacity_pct > 100) {
+    return { ok: false, error: 'Cap must be 0–100%.' };
+  }
+  return { ok: true, text: data.text };
+}
+
+function simTimerHhmmToMinutes(hhmm) {
+  const norm = simTimerNormalizeHhmm(hhmm);
+  if (!norm) return null;
+  const [h, m] = norm.split(':').map(Number);
+  return h * 60 + m;
+}
+
+function fillSimTimerEditForm(hour, timerText) {
+  const enableEl = document.getElementById('sim-timer-edit-enabled');
+  const kindEl = document.getElementById('sim-timer-edit-kind');
+  const fromEl = document.getElementById('sim-timer-edit-from');
+  const toEl = document.getElementById('sim-timer-edit-to');
+  const powerEl = document.getElementById('sim-timer-edit-power');
+  const capEl = document.getElementById('sim-timer-edit-cap');
+  const parsed = parseSimTimerScheduleText(timerText);
+  const defaults = simTimerDefaultFields(hour);
+  const active = !!parsed;
+  if (enableEl) enableEl.checked = active;
+  if (kindEl) kindEl.value = parsed?.kind || defaults.kind;
+  if (fromEl) fromEl.value = parsed?.from || defaults.from;
+  if (toEl) toEl.value = parsed?.to || defaults.to;
+  if (powerEl) powerEl.value = parsed?.power_kw ?? defaults.power_kw;
+  if (capEl) {
+    capEl.value = parsed?.capacity_pct ?? defaults.capacity_pct;
+    delete capEl.dataset.userTouched;
+  }
+  updateSimTimerEditPreview();
+}
+
+function closeSimTimerEditModal() {
+  const modal = document.getElementById('sim-timer-edit-modal');
+  if (modal) modal.classList.add('hidden');
+  _simTimerEditCtx = null;
+}
+
+function openSimTimerEditModal(date, hour, timerText, isManual) {
+  const modal = document.getElementById('sim-timer-edit-modal');
+  const subtitle = document.getElementById('sim-timer-edit-subtitle');
+  const autoBtn = document.getElementById('sim-timer-edit-auto');
+  if (!modal || !subtitle) return;
+  _simTimerEditCtx = { date, hour };
+  const hh = String(hour).padStart(2, '0');
+  subtitle.textContent = `${date} · ${hh}:00–${String((hour + 1) % 24).padStart(2, '0')}:00`;
+  fillSimTimerEditForm(hour, timerText);
+  if (autoBtn) autoBtn.classList.toggle('hidden', !isManual);
+  modal.classList.remove('hidden');
+  const focusEl = document.getElementById('sim-timer-edit-enabled')?.checked
+    ? document.getElementById('sim-timer-edit-from')
+    : document.getElementById('sim-timer-edit-enabled');
+  focusEl?.focus();
+}
+
+async function saveSimTimerOverride(planDate, hour, timerSchedule, { reset = false } = {}) {
+  const res = await fetch('api/plan/timer-schedule', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      plan_date: planDate,
+      hour,
+      timer_schedule: timerSchedule,
+      reset,
+    }),
+  });
+  const data = await res.json();
+  if (!data.ok) {
+    alert(data.error || 'Failed to save Timer Schedule override.');
+    return false;
+  }
+  if (data.plan) {
+    simData = data.plan;
+    renderSimulationBundle(simData);
+  } else {
+    await loadSimulation(true);
+  }
+  return true;
+}
+
+function bindSimTimerCellActions() {
+  const planBody = document.getElementById('sim-body-plan');
+  if (!planBody || planBody.dataset.timerBound === '1') return;
+  planBody.dataset.timerBound = '1';
+  planBody.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-sim-timer-edit]');
+    if (!btn) return;
+    ev.stopPropagation();
+    const cell = btn.closest('[data-sim-timer-date][data-sim-timer-hour]');
+    if (!cell) return;
+    const date = cell.dataset.simTimerDate;
+    const hour = Number(cell.dataset.simTimerHour);
+    const textEl = cell.querySelector('.sim-timer-cell-text');
+    const cur = textEl?.textContent?.trim();
+    const curVal = cur === '—' ? '' : (cur || '');
+    const isManual = cell.dataset.simTimerManual === '1';
+    openSimTimerEditModal(date, hour, curVal, isManual);
+  });
+
+  const modal = document.getElementById('sim-timer-edit-modal');
+  if (!modal || modal.dataset.bound === '1') return;
+  modal.dataset.bound = '1';
+
+  document.getElementById('sim-timer-edit-backdrop')?.addEventListener('click', closeSimTimerEditModal);
+  document.getElementById('sim-timer-edit-cancel')?.addEventListener('click', closeSimTimerEditModal);
+  document.getElementById('sim-timer-edit-save')?.addEventListener('click', async () => {
+    if (!_simTimerEditCtx) return;
+    const check = validateSimTimerEditForm();
+    const errorEl = document.getElementById('sim-timer-edit-error');
+    if (!check.ok) {
+      if (errorEl) errorEl.textContent = check.error;
+      return;
+    }
+    const ok = await saveSimTimerOverride(_simTimerEditCtx.date, _simTimerEditCtx.hour, check.text);
+    if (ok) closeSimTimerEditModal();
+  });
+  document.getElementById('sim-timer-edit-clear')?.addEventListener('click', async () => {
+    if (!_simTimerEditCtx) return;
+    const ok = await saveSimTimerOverride(_simTimerEditCtx.date, _simTimerEditCtx.hour, '');
+    if (ok) closeSimTimerEditModal();
+  });
+  document.getElementById('sim-timer-edit-auto')?.addEventListener('click', async () => {
+    if (!_simTimerEditCtx) return;
+    const ok = await saveSimTimerOverride(_simTimerEditCtx.date, _simTimerEditCtx.hour, null, { reset: true });
+    if (ok) closeSimTimerEditModal();
+  });
+  ['sim-timer-edit-enabled', 'sim-timer-edit-kind', 'sim-timer-edit-from', 'sim-timer-edit-to',
+    'sim-timer-edit-power', 'sim-timer-edit-cap'].forEach((id) => {
+    document.getElementById(id)?.addEventListener('input', updateSimTimerEditPreview);
+    document.getElementById(id)?.addEventListener('change', updateSimTimerEditPreview);
+  });
+  document.getElementById('sim-timer-edit-kind')?.addEventListener('change', (ev) => {
+    const capEl = document.getElementById('sim-timer-edit-cap');
+    if (!capEl || capEl.dataset.userTouched === '1') return;
+    capEl.value = ev.target.value === 'chg' ? 80 : 16;
+    updateSimTimerEditPreview();
+  });
+  document.getElementById('sim-timer-edit-cap')?.addEventListener('input', (ev) => {
+    ev.target.dataset.userTouched = '1';
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && _simTimerEditCtx) closeSimTimerEditModal();
+  });
 }
 
 function updateSimCurrentHourLiveSoc(socPct) {
@@ -7856,13 +8439,12 @@ function startMetricsPolling() {
 function bootForCurrentTab() {
   void (async () => {
     await loadSmartMode();
-    await refreshQuarterCycle();
-    setInterval(() => { refreshQuarterCycle().catch(e => console.warn('quarter refresh', e)); }, QUARTER_REFRESH_MS);
+    await refreshQuarterCycle({ syncSliders: true });
+    scheduleQuarterRefresh();
   })();
 
   if (currentTab === 'dashboard') {
     startMetricsPolling();
-    loadBuyTariffChart();
     setInterval(() => { loadAccruals(document.getElementById('accruals-date')?.value); }, 60000);
     return;
   }
@@ -7908,6 +8490,8 @@ bindRulesManualEditTracking();
 bindTimerPowerSelectWidthsSync();
 bindTimedTableCheckboxSync();
 bindSimHistoryTableFontFit();
+bindSimPriceColsToggle();
+initSimEaPriceCols();
 bindTariffChartResize();
 bindAcrChartLegend();
 initPageTab();
@@ -7923,5 +8507,53 @@ setInterval(() => {
   );
 }, 15 * 60 * 1000);
 </script>
+
+<div id="sim-timer-edit-modal" class="sim-timer-modal hidden" role="dialog" aria-modal="true" aria-labelledby="sim-timer-edit-title">
+  <div class="sim-timer-modal-backdrop" id="sim-timer-edit-backdrop"></div>
+  <div class="sim-timer-modal-panel">
+    <h3 id="sim-timer-edit-title" class="text-sm font-semibold text-gray-800">Timer Schedule</h3>
+    <p id="sim-timer-edit-subtitle" class="text-xs text-gray-500 mt-1"></p>
+    <div id="sim-timer-edit-form" class="sim-timer-modal-form">
+      <label class="sim-timer-modal-enable">
+        <input type="checkbox" id="sim-timer-edit-enabled">
+        <span>Enable timer for this hour</span>
+      </label>
+      <div class="sim-timer-modal-fields">
+        <div class="sim-timer-modal-field sim-timer-modal-field--full">
+          <label for="sim-timer-edit-kind">Type</label>
+          <select id="sim-timer-edit-kind">
+            <option value="dis">Discharge (Dis)</option>
+            <option value="chg">Charge from grid (Chg)</option>
+          </select>
+        </div>
+        <div class="sim-timer-modal-field">
+          <label for="sim-timer-edit-from">From</label>
+          <input type="text" id="sim-timer-edit-from" inputmode="numeric" pattern="([01]?[0-9]|2[0-3]):[0-5][0-9]" maxlength="5" placeholder="HH:MM" autocomplete="off" title="24-hour time HH:MM">
+        </div>
+        <div class="sim-timer-modal-field">
+          <label for="sim-timer-edit-to">To</label>
+          <input type="text" id="sim-timer-edit-to" inputmode="numeric" pattern="([01]?[0-9]|2[0-3]):[0-5][0-9]" maxlength="5" placeholder="HH:MM" autocomplete="off" title="24-hour time HH:MM">
+        </div>
+        <div class="sim-timer-modal-field">
+          <label for="sim-timer-edit-power">Power (kW)</label>
+          <input type="number" id="sim-timer-edit-power" min="0.1" max="8" step="0.1">
+        </div>
+        <div class="sim-timer-modal-field">
+          <label for="sim-timer-edit-cap">Cap (%)</label>
+          <input type="number" id="sim-timer-edit-cap" min="0" max="100" step="1">
+        </div>
+        <div id="sim-timer-edit-preview" class="sim-timer-modal-preview is-empty">No timer for this hour</div>
+      </div>
+      <p id="sim-timer-edit-error" class="sim-timer-modal-error" role="alert"></p>
+    </div>
+    <div class="sim-timer-modal-actions">
+      <button type="button" class="sim-timer-modal-btn" id="sim-timer-edit-cancel">Cancel</button>
+      <button type="button" class="sim-timer-modal-btn hidden" id="sim-timer-edit-auto">Auto</button>
+      <button type="button" class="sim-timer-modal-btn" id="sim-timer-edit-clear">Clear</button>
+      <button type="button" class="sim-timer-modal-btn sim-timer-modal-btn--primary" id="sim-timer-edit-save">Save</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
