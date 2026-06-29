@@ -1,10 +1,10 @@
 # Solar Smart — energy arbitrage for SRNE via SolarAssistant
 
-**Solar Smart** is a Raspberry Pi web app for **energy arbitrage** planning and optional automation of an **SRNE** hybrid inverter through the [SolarAssistant](https://solarassistant.com/) REST API. It reads live metrics and InfluxDB history, runs a 15-minute **optimizer**, and — when Smart mode is on — **updates the inverter timer schedule** through SolarAssistant each hour.
+**Solar Smart** is a Raspberry Pi web app for **energy arbitrage** planning and optional automation of an **SRNE** hybrid inverter through the [SolarAssistant](https://solarassistant.com/) REST API. It reads live metrics and Inverter history DB (IHDB) history, runs a 15-minute **optimizer**, and — when Smart mode is on — **updates the inverter timer schedule** through SolarAssistant each hour.
 
 Runs alongside SolarAssistant (port **80**) on port **8000**. Tested with **SRNE 3-phase** and a **G12** two-zone buy tariff (Poland).
 
-**topics:** `srne` `solarassistant` `energy-arbitrage` `inverter` `influxdb` `grafana` `home-assistant` `scheduler` `optimizer`
+**topics:** `srne` `solarassistant` `energy-arbitrage` `inverter` `ihdb` `grafana` `home-assistant` `scheduler` `optimizer`
 
 ## Screenshots
 
@@ -17,7 +17,7 @@ Runs alongside SolarAssistant (port **80**) on port **8000**. Tested with **SRNE
 ```mermaid
 flowchart LR
   subgraph inputs [Inputs]
-    INFLUX[(InfluxDB actuals)]
+    IHDB[(IHDB actuals)]
     PV[Open-Meteo PV forecast]
     LOAD[Weekday load forecast]
     G12[G12 buy prices]
@@ -30,7 +30,7 @@ flowchart LR
   SA[SolarAssistant API]
   INV[SRNE inverter]
 
-  INFLUX --> OPT
+  IHDB --> OPT
   PV --> OPT
   LOAD --> OPT
   G12 --> OPT
@@ -50,11 +50,11 @@ flowchart LR
 ## Features
 
 - Live dashboard: PV, load, battery, grid, energy overview
-- Hourly energy accruals and charts (InfluxDB)
+- Hourly energy accruals and charts (IHDB)
 - PV forecast (Open-Meteo) and RCE sell prices
 - **Power Management** — scale PV and consumption forecast totals up to 2 days ahead; see [Power Management overrides](#power-management-overrides)
 - **EV Charging** — plan day and night charge windows up to 2 days ahead; see [EV charging](#ev-charging)
-- **Energy arbitrage simulation and monthly cost history** — rolling 24-hour plan that minimises your G12 electricity bill; hourly table with planned actions, import/export, and cash balance; closed-month totals from Influx actuals
+- **Energy arbitrage simulation and monthly cost history** — rolling 24-hour plan that minimises your G12 electricity bill; hourly table with planned actions, import/export, and cash balance; closed-month totals from IHDB actuals
 - **Timer schedule read/write through SolarAssistant REST API** — view and edit SRNE timed charge/discharge slots in the UI; with Smart mode on, the backend updates the schedule automatically each hour
 
 ## Smart energy planning
@@ -69,8 +69,8 @@ Every hour at **:00** the app rebuilds a **Plan Simulation** (this runs even whe
 
 | Input | Source | Notes |
 |-------|--------|-------|
-| Live battery SOC | InfluxDB | Current state |
-| Today's completed hours | InfluxDB | Measured PV, load, and grid flows |
+| Live battery SOC | IHDB | Current state |
+| Today's completed hours | IHDB | Measured PV, load, and grid flows |
 | **PV forecast** | **Open-Meteo** | Weather-based generation; 2 days ahead; past hours use actuals |
 | **Load forecast** | **Weekday load cache** | Typical consumption profile; 2 days ahead |
 | G12 buy prices | Config | Peak / off-peak zones |
@@ -78,7 +78,7 @@ Every hour at **:00** the app rebuilds a **Plan Simulation** (this runs even whe
 | Battery & inverter limits | Config | Capacity, power limits, SOC floor, losses |
 
 2. **Optimizer** — a 15-minute dynamic-programming model (`plan_optimizer.py`) steps through the next 24 hours and picks, for each quarter, whether to import from the grid, charge the battery from the grid, or export stored energy to the grid. The objective is to minimise net cash cost: `grid import × G12 buy − grid export × export credit`. Battery export is allowed only when RCE is high enough to beat keeping energy for self-consumption at off-peak buy price. A SOC floor (`min_soc_pct`) and night reserve prevent over-discharging before the next PV window.
-3. **Output in the UI** — the **Energy arbitrage** tab shows the rolling plan hour by hour (action label, PV, load, grid flows, SOC, energy and service cost). Completed hours are reconciled against Influx actuals. **Monthly history** aggregates past days the same way.
+3. **Output in the UI** — the **Energy arbitrage** tab shows the rolling plan hour by hour (action label, PV, load, grid flows, SOC, energy and service cost). Completed hours are reconciled against IHDB actuals. **Monthly history** aggregates past days the same way.
 
 ### Power Management overrides
 
@@ -193,7 +193,7 @@ On enable, Solar Smart runs an immediate sync. Thereafter the hourly **:00** job
 
 ## Requirements
 
-- Raspberry Pi with SolarAssistant installed (InfluxDB on `localhost:8086`)
+- Raspberry Pi with SolarAssistant installed (Inverter history DB (IHDB) on `localhost:8086`)
 - Python 3.11+ (3.12 recommended)
 - SRNE inverter exposed through SolarAssistant discovery API
 - SA web password configured (Configuration → Security)
@@ -229,7 +229,7 @@ copy sa-config.local.yaml.example sa-config.local.yaml
 .\scripts\run-local.ps1
 ```
 
-Uses `sa-config.yaml` plus optional `sa-config.local.yaml` overlay, SSH tunnel to Pi InfluxDB. Open `http://127.0.0.1:8000/`.
+Uses `sa-config.yaml` plus optional `sa-config.local.yaml` overlay, SSH tunnel to Pi IHDB. Open `http://127.0.0.1:8000/`.
 
 ## Configuration
 
