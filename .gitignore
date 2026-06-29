@@ -47,3 +47,7 @@ assets/
 # Deploy staging (sync-to-pi.ps1)
 smart-deploy.tgz
 smart-deploy-stage/
+
+# PME application docs (local / personal copies)
+docs/pme/ems-opis-ru.md
+docs/pme/ems-zgodnosc-pl.md
