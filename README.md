@@ -42,7 +42,7 @@ flowchart LR
   SA --> INV
 ```
 
-1. **Every hour at :00** the backend rebuilds a 24-hour plan (even when Smart mode is off).
+1. **Every hour at :00** the backend rebuilds a 24-hour plan.
 2. The **optimizer** (`plan_optimizer.py`) minimises net electricity cost: `grid import × G12 buy − grid export × export credit`, with SOC floor and night reserve.
 3. With **Smart mode** on, the next clock hour is translated into SA timer fields and pushed to SolarAssistant.
 4. SolarAssistant applies the **Timer Schedule** on the SRNE.
@@ -63,7 +63,7 @@ Solar Smart does not talk to the inverter directly. It plans energy flows and, w
 
 ### What the algorithm does
 
-Every hour at **:00** the app rebuilds a **Plan Simulation** (this runs even when Smart mode is off):
+Every hour at **:00** the app rebuilds a **Plan Simulation**:
 
 1. **Inputs**
 
