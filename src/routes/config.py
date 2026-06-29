@@ -29,6 +29,7 @@ async def api_reload_caches() -> dict[str, str]:
 async def api_get_config() -> dict[str, Any]:
     cfg = load_config()
     cfg.pop("_charge_rate_kw", None)
+    cfg.pop("smart_mode_enabled", None)
     return cfg
 
 
@@ -39,6 +40,8 @@ async def api_save_config(body: dict) -> dict[str, str]:
         body["_charge_rate_kw"] = existing["_charge_rate_kw"]
     if "debug_tab_enabled" not in body and "debug_tab_enabled" in existing:
         body["debug_tab_enabled"] = existing["debug_tab_enabled"]
+    if "smart_mode_enabled" not in body and "smart_mode_enabled" in existing:
+        body["smart_mode_enabled"] = existing["smart_mode_enabled"]
     normalize_battery_power_limits(body)
     save_config(body)
     forecast_mod.invalidate_cache()
