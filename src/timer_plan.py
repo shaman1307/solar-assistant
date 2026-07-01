@@ -88,10 +88,16 @@ def classify_action(
     grid_export: float = 0.0,
     production: float | None = None,
     pv: float | None = None,
+    epsilon: float = 0.001,
 ) -> str:
     """Derive display action from gross battery charge/discharge and grid/PV context."""
+    eps = max(0.0, float(epsilon))
     charge = max(0.0, float(bat_charge or 0))
     discharge = max(0.0, float(bat_discharge or 0))
+    if charge <= eps:
+        charge = 0.0
+    if discharge <= eps:
+        discharge = 0.0
     g_imp = max(0.0, float(grid_import or 0))
     g_exp = max(0.0, float(grid_export or 0))
     prod = float(production if production is not None else pv or 0)
@@ -120,7 +126,8 @@ def _slot_action_energy(slot: dict[str, Any], action: str) -> float:
     if action == ACTION_DISCHARGE_LOAD:
         return max(0.0, -bd)
     if action == ACTION_CHARGE_GRID:
-        return max(imp, max(0.0, bd))
+        bd_pos = max(0.0, bd)
+        return bd_pos if bd_pos > 0.0 else 0.0
     if action == ACTION_CHARGE_SOLAR:
         return max(0.0, bd)
     if action == ACTION_IDLE_GRID:
@@ -259,7 +266,7 @@ def summarize_hour_actions_debug(
     epsilon: float = 0.001,
 ) -> str:
     """Debug/PROD hourly action — same classify rules as Influx history rows."""
-    del hour, cfg, epsilon
+    del hour, cfg
     pv_total = sum(float(s.get("pv") or 0) for s in slots)
     grid_import = sum(float(s.get("grid_import") or 0) for s in slots)
     grid_export = sum(float(s.get("grid_export") or 0) for s in slots)
@@ -271,6 +278,7 @@ def summarize_hour_actions_debug(
         grid_import=grid_import,
         grid_export=grid_export,
         production=pv_total,
+        epsilon=epsilon,
     )
 
 
@@ -297,8 +305,11 @@ def _hour_q15_timer_energy(
             if act == ACTION_CHARGE_GRID:
                 total += _slot_action_energy(slot, ACTION_CHARGE_GRID)
                 active.append(qi)
-            elif hour_act == ACTION_CHARGE_GRID and imp > epsilon:
-                # Hour totals say grid charge, but per-q15 classify may be PV (g_imp <= pv).
+            elif hour_act == ACTION_CHARGE_GRID:
+                bd_pos = max(0.0, float(slot.get("battery_delta") or 0))
+                spv = float(slot.get("pv") or 0)
+                if bd_pos <= epsilon or imp <= epsilon or imp <= spv:
+                    continue
                 total += _slot_action_energy(slot, ACTION_CHARGE_GRID)
                 active.append(qi)
         else:
@@ -394,8 +405,7 @@ def _fallback_charge_grid_timer(
 ) -> str:
     """Full clock-hour charge slot when q15 clip cannot reach SA minimum duration."""
     totals = _hour_slot_totals(slots)
-    energy = totals["grid_import"] + totals["bat_charge"]
-    if energy <= epsilon:
+    if totals["bat_charge"] <= epsilon:
         return ""
     hour_start = hour * 60
     power_kw = plan_timer_charge_power_kw(cfg)
@@ -413,13 +423,19 @@ def build_hour_timer_schedule(
     *,
     action: str | None = None,
     grid_export: float | None = None,
+    bat_charge: float | None = None,
     epsilon: float = 0.001,
 ) -> str:
     """Per-hour SA timer — only when *action* (row label) warrants grid charge/discharge."""
     totals = _hour_slot_totals(slots)
-    act = normalize_action(action if action is not None else classify_action(**totals))
+    act = normalize_action(
+        action if action is not None else classify_action(**totals, epsilon=epsilon)
+    )
     g_exp = float(grid_export if grid_export is not None else totals["grid_export"])
     if act == ACTION_CHARGE_GRID:
+        bc = float(bat_charge if bat_charge is not None else totals["bat_charge"])
+        if bc <= epsilon:
+            return ""
         seg = _hour_timer_segment(
             hour, slots, ACTION_CHARGE_GRID, cfg,
             epsilon=epsilon, hour_action=act,

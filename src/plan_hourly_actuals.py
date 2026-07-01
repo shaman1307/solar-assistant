@@ -107,6 +107,7 @@ def _row_from_hourly_actual(
         grid_import=grid_import,
         grid_export=grid_export,
         production=pv,
+        epsilon=epsilon,
     )
     cash = hour_meter_cash_pln(
         grid_import, grid_export, buy_price, rce_price, cfg, g12_zone=g12_zone,
@@ -244,6 +245,7 @@ def build_h0_carryover_row(
         grid_import=grid_import,
         grid_export=grid_export,
         production=forecast_pv,
+        epsilon=epsilon,
     )
     cash = hour_meter_cash_pln(
         grid_import, grid_export, buy_price, rce_price, cfg, g12_zone=g12_zone,
@@ -1100,6 +1102,7 @@ def build_actual_hour_row(
         grid_import=grid_import,
         grid_export=grid_export,
         production=pv,
+        epsilon=epsilon,
     )
     cash = hour_meter_cash_pln(
         grid_import, grid_export, buy_price, rce_price, cfg, g12_zone=g12_zone,

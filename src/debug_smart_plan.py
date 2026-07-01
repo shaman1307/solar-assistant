@@ -284,6 +284,7 @@ def run_day_smart_q15_plan(
             grid_import=phys.grid_import,
             grid_export=phys.grid_export,
             production=pv_q[step],
+            epsilon=eps_q,
         )
         dt = start_dt + timedelta(hours=h, minutes=quarter * 15)
         slot = {
@@ -377,11 +378,32 @@ def build_history_hour_timer_schedule(
     """Timer Schedule for a completed hour: Influx SOC at hour start + optimizer reserve.
 
     PV/load use the forecast profile (as at plan time), not merged actuals for later hours.
+    Timer lines reflect actual meter flows — grid-to-load without battery charge gets no Chg slot.
     """
     from .plan_hourly_actuals import hour_start_soc_kwh
+    from .timer_plan import ACTION_CHARGE_GRID, ACTION_DISCHARGE_GRID, classify_action
 
     params = get_simulation_params(cfg)
     epsilon = float(params["epsilon_kwh"])
+    actual_action = classify_action(
+        bat_charge=float(row.get("bat_charge") or 0),
+        bat_discharge=float(row.get("bat_discharge") or 0),
+        grid_import=float(row.get("grid_import") or 0),
+        grid_export=float(row.get("grid_export") or 0),
+        production=float(row.get("production") or 0),
+        epsilon=epsilon,
+    )
+    row["action"] = actual_action
+
+    if actual_action == ACTION_CHARGE_GRID:
+        if float(row.get("bat_charge") or 0) <= epsilon:
+            return ""
+    elif actual_action == ACTION_DISCHARGE_GRID:
+        if float(row.get("grid_export") or 0) <= epsilon:
+            return ""
+    else:
+        return ""
+
     start_soc = hour_start_soc_kwh(today_hourly, hour, battery_cap, min_soc_pct)
     if start_soc is None:
         return ""
@@ -405,8 +427,9 @@ def build_history_hour_timer_schedule(
         slots,
         cfg,
         epsilon=epsilon,
-        action=row.get("action"),
+        action=actual_action,
         grid_export=float(row.get("grid_export") or 0),
+        bat_charge=float(row.get("bat_charge") or 0),
     )
 
 

@@ -244,6 +244,7 @@ def replay_day_plan_with_timer_overrides(
                     grid_import=phys.grid_import,
                     grid_export=phys.grid_export,
                     production=pv_q[global_step],
+                    epsilon=eps_q,
                 )
                 slot = {
                     "hour": h,
@@ -328,6 +329,7 @@ def replay_day_plan_with_timer_overrides(
                 grid_import=phys.grid_import,
                 grid_export=phys.grid_export,
                 production=pv_q[global_step],
+                epsilon=eps_q,
             )
             slot = {
                 "hour": hh,
