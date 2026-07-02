@@ -1670,6 +1670,156 @@
       padding: 0.35rem 0.5rem;
       color: #111827;
       background: #fff;
+      cursor: pointer;
+    }
+    .ev-charging-grid input[type="time"].ev-time-readonly {
+      caret-color: transparent;
+    }
+    .ev-time-clock {
+      position: fixed;
+      inset: 0;
+      z-index: 120;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .ev-time-clock.hidden {
+      display: none;
+    }
+    .ev-time-clock-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.35);
+    }
+    .ev-time-clock-panel {
+      position: relative;
+      width: min(18rem, 92vw);
+      border-radius: 1rem;
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      box-shadow: 0 20px 40px rgba(15, 23, 42, 0.18);
+      padding: 1rem 1rem 0.85rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.65rem;
+    }
+    .ev-time-clock-display {
+      font-size: 2rem;
+      font-weight: 600;
+      color: #111827;
+      letter-spacing: 0.04em;
+      line-height: 1;
+    }
+    .ev-time-clock-display--hour-step .ev-time-clock-hour-part {
+      color: #f59e0b;
+    }
+    .ev-time-clock-display--minute-step .ev-time-clock-hour-part {
+      cursor: pointer;
+      border-radius: 0.3rem;
+      padding: 0 0.12rem;
+      margin: 0 -0.12rem;
+      transition: background 0.14s ease, color 0.14s ease;
+    }
+    .ev-time-clock-display--minute-step .ev-time-clock-hour-part:hover,
+    .ev-time-clock-display--minute-step .ev-time-clock-hour-part:focus-visible {
+      background: #fef3c7;
+      color: #d97706;
+      outline: none;
+    }
+    .ev-time-clock-display--minute-step .ev-time-clock-min-part {
+      color: #f59e0b;
+    }
+    .ev-time-clock-hint {
+      font-size: 0.75rem;
+      color: #6b7280;
+      margin-top: -0.35rem;
+      text-align: center;
+    }
+    .ev-time-clock-face {
+      width: min(15rem, 78vw);
+      aspect-ratio: 1;
+    }
+    .ev-time-clock-svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: manipulation;
+    }
+    .ev-time-clock-svg .ev-clock-label {
+      font-weight: 600;
+      fill: #374151;
+      pointer-events: none;
+      user-select: none;
+      transition: fill 0.14s ease;
+    }
+    .ev-time-clock-svg .ev-clock-label--outer {
+      font-size: 12px;
+    }
+    .ev-time-clock-svg .ev-clock-label--inner {
+      font-size: 10px;
+    }
+    .ev-time-clock-svg .ev-clock-label--minute {
+      font-size: 12px;
+    }
+    .ev-time-clock-svg .ev-clock-hit {
+      cursor: pointer;
+    }
+    .ev-time-clock-svg .ev-clock-hit-area {
+      fill: transparent;
+      stroke: none;
+      pointer-events: all;
+    }
+    .ev-time-clock-svg .ev-clock-dot {
+      fill: transparent;
+      stroke: none;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.14s ease, fill 0.14s ease;
+    }
+    .ev-time-clock-svg .ev-clock-hit.is-selected .ev-clock-dot,
+    .ev-time-clock-svg .ev-clock-hit.is-hover .ev-clock-dot {
+      opacity: 1;
+    }
+    .ev-time-clock-svg .ev-clock-hit.is-selected .ev-clock-dot {
+      fill: #f59e0b;
+    }
+    .ev-time-clock-svg .ev-clock-hit.is-hover:not(.is-selected) .ev-clock-dot {
+      fill: #fde68a;
+    }
+    .ev-time-clock-svg .ev-clock-hit.is-selected .ev-clock-label {
+      fill: #ffffff;
+    }
+    .ev-time-clock-svg .ev-clock-hit.is-hover:not(.is-selected) .ev-clock-label {
+      fill: #92400e;
+    }
+    .ev-time-clock-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.5rem;
+      width: 100%;
+      padding-top: 0.15rem;
+    }
+    .ev-time-clock-actions button {
+      font-size: 0.8125rem;
+      border-radius: 0.5rem;
+      padding: 0.4rem 0.85rem;
+    }
+    .ev-time-clock-cancel {
+      background: #f3f4f6;
+      color: #374151;
+    }
+    .ev-time-clock-cancel:hover {
+      background: #e5e7eb;
+    }
+    .ev-time-clock-ok {
+      background: #f59e0b;
+      color: #fff;
+      font-weight: 600;
+    }
+    .ev-time-clock-ok:hover {
+      background: #d97706;
     }
     .ev-power-stepper {
       display: flex;
@@ -2571,6 +2721,20 @@
               <input type="number" id="ev-night-power" min="0" step="1" value="8" aria-label="Night charging power kW" />
               <button type="button" id="ev-night-plus" aria-label="Increase night power">+</button>
               <span class="text-xs text-gray-500 ev-kw-label">kW</span>
+            </div>
+          </div>
+        </div>
+        <div id="ev-time-clock" class="ev-time-clock hidden" aria-hidden="true">
+          <div class="ev-time-clock-backdrop" data-ev-clock-dismiss="1"></div>
+          <div class="ev-time-clock-panel" role="dialog" aria-modal="true" aria-labelledby="ev-time-clock-display">
+            <div id="ev-time-clock-display" class="ev-time-clock-display">00:00</div>
+            <div id="ev-time-clock-hint" class="ev-time-clock-hint">Select hour</div>
+            <div class="ev-time-clock-face">
+              <svg class="ev-time-clock-svg" viewBox="0 0 200 200" aria-hidden="true"></svg>
+            </div>
+            <div class="ev-time-clock-actions">
+              <button type="button" class="ev-time-clock-cancel">Cancel</button>
+              <button type="button" class="ev-time-clock-ok">OK</button>
             </div>
           </div>
         </div>
@@ -4183,6 +4347,274 @@ function parseEvTimeMin(value) {
   return h * 60 + m;
 }
 
+const EV_TIME_STEP_MIN = 15;
+const EV_MAX_END_MIN = 23 * 60 + 45;
+
+function evMinToTime(totalMin) {
+  const clamped = Math.max(0, Math.min(23 * 60 + 59, totalMin));
+  const h = Math.floor(clamped / 60);
+  const m = clamped % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+/** Keep end strictly after start (15-min grid) so save does not drop the session. */
+function evCoerceSlotTimes(startId, endId, changedSide) {
+  const startEl = document.getElementById(startId);
+  const endEl = document.getElementById(endId);
+  if (!startEl || !endEl) return false;
+  const start = parseEvTimeMin(startEl.value);
+  const end = parseEvTimeMin(endEl.value);
+  if (start == null || end == null) return false;
+  if (end > start) return false;
+  if (changedSide === 'start') {
+    endEl.value = evMinToTime(Math.min(start + EV_TIME_STEP_MIN, EV_MAX_END_MIN));
+  } else {
+    startEl.value = evMinToTime(Math.max(end - EV_TIME_STEP_MIN, 0));
+  }
+  return true;
+}
+
+const EV_CLOCK_MINUTES = [0, 15, 30, 45];
+const EV_CLOCK_OUTER_R = 76;
+const EV_CLOCK_INNER_R = 42;
+const EV_CLOCK_OUTER_DOT_R = 13;
+const EV_CLOCK_OUTER_HIT_R = 14;
+const EV_CLOCK_INNER_DOT_R = 10;
+const EV_CLOCK_INNER_HIT_R = 11;
+let evTimeClockCtx = null;
+let evTimeClockBound = false;
+
+function evTimeUseClockPopover() {
+  return window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+}
+
+function evTimeClockFormat(hour, minute) {
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+function evTimeClockParseInput(value) {
+  const parts = String(value || '00:00').split(':');
+  let hour = parseInt(parts[0], 10);
+  let minute = parseInt(parts[1], 10);
+  if (!Number.isFinite(hour)) hour = 0;
+  if (!Number.isFinite(minute)) minute = 0;
+  hour = ((hour % 24) + 24) % 24;
+  if (!EV_CLOCK_MINUTES.includes(minute)) {
+    minute = EV_CLOCK_MINUTES.reduce((best, m) => (
+      Math.abs(m - minute) < Math.abs(best - minute) ? m : best
+    ), 0);
+  }
+  return { hour, minute };
+}
+
+function evTimeClockGoToHourStep() {
+  if (!evTimeClockCtx || evTimeClockCtx.step === 'hour') return;
+  evTimeClockCtx.step = 'hour';
+  evTimeClockUpdateDisplay();
+  evTimeClockRenderFace();
+}
+
+function evTimeClockUpdateDisplay() {
+  if (!evTimeClockCtx) return;
+  const display = document.getElementById('ev-time-clock-display');
+  const hint = document.getElementById('ev-time-clock-hint');
+  const hh = String(evTimeClockCtx.hour).padStart(2, '0');
+  const mm = String(evTimeClockCtx.minute).padStart(2, '0');
+  const onMinuteStep = evTimeClockCtx.step === 'minute';
+  if (display) {
+    const hourAttrs = onMinuteStep
+      ? ' class="ev-time-clock-hour-part" role="button" tabindex="0" title="Change hour"'
+      : ' class="ev-time-clock-hour-part"';
+    display.innerHTML =
+      `<span${hourAttrs}>${hh}</span>` +
+      `<span class="ev-time-clock-sep">:</span>` +
+      `<span class="ev-time-clock-min-part">${mm}</span>`;
+    display.classList.toggle('ev-time-clock-display--hour-step', !onMinuteStep);
+    display.classList.toggle('ev-time-clock-display--minute-step', onMinuteStep);
+  }
+  if (hint) hint.textContent = onMinuteStep ? 'Select minutes' : 'Select hour';
+}
+
+function evTimeClockAppendHit(svg, ns, { x, y, selected, labelText, dataset, labelClass = 'ev-clock-label', hitR = 16, dotR = 17 }) {
+  const hit = document.createElementNS(ns, 'g');
+  hit.setAttribute('class', `ev-clock-hit${selected ? ' is-selected' : ''}`);
+  hit.setAttribute('transform', `translate(${x} ${y})`);
+  Object.entries(dataset).forEach(([key, val]) => { hit.dataset[key] = val; });
+  const hitArea = document.createElementNS(ns, 'circle');
+  hitArea.setAttribute('class', 'ev-clock-hit-area');
+  hitArea.setAttribute('cx', '0');
+  hitArea.setAttribute('cy', '0');
+  hitArea.setAttribute('r', String(hitR));
+  const dot = document.createElementNS(ns, 'circle');
+  dot.setAttribute('class', 'ev-clock-dot');
+  dot.setAttribute('cx', '0');
+  dot.setAttribute('cy', '0');
+  dot.setAttribute('r', String(dotR));
+  const label = document.createElementNS(ns, 'text');
+  label.setAttribute('x', '0');
+  label.setAttribute('y', '0');
+  label.setAttribute('text-anchor', 'middle');
+  label.setAttribute('dominant-baseline', 'middle');
+  label.setAttribute('class', labelClass);
+  label.textContent = labelText;
+  hit.appendChild(hitArea);
+  hit.appendChild(dot);
+  hit.appendChild(label);
+  svg.appendChild(hit);
+}
+
+function evTimeClockHourPosition(hour) {
+  let slot;
+  let ring;
+  if (hour === 0) {
+    slot = 12;
+    ring = 'inner';
+  } else if (hour >= 13) {
+    slot = hour - 12;
+    ring = 'inner';
+  } else {
+    slot = hour;
+    ring = 'outer';
+  }
+  const angle = (slot / 12) * Math.PI * 2 - Math.PI / 2;
+  const radius = ring === 'inner' ? EV_CLOCK_INNER_R : EV_CLOCK_OUTER_R;
+  return {
+    x: 100 + radius * Math.cos(angle),
+    y: 100 + radius * Math.sin(angle),
+    ring,
+  };
+}
+
+function evTimeClockRenderFace() {
+  const svg = document.querySelector('#ev-time-clock .ev-time-clock-svg');
+  if (!svg || !evTimeClockCtx) return;
+  const ns = 'http://www.w3.org/2000/svg';
+  svg.replaceChildren();
+  const bg = document.createElementNS(ns, 'circle');
+  bg.setAttribute('cx', '100');
+  bg.setAttribute('cy', '100');
+  bg.setAttribute('r', '88');
+  bg.setAttribute('fill', '#f3f4f6');
+  svg.appendChild(bg);
+
+  if (evTimeClockCtx.step === 'hour') {
+    for (let h = 0; h < 24; h++) {
+      const { x, y, ring } = evTimeClockHourPosition(h);
+      const selected = evTimeClockCtx.hour === h;
+      const isOuter = ring === 'outer';
+      evTimeClockAppendHit(svg, ns, {
+        x, y,
+        selected,
+        labelText: String(h).padStart(2, '0'),
+        dataset: { hour: String(h) },
+        labelClass: `ev-clock-label ev-clock-label--${ring}`,
+        hitR: isOuter ? EV_CLOCK_OUTER_HIT_R : EV_CLOCK_INNER_HIT_R,
+        dotR: isOuter ? EV_CLOCK_OUTER_DOT_R : EV_CLOCK_INNER_DOT_R,
+      });
+    }
+    return;
+  }
+
+  EV_CLOCK_MINUTES.forEach((minute, idx) => {
+    const angle = (idx / 4) * Math.PI * 2 - Math.PI / 2;
+    const x = 100 + EV_CLOCK_OUTER_R * Math.cos(angle);
+    const y = 100 + EV_CLOCK_OUTER_R * Math.sin(angle);
+    const selected = evTimeClockCtx.minute === minute;
+    evTimeClockAppendHit(svg, ns, {
+      x, y,
+      selected,
+      labelText: String(minute).padStart(2, '0'),
+      dataset: { minute: String(minute) },
+      labelClass: 'ev-clock-label ev-clock-label--outer',
+      hitR: EV_CLOCK_OUTER_HIT_R,
+      dotR: EV_CLOCK_OUTER_DOT_R,
+    });
+  });
+}
+
+function evTimeClockOpen(input) {
+  if (!input) return;
+  const parsed = evTimeClockParseInput(input.value);
+  evTimeClockCtx = {
+    input,
+    hour: parsed.hour,
+    minute: parsed.minute,
+    step: 'hour',
+  };
+  const root = document.getElementById('ev-time-clock');
+  if (!root) return;
+  root.classList.remove('hidden');
+  root.setAttribute('aria-hidden', 'false');
+  evTimeClockUpdateDisplay();
+  evTimeClockRenderFace();
+}
+
+function evTimeClockClose() {
+  const root = document.getElementById('ev-time-clock');
+  if (root) {
+    root.classList.add('hidden');
+    root.setAttribute('aria-hidden', 'true');
+  }
+  evTimeClockCtx = null;
+}
+
+function evTimeClockCommit() {
+  if (!evTimeClockCtx?.input) return;
+  const { input, hour, minute } = evTimeClockCtx;
+  input.value = evTimeClockFormat(hour, minute);
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  evTimeClockClose();
+}
+
+function bindEvTimeClockPopover() {
+  if (evTimeClockBound) return;
+  evTimeClockBound = true;
+  const root = document.getElementById('ev-time-clock');
+  if (!root) return;
+  root.querySelector('.ev-time-clock-backdrop')?.addEventListener('click', evTimeClockClose);
+  root.querySelector('.ev-time-clock-cancel')?.addEventListener('click', evTimeClockClose);
+  root.querySelector('.ev-time-clock-ok')?.addEventListener('click', evTimeClockCommit);
+  const displayEl = root.querySelector('#ev-time-clock-display');
+  displayEl?.addEventListener('click', (ev) => {
+    if (ev.target.classList.contains('ev-time-clock-hour-part')) evTimeClockGoToHourStep();
+  });
+  displayEl?.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter' && ev.key !== ' ') return;
+    if (!ev.target.classList.contains('ev-time-clock-hour-part')) return;
+    ev.preventDefault();
+    evTimeClockGoToHourStep();
+  });
+  const svgEl = root.querySelector('.ev-time-clock-svg');
+  svgEl?.addEventListener('mouseover', (ev) => {
+    const hit = ev.target.closest('.ev-clock-hit');
+    svgEl.querySelectorAll('.ev-clock-hit.is-hover').forEach((el) => el.classList.remove('is-hover'));
+    if (hit) hit.classList.add('is-hover');
+  });
+  svgEl?.addEventListener('mouseout', (ev) => {
+    const hit = ev.target.closest('.ev-clock-hit');
+    if (hit && !hit.contains(ev.relatedTarget)) hit.classList.remove('is-hover');
+  });
+  svgEl?.addEventListener('click', (ev) => {
+    const hit = ev.target.closest('.ev-clock-hit');
+    if (!hit || !evTimeClockCtx) return;
+    if (hit.dataset.hour != null) {
+      evTimeClockCtx.hour = Number(hit.dataset.hour);
+      evTimeClockCtx.step = 'minute';
+      evTimeClockUpdateDisplay();
+      evTimeClockRenderFace();
+      return;
+    }
+    if (hit.dataset.minute != null) {
+      evTimeClockCtx.minute = Number(hit.dataset.minute);
+      evTimeClockUpdateDisplay();
+      evTimeClockRenderFace();
+    }
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && evTimeClockCtx) evTimeClockClose();
+  });
+}
+
 function evLoadKwhFromSession(session) {
   if (!session) return 0;
   let total = 0;
@@ -4256,6 +4688,17 @@ function nudgeEvPower(which, delta) {
 function bindEvTimePicker(input) {
   if (!input || input.dataset.pickerBound) return;
   input.dataset.pickerBound = '1';
+  if (evTimeUseClockPopover()) {
+    input.readOnly = true;
+    input.classList.add('ev-time-readonly');
+    input.addEventListener('mousedown', (ev) => ev.preventDefault());
+    input.addEventListener('keydown', (ev) => ev.preventDefault());
+    input.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      evTimeClockOpen(input);
+    });
+    return;
+  }
   input.addEventListener('click', () => {
     try { input.showPicker(); } catch (_) { /* ignore */ }
   });
@@ -4349,10 +4792,15 @@ function fitCompactUiTypography() {
 
 function initEvChargingPanel(payload) {
   evChargingPayload = payload || evChargingPayload;
+  bindEvTimeClockPopover();
   if (!evPanelBound) {
     evPanelBound = true;
     ['ev-day-enabled', 'ev-night-enabled'].forEach(id => {
-      document.getElementById(id)?.addEventListener('change', () => {
+      document.getElementById(id)?.addEventListener('change', (ev) => {
+        if (ev.target.checked) {
+          const prefix = id.includes('day') ? 'ev-day' : 'ev-night';
+          evCoerceSlotTimes(`${prefix}-start`, `${prefix}-end`, 'start');
+        }
         refreshLoadOvDisplay();
         scheduleEvSave();
       });
@@ -4361,6 +4809,9 @@ function initEvChargingPanel(payload) {
       const el = document.getElementById(id);
       bindEvTimePicker(el);
       el?.addEventListener('change', () => {
+        const prefix = id.includes('day') ? 'ev-day' : 'ev-night';
+        const side = id.includes('-start') ? 'start' : 'end';
+        evCoerceSlotTimes(`${prefix}-start`, `${prefix}-end`, side);
         refreshLoadOvDisplay();
         scheduleEvSave();
       });

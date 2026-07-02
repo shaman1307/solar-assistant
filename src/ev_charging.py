@@ -87,6 +87,23 @@ def parse_hhmm(value: str) -> int | None:
         return None
 
 
+def format_hhmm(total_min: int) -> str:
+    """Clock time HH:MM on a 24h calendar day."""
+    clamped = max(0, min(23 * 60 + 59, int(total_min)))
+    return f"{clamped // 60:02d}:{clamped % 60:02d}"
+
+
+Q15_STEP_MIN = 15
+_MAX_END_MIN = 23 * 60 + 45  # aligned with UI time inputs (step=900)
+
+
+def _coerce_slot_end_after_start(start_min: int, end_min: int) -> int:
+    """Minimum valid end: strictly after start, 15-minute grid."""
+    if end_min > start_min:
+        return end_min
+    return min(start_min + Q15_STEP_MIN, _MAX_END_MIN)
+
+
 def _normalize_slot(raw: dict | None, *, night: bool, cfg: dict) -> dict[str, Any]:
     defaults = DEFAULT_NIGHT_SLOT if night else DEFAULT_SLOT
     src = raw if isinstance(raw, dict) else {}
@@ -96,11 +113,22 @@ def _normalize_slot(raw: dict | None, *, night: bool, cfg: dict) -> dict[str, An
         start = defaults["start"]
     if parse_hhmm(end) is None:
         end = defaults["end"]
+    start_min = parse_hhmm(start)
+    end_min = parse_hhmm(end)
+    if start_min is not None and end_min is not None:
+        coerced_end = _coerce_slot_end_after_start(start_min, end_min)
+        if coerced_end != end_min:
+            end_min = coerced_end
+            end = format_hhmm(end_min)
     power = clamp_power_kw(float(src.get("power_kw", defaults["power_kw"]) or 0), cfg)
-    enabled = bool(src.get("enabled", False)) and power > 0
-    if parse_hhmm(start) is not None and parse_hhmm(end) is not None:
-        if parse_hhmm(start) >= parse_hhmm(end):
-            enabled = False
+    wants_enabled = bool(src.get("enabled", False))
+    enabled = (
+        wants_enabled
+        and power > 0
+        and start_min is not None
+        and end_min is not None
+        and end_min > start_min
+    )
     return {
         "enabled": enabled,
         "start": start,
@@ -227,10 +255,7 @@ def set_session(date_str: str, session: dict[str, Any], cfg: dict) -> dict[str, 
     else:
         raise ValueError("EV charging can only be set for today or tomorrow")
 
-    if session_has_charging(normalized):
-        data[slot_key] = normalized
-    else:
-        data[slot_key] = None
+    data[slot_key] = normalized
 
     save_store(data)
     prune_old_sessions(cfg)
@@ -240,7 +265,7 @@ def set_session(date_str: str, session: dict[str, Any], cfg: dict) -> dict[str, 
 def get_session_for_ui(date_str: str, cfg: dict) -> dict[str, Any]:
     """UI state: stored plan for calendar date, or disabled defaults."""
     stored = get_session(date_str, cfg)
-    if stored and session_has_charging(stored):
+    if stored:
         return normalize_session(stored, cfg)
     return default_session()
 
