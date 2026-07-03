@@ -102,8 +102,6 @@ When Smart mode is on, the same hourly **:00** job extracts the **next clock hou
 | **Discharging to Grid and Load** | Timed discharge for the next hour |
 | Other (idle, PV to load, discharge to load only) | Timed charge/discharge cleared |
 
-Use **Sync hour** in the Rules tab to apply the plan immediately.
-
 ### What you get as a user
 
 - **Visibility** — one place to see live status, buy vs sell prices (G12 + RCE chart), and a cost-aware plan for the next 2 days.

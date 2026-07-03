@@ -55,6 +55,7 @@ files=(
   src/plan_spill.py
   src/plan_hourly_actuals.py
   src/plan_monthly_history.py
+  src/plan_baseline.py
   src/plan_cost.py
   src/g12_pricing.py
   src/simulation_config.py

@@ -267,9 +267,9 @@
       table-layout: fixed;
       width: 100%;
     }
-    .sim-table-month .sim-col-day { width: 18%; }
-    .sim-table-month .sim-col-kwh { width: 14%; }
-    .sim-table-month .sim-col-cost { width: 16%; }
+    .sim-table-month .sim-col-day { width: 14%; }
+    .sim-table-month .sim-col-kwh { width: 10%; }
+    .sim-table-month .sim-col-cost { width: 11%; }
     .sim-table th,
     .sim-table td {
       padding: var(--sim-table-pad-y, 0.25rem) var(--sim-table-pad-x, 0.375rem);
@@ -2851,7 +2851,7 @@
         <colgroup>
           <col class="sim-col-day">
           <col class="sim-col-kwh" span="4">
-          <col class="sim-col-cost" span="2">
+          <col class="sim-col-cost" span="4">
         </colgroup>
         <thead>
           <tr class="border-b border-gray-200 text-gray-500 text-left">
@@ -2862,14 +2862,16 @@
             <th class="font-medium text-right">Grid export<br><span class="font-normal">(kWh)</span></th>
             <th class="font-medium text-right">Energy Cost<br><span class="font-normal">(PLN)</span></th>
             <th class="font-medium text-right">Service Cost<br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right">Baseline<br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right">Saved<br><span class="font-normal">(PLN)</span></th>
           </tr>
         </thead>
         <tbody id="history-month-body-total">
-          <tr><td colspan="7" class="px-3 py-6 text-center text-gray-500">Loading monthly history…</td></tr>
+          <tr><td colspan="9" class="px-3 py-6 text-center text-gray-500">Loading monthly history…</td></tr>
         </tbody>
         <tbody id="history-month-toggle" class="hidden">
           <tr class="border-b border-gray-200 bg-slate-50">
-            <td colspan="7" class="px-3 py-2">
+            <td colspan="9" class="px-3 py-2">
               <button type="button" id="history-month-btn" onclick="toggleHistoryMonthDays()"
                 class="text-xs font-medium text-slate-700 hover:text-slate-900">Daily breakdown ▼</button>
             </td>
@@ -7223,6 +7225,40 @@ function historyMonthTotalLabel(month) {
   return `${m}-${y}`;
 }
 
+function historyMonthBaselineDisplayValue(r, isTotal) {
+  const energy = Number(r.baseline_energy_cost);
+  const service = Number(r.baseline_service_cost);
+  if (!Number.isFinite(energy) && !Number.isFinite(service)) return null;
+  const total = (Number.isFinite(energy) ? energy : 0) + (Number.isFinite(service) ? service : 0);
+  if (!isTotal && Math.abs(total) < 0.005) return null;
+  return -total;
+}
+
+function historyMonthBaselineTitle(r) {
+  const energy = Number(r.baseline_energy_cost);
+  const service = Number(r.baseline_service_cost);
+  if (!Number.isFinite(energy) || !Number.isFinite(service)) return 'Passive load-priority bill';
+  return `Baseline energy: ${fmt(energy, 2)} zł, service: ${fmt(service, 2)} zł`;
+}
+
+function historyMonthSavingsDisplayValue(r, isTotal) {
+  if (r.savings_pln == null) return null;
+  const n = Number(r.savings_pln);
+  if (!Number.isFinite(n)) return null;
+  if (!isTotal && Math.abs(n) < 0.005) return null;
+  return n;
+}
+
+function historyMonthSavingsTitle(r) {
+  const baseline = Number(r.baseline_cost);
+  const smartEnergy = Number(r.energy_cost);
+  const smartService = Number(r.service_cost);
+  if (!Number.isFinite(baseline) || !Number.isFinite(smartEnergy) || !Number.isFinite(smartService)) {
+    return 'Baseline bill minus actual bill';
+  }
+  return `Baseline ${fmt(baseline, 2)} zł − actual ${fmt(smartEnergy + smartService, 2)} zł`;
+}
+
 function makeHistoryMonthRow(r, isTotal) {
   const tr = document.createElement('tr');
   tr.className = 'border-b border-gray-200 ' + (isTotal ? 'bg-gray-100 font-semibold' : 'hover:bg-gray-50');
@@ -7232,6 +7268,12 @@ function makeHistoryMonthRow(r, isTotal) {
   const serviceVal = simServiceDisplayValue(r);
   const serviceTitle = simServiceTitle(r);
   const serviceCls = simServiceClass(serviceVal);
+  const baselineVal = historyMonthBaselineDisplayValue(r, isTotal);
+  const baselineTitle = historyMonthBaselineTitle(r);
+  const baselineCls = simCashClass(baselineVal);
+  const savingsVal = historyMonthSavingsDisplayValue(r, isTotal);
+  const savingsTitle = historyMonthSavingsTitle(r);
+  const savingsCls = simCashClass(savingsVal);
   tr.innerHTML = `
     <td class="text-gray-600 whitespace-nowrap">${r.start || r.date || ''}</td>
     <td class="text-right text-gray-600 tabular-nums">${fmt(r.production, 2)}</td>
@@ -7239,7 +7281,9 @@ function makeHistoryMonthRow(r, isTotal) {
     <td class="text-right text-gray-600 tabular-nums">${fmt(r.grid_import, 2)}</td>
     <td class="text-right text-gray-600 tabular-nums">${fmt(r.grid_export, 2)}</td>
     <td class="text-right tabular-nums ${energyCls}" title="${energyTitle}">${simEnergyFmt(energyCash)}</td>
-    <td class="text-right tabular-nums ${serviceCls}" title="${serviceTitle}">${simServiceFmt(serviceVal)}</td>`;
+    <td class="text-right tabular-nums ${serviceCls}" title="${serviceTitle}">${simServiceFmt(serviceVal)}</td>
+    <td class="text-right tabular-nums ${baselineCls}" title="${baselineTitle}">${simCashFmt(baselineVal)}</td>
+    <td class="text-right tabular-nums ${savingsCls}" title="${savingsTitle}">${simCashFmt(savingsVal)}</td>`;
   return tr;
 }
 
@@ -7260,11 +7304,11 @@ function renderHistoryMonthTable(data) {
   }
 
   if (data.error) {
-    bodyTotal.innerHTML = `<tr><td colspan="7" class="px-3 py-6 text-center text-red-500">${String(data.error)}</td></tr>`;
+    bodyTotal.innerHTML = `<tr><td colspan="9" class="px-3 py-6 text-center text-red-500">${String(data.error)}</td></tr>`;
     return;
   }
   if (!data.rows || !data.rows.length) {
-    bodyTotal.innerHTML = '<tr><td colspan="7" class="px-3 py-6 text-center text-gray-500">No history for this month.</td></tr>';
+    bodyTotal.innerHTML = '<tr><td colspan="9" class="px-3 py-6 text-center text-gray-500">No history for this month.</td></tr>';
     return;
   }
 
@@ -7290,7 +7334,7 @@ function toggleHistoryMonthDays() {
   btn.textContent = hidden ? label + ' ▼' : 'Hide daily breakdown ▲';
 }
 
-const HISTORY_MONTH_CACHE_KEY = 'sa_history_month_v2';
+const HISTORY_MONTH_CACHE_KEY = 'sa_history_month_v3';
 
 function historyMonthCacheDay() {
   return DEBUG_TODAY;
@@ -7369,7 +7413,7 @@ async function loadHistoryMonth() {
       bodyDays.classList.add('hidden');
     }
     if (toggleEl) toggleEl.classList.add('hidden');
-    bodyTotal.innerHTML = '<tr><td colspan="7" class="px-3 py-6 text-center text-gray-500">Select a month to load daily totals.</td></tr>';
+    bodyTotal.innerHTML = '<tr><td colspan="9" class="px-3 py-6 text-center text-gray-500">Select a month to load daily totals.</td></tr>';
     return;
   }
   const cached = getCachedHistoryMonth(month);
@@ -7377,12 +7421,12 @@ async function loadHistoryMonth() {
     renderHistoryMonthTable(cached);
     return;
   }
-  bodyTotal.innerHTML = '<tr><td colspan="7" class="px-3 py-6 text-center text-gray-600">Loading…</td></tr>';
+  bodyTotal.innerHTML = '<tr><td colspan="9" class="px-3 py-6 text-center text-gray-600">Loading…</td></tr>';
   try {
     const data = await fetchHistoryMonthCached(month);
     renderHistoryMonthTable(data);
   } catch (e) {
-    bodyTotal.innerHTML = '<tr><td colspan="7" class="px-3 py-6 text-center text-red-500">Failed to load month.</td></tr>';
+    bodyTotal.innerHTML = '<tr><td colspan="9" class="px-3 py-6 text-center text-red-500">Failed to load month.</td></tr>';
   }
 }
 

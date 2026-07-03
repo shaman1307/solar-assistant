@@ -10,6 +10,7 @@ from typing import Any
 from . import influxdb as influxdb_mod
 from . import rce as rce_mod
 from .influxdb import now_warsaw
+from .plan_baseline import attach_baseline_savings, build_baseline_history_rows
 from .plan_hourly_actuals import build_completed_history_rows
 from .simulation_config import get_simulation_params
 
@@ -23,6 +24,10 @@ def _empty_month_totals() -> dict[str, Any]:
         "grid_export": 0.0,
         "energy_cost": 0.0,
         "service_cost": 0.0,
+        "baseline_energy_cost": 0.0,
+        "baseline_service_cost": 0.0,
+        "baseline_cost": 0.0,
+        "savings_pln": 0.0,
     }
 
 
@@ -58,6 +63,14 @@ def _summarize_period(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "grid_export": round(sum(float(r["grid_export"]) for r in rows), 2),
         "energy_cost": round(sum(float(r.get("energy_cost") or 0.0) for r in rows), 2),
         "service_cost": round(sum(float(r.get("service_cost") or 0.0) for r in rows), 2),
+        "baseline_energy_cost": round(
+            sum(float(r.get("baseline_energy_cost") or 0.0) for r in rows), 2,
+        ),
+        "baseline_service_cost": round(
+            sum(float(r.get("baseline_service_cost") or 0.0) for r in rows), 2,
+        ),
+        "baseline_cost": round(sum(float(r.get("baseline_cost") or 0.0) for r in rows), 2),
+        "savings_pln": round(sum(float(r.get("savings_pln") or 0.0) for r in rows), 2),
     }
 
 
@@ -134,7 +147,16 @@ async def build_month_history(month: str, cfg: dict) -> dict[str, Any]:
         )
         if not day_rows:
             continue
-        rows.append(_summarize_day_rows(day_rows, date_str))
+        baseline_rows = build_baseline_history_rows(
+            date_str,
+            until_hour,
+            hourly,
+            quarters_by_date,
+            cfg,
+            params,
+        )
+        summary = _summarize_day_rows(day_rows, date_str)
+        rows.append(attach_baseline_savings(summary, baseline_rows))
 
     return {
         "month": month,
