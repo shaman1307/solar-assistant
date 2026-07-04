@@ -33,10 +33,15 @@ _WORK_MODE_DEFAULT_OPTIONS = (
 )
 _BATTERY_DISCHARGE_MODE_DEFAULT_OPTIONS = (
     "Standby",
-    "UPS loads only",
+    "UPS load only",
     "UPS and home loads",
-    "Grid sell",
+    "Grid export enabled",
 )
+# Legacy Smart labels → exact SA enum strings (SRNE / current SA UI).
+_BATTERY_DISCHARGE_MODE_WRITE_ALIASES: dict[str, str] = {
+    "UPS loads only": "UPS load only",
+    "Grid sell": "Grid export enabled",
+}
 _SOLAR_POWER_PRIORITY_DEFAULT_OPTIONS = (
     "Load first",
     "Battery first",
@@ -44,8 +49,19 @@ _SOLAR_POWER_PRIORITY_DEFAULT_OPTIONS = (
 )
 WORK_MODE_ON_GRID = "On-grid"
 WORK_MODE_LIMIT_HOME_LOAD = "Limit power to home load"
-WORK_MODE_VERIFY_TIMEOUT_S = 65.0
+BATTERY_DISCHARGE_MODE_GRID_EXPORT = "Grid export enabled"
+BATTERY_DISCHARGE_MODE_UPS_AND_HOME = "UPS and home loads"
+WORK_MODE_BATTERY_DISCHARGE_PAIR: dict[str, str] = {
+    WORK_MODE_ON_GRID: BATTERY_DISCHARGE_MODE_GRID_EXPORT,
+    WORK_MODE_LIMIT_HOME_LOAD: BATTERY_DISCHARGE_MODE_UPS_AND_HOME,
+}
+BATTERY_DISCHARGE_WORK_MODE_PAIR: dict[str, str] = {
+    v: k for k, v in WORK_MODE_BATTERY_DISCHARGE_PAIR.items()
+}
+WORK_MODE_VERIFY_TIMEOUT_S = 90.0
+BATTERY_DISCHARGE_VERIFY_TIMEOUT_S = 90.0
 WORK_MODE_VERIFY_INTERVAL_S = 5.0
+ENUM_VERIFY_FIRST_PAUSE_S = 3.0
 _SA_CLIENT_TIMEOUT_S = 35.0
 _SA_TIMEOUT_S = 30
 _SA_LOCK_WAIT_S = 2.0
@@ -80,6 +96,7 @@ _rules_cache_ts: float = 0.0
 _metrics_cache: dict[str, Any] | None = None
 _metrics_cache_ts: float = 0.0
 _rules_fetch_lock: asyncio.Lock | None = None
+_enum_setting_lock: asyncio.Lock | None = None
 
 
 def _get_sa_lock() -> asyncio.Lock:
@@ -94,6 +111,13 @@ def _get_rules_fetch_lock() -> asyncio.Lock:
     if _rules_fetch_lock is None:
         _rules_fetch_lock = asyncio.Lock()
     return _rules_fetch_lock
+
+
+def _get_enum_setting_lock() -> asyncio.Lock:
+    global _enum_setting_lock
+    if _enum_setting_lock is None:
+        _enum_setting_lock = asyncio.Lock()
+    return _enum_setting_lock
 
 
 def invalidate_rules_cache() -> None:
@@ -184,8 +208,14 @@ def _work_mode_options(cfg: dict) -> list[str]:
 def _battery_discharge_mode_options(cfg: dict) -> list[str]:
     opts = cfg.get("sa", {}).get("battery_discharge_mode_options")
     if isinstance(opts, list) and opts:
-        return [str(o) for o in opts]
+        return [_normalize_battery_discharge_mode_for_sa(str(o)) for o in opts]
     return list(_BATTERY_DISCHARGE_MODE_DEFAULT_OPTIONS)
+
+
+def _normalize_battery_discharge_mode_for_sa(mode: str) -> str:
+    """Map UI/config labels to exact SA inverter enum string."""
+    m = str(mode).strip()
+    return _BATTERY_DISCHARGE_MODE_WRITE_ALIASES.get(m, m)
 
 
 def _solar_power_priority_options(cfg: dict) -> list[str]:
@@ -401,6 +431,55 @@ async def get_rules(cfg: dict, *, fresh: bool = False) -> dict[str, Any]:
             _release_sa_lock()
 
 
+async def _read_inverter_setting(cfg: dict, topic: str) -> str | None:
+    """Read one inverter setting via SA REST (used for post-write verify)."""
+    if not await _acquire_sa_lock(wait_s=60.0):
+        log.warning("SA read %s skipped — lock busy", topic)
+        return None
+    try:
+        client = _build_client(cfg)
+        async with client as c:
+            raw = await _get_metrics(c, topic)
+        if not raw:
+            return None
+        val = raw[0].value
+        return str(val).strip() if val is not None else None
+    except Exception as exc:
+        log.warning("SA read %s failed: %r", topic, exc)
+        return None
+    finally:
+        _release_sa_lock()
+
+
+async def _wait_inverter_setting_confirmed(
+    cfg: dict,
+    *,
+    topic: str,
+    value: str,
+    label: str,
+    verify_timeout_s: float,
+) -> bool:
+    """Poll a single SA topic until it matches (REST can lag 30–70s behind SA UI)."""
+    deadline = time.monotonic() + max(verify_timeout_s, ENUM_VERIFY_FIRST_PAUSE_S)
+    await asyncio.sleep(ENUM_VERIFY_FIRST_PAUSE_S)
+    while time.monotonic() < deadline:
+        invalidate_rules_cache()
+        after = await _read_inverter_setting(cfg, topic)
+        if after == value:
+            log.info("%s set to %s (SA confirmed)", label, value)
+            return True
+        if after is not None:
+            log.info("%s pending — want %r, SA has %r", label, value, after)
+        else:
+            log.info("%s pending — want %r, SA read unavailable", label, value)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(WORK_MODE_VERIFY_INTERVAL_S, remaining))
+    log.error("%s verify timeout after %.0fs — wanted %r", label, verify_timeout_s, value)
+    return False
+
+
 async def _write_metrics(cfg: dict, writes: list[tuple[str, str]], *, lock_wait_s: float = 90.0) -> None:
     """Write SA settings via WebSocket (REST POST returns 500 on some SA/SRNE builds)."""
     if not writes:
@@ -504,6 +583,78 @@ async def set_grid_charging(cfg: dict, *, enabled: bool, power_kw: float = 0.0) 
         return False
 
 
+async def ensure_paired_battery_discharge_mode(
+    cfg: dict,
+    work_mode: str,
+    *,
+    verify_timeout_s: float = BATTERY_DISCHARGE_VERIFY_TIMEOUT_S,
+) -> bool:
+    """Set battery discharge mode paired with work mode; wait for SA confirm (30–60s)."""
+    target = WORK_MODE_BATTERY_DISCHARGE_PAIR.get(work_mode)
+    if not target:
+        return True
+    topic = _battery_discharge_mode_topic(cfg)
+    current = await _read_inverter_setting(cfg, topic)
+    if current == target:
+        log.info(
+            "Battery discharge mode already %r (paired with work mode %r)",
+            target,
+            work_mode,
+        )
+        return True
+    log.info(
+        "Battery discharge mode %r → %r (paired with work mode %r)",
+        current,
+        target,
+        work_mode,
+    )
+    return await _set_inverter_enum_setting(
+        cfg,
+        topic=topic,
+        value=target,
+        rules_field="battery_discharge_mode",
+        label="Battery discharge mode",
+        verify=True,
+        verify_timeout_s=verify_timeout_s,
+    )
+
+
+async def ensure_paired_work_mode_for_battery(
+    cfg: dict,
+    battery_mode: str,
+    *,
+    verify_timeout_s: float = WORK_MODE_VERIFY_TIMEOUT_S,
+) -> bool:
+    """Set work mode required by battery discharge mode before writing battery."""
+    required = BATTERY_DISCHARGE_WORK_MODE_PAIR.get(battery_mode)
+    if not required:
+        return True
+    topic = _work_mode_topic(cfg)
+    current = await _read_inverter_setting(cfg, topic)
+    if current == required:
+        log.info(
+            "Work mode already %r (paired with battery discharge %r)",
+            required,
+            battery_mode,
+        )
+        return True
+    log.info(
+        "Work mode %r → %r before battery discharge %r",
+        current,
+        required,
+        battery_mode,
+    )
+    return await _set_inverter_enum_setting(
+        cfg,
+        topic=topic,
+        value=required,
+        rules_field="work_mode",
+        label="Work mode",
+        verify=True,
+        verify_timeout_s=verify_timeout_s,
+    )
+
+
 async def set_grid_export(cfg: dict, *, enabled: bool) -> bool:
     """Enable or disable SA timed discharge (grid export schedule)."""
     settings: dict[str, str] = cfg["sa"]["settings"]
@@ -527,16 +678,23 @@ async def set_work_mode(
     verify: bool = True,
     verify_timeout_s: float = WORK_MODE_VERIFY_TIMEOUT_S,
 ) -> bool:
-    """Write inverter Work mode to SA; poll until SA applies it (SRNE can take 30–60s)."""
-    return await _set_inverter_enum_setting(
-        cfg,
-        topic=_work_mode_topic(cfg),
-        value=mode,
-        rules_field="work_mode",
-        label="Work mode",
-        verify=verify,
-        verify_timeout_s=verify_timeout_s,
-    )
+    """Write Work mode to SA, then paired battery discharge mode; poll until SA confirms."""
+    mode = str(mode).strip()
+    if not mode:
+        return False
+    async with _get_enum_setting_lock():
+        ok = await _set_inverter_enum_setting(
+            cfg,
+            topic=_work_mode_topic(cfg),
+            value=mode,
+            rules_field="work_mode",
+            label="Work mode",
+            verify=verify,
+            verify_timeout_s=verify_timeout_s,
+        )
+        if not ok:
+            return False
+        return await ensure_paired_battery_discharge_mode(cfg, mode)
 
 
 async def set_battery_discharge_mode(
@@ -544,18 +702,24 @@ async def set_battery_discharge_mode(
     mode: str,
     *,
     verify: bool = True,
-    verify_timeout_s: float = WORK_MODE_VERIFY_TIMEOUT_S,
+    verify_timeout_s: float = BATTERY_DISCHARGE_VERIFY_TIMEOUT_S,
 ) -> bool:
-    """Write Battery discharge mode to SA."""
-    return await _set_inverter_enum_setting(
-        cfg,
-        topic=_battery_discharge_mode_topic(cfg),
-        value=mode,
-        rules_field="battery_discharge_mode",
-        label="Battery discharge mode",
-        verify=verify,
-        verify_timeout_s=verify_timeout_s,
-    )
+    """Write battery discharge mode; set paired work mode first if needed."""
+    mode = _normalize_battery_discharge_mode_for_sa(mode)
+    if not mode:
+        return False
+    async with _get_enum_setting_lock():
+        if not await ensure_paired_work_mode_for_battery(cfg, mode):
+            return False
+        return await _set_inverter_enum_setting(
+            cfg,
+            topic=_battery_discharge_mode_topic(cfg),
+            value=mode,
+            rules_field="battery_discharge_mode",
+            label="Battery discharge mode",
+            verify=verify,
+            verify_timeout_s=verify_timeout_s,
+        )
 
 
 async def set_solar_power_priority(
@@ -597,19 +761,16 @@ async def _set_inverter_enum_setting(
             log.info("%s write sent — %s (no verify)", label, value)
             return True
 
-        deadline = time.monotonic() + max(verify_timeout_s, WORK_MODE_VERIFY_INTERVAL_S)
-        while time.monotonic() < deadline:
-            await asyncio.sleep(WORK_MODE_VERIFY_INTERVAL_S)
+        ok = await _wait_inverter_setting_confirmed(
+            cfg,
+            topic=topic,
+            value=value,
+            label=label,
+            verify_timeout_s=verify_timeout_s,
+        )
+        if ok:
             invalidate_rules_cache()
-            rules = await get_rules(cfg, fresh=True)
-            after = rules.get(rules_field)
-            if after == value:
-                log.info("%s set to %s (SA confirmed)", label, value)
-                return True
-            log.info("%s pending — want %r, SA has %r", label, value, after)
-
-        log.error("%s verify timeout after %.0fs — wanted %r", label, verify_timeout_s, value)
-        return False
+        return ok
     except Exception as exc:
         log.error("Failed to set %s: %r", label, exc)
         return False

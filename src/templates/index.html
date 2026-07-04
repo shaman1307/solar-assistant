@@ -7139,25 +7139,94 @@ function setApplyButtonBusy(btn, busy) {
 }
 
 async function applyWorkMode() {
-  await applyInverterEnumSetting({
-    selectId: 'work-mode-select',
-    btnId: 'work-mode-apply',
-    url: 'api/rules/work-mode',
-    bodyKey: 'work_mode',
-    rulesKey: 'work_mode',
-    label: 'Work mode',
-  });
+  const sel = document.getElementById('work-mode-select');
+  const btn = document.getElementById('work-mode-apply');
+  const value = sel?.value;
+  if (!value) return;
+  setApplyButtonBusy(btn, true);
+  try {
+    const res = await fetch('api/rules/work-mode', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ work_mode: value }),
+    });
+    if (!res.ok) {
+      alert(`Apply failed (HTTP ${res.status}). Try again in a few seconds.`);
+      return;
+    }
+    const data = await res.json();
+    if (data.ok) {
+      if (!rulesData) rulesData = {};
+      rulesData.work_mode = value;
+      if (data.battery_discharge_mode) {
+        rulesData.battery_discharge_mode = data.battery_discharge_mode;
+        renderInverterEnumSelect(
+          'battery-discharge-mode-select',
+          rulesData.battery_discharge_mode_options,
+          data.battery_discharge_mode,
+        );
+      }
+      rulesData.sa_online = true;
+      delete rulesData.stale;
+      markSaRulesWrite();
+      clearRulesManualEdit();
+      persistRulesUiCache();
+    } else {
+      alert('Failed to write Work mode to SA (can take up to 2 min). Wait and retry.');
+    }
+  } catch (e) {
+    alert('Failed to apply — network or timeout. Work mode + battery mode can take up to 2 min.');
+  } finally {
+    setApplyButtonBusy(btn, false);
+  }
 }
 
 async function applyBatteryDischargeMode() {
-  await applyInverterEnumSetting({
-    selectId: 'battery-discharge-mode-select',
-    btnId: 'battery-discharge-mode-apply',
-    url: 'api/rules/battery-discharge-mode',
-    bodyKey: 'battery_discharge_mode',
-    rulesKey: 'battery_discharge_mode',
-    label: 'Battery discharge mode',
-  });
+  const sel = document.getElementById('battery-discharge-mode-select');
+  const btn = document.getElementById('battery-discharge-mode-apply');
+  const value = sel?.value;
+  if (!value) return;
+  setApplyButtonBusy(btn, true);
+  try {
+    const res = await fetch('api/rules/battery-discharge-mode', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ battery_discharge_mode: value }),
+    });
+    if (!res.ok) {
+      alert(`Apply failed (HTTP ${res.status}). Try again in a few seconds.`);
+      return;
+    }
+    const data = await res.json();
+    if (data.ok) {
+      if (!rulesData) rulesData = {};
+      rulesData.battery_discharge_mode = data.battery_discharge_mode || value;
+      if (data.work_mode) {
+        rulesData.work_mode = data.work_mode;
+        renderInverterEnumSelect(
+          'work-mode-select',
+          rulesData.work_mode_options,
+          data.work_mode,
+        );
+      }
+      renderInverterEnumSelect(
+        'battery-discharge-mode-select',
+        rulesData.battery_discharge_mode_options,
+        rulesData.battery_discharge_mode,
+      );
+      rulesData.sa_online = true;
+      delete rulesData.stale;
+      markSaRulesWrite();
+      clearRulesManualEdit();
+      persistRulesUiCache();
+    } else {
+      alert('Failed to write Battery discharge mode (can take up to 3 min). Wait and retry.');
+    }
+  } catch (e) {
+    alert('Failed to apply — network or timeout. Work mode + battery mode can take up to 3 min.');
+  } finally {
+    setApplyButtonBusy(btn, false);
+  }
 }
 
 async function applySolarPowerPriority() {

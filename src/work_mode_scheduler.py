@@ -102,13 +102,23 @@ async def _set_work_mode_if_needed(
         status["work_mode_after"] = before
         status["skipped"] = True
         status["skip_reason"] = "already_set"
-        status["ok"] = True
+        bdm_ok = await sa_client.ensure_paired_battery_discharge_mode(cfg, target_mode)
+        status["ok"] = bdm_ok
+        rules_after = await sa_client.get_rules(cfg, fresh=True)
+        status["battery_discharge_mode_after"] = rules_after.get("battery_discharge_mode")
+        if not bdm_ok:
+            status["error"] = (
+                "SA did not confirm paired battery discharge mode within "
+                f"{int(sa_client.BATTERY_DISCHARGE_VERIFY_TIMEOUT_S)}s"
+            )
         log.info(
-            "Work mode %s skipped — already %s (hour %02d, timer=%s)",
+            "Work mode %s skipped — already %s (hour %02d, timer=%s); "
+            "battery discharge %s",
             status["phase"],
             target_mode,
             status["hour"],
             timer_txt,
+            "ok" if bdm_ok else "FAILED",
         )
         return
 
@@ -125,10 +135,11 @@ async def _set_work_mode_if_needed(
     status["ok"] = ok
     rules_after = await sa_client.get_rules(cfg, fresh=True)
     status["work_mode_after"] = rules_after.get("work_mode")
+    status["battery_discharge_mode_after"] = rules_after.get("battery_discharge_mode")
     if not ok:
         status["error"] = (
-            f"SA did not confirm work mode {target_mode!r} within "
-            f"{int(sa_client.WORK_MODE_VERIFY_TIMEOUT_S)}s"
+            f"SA did not confirm work mode or paired battery discharge mode "
+            f"within {int(sa_client.WORK_MODE_VERIFY_TIMEOUT_S)}s"
         )
 
 

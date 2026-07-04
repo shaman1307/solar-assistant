@@ -87,9 +87,9 @@ sa:
     - "AC coupling"
   battery_discharge_mode_options:
     - "Standby"
-    - "UPS loads only"
+    - "UPS load only"
     - "UPS and home loads"
-    - "Grid sell"
+    - "Grid export enabled"
   solar_power_priority_options:
     - "Load first"
     - "Battery first"

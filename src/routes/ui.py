@@ -39,9 +39,9 @@ def _battery_discharge_mode_options_for_template() -> list[str]:
         return [str(o) for o in opts]
     return [
         "Standby",
-        "UPS loads only",
+        "UPS load only",
         "UPS and home loads",
-        "Grid sell",
+        "Grid export enabled",
     ]
 
 

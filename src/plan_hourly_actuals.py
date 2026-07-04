@@ -567,7 +567,14 @@ def _actual_q15_battery_grid(
     hour: int,
     q: int,
 ) -> tuple[float, float, float]:
-    """Per-q15 battery delta and grid kWh from 10-min Influx (same windows as PV blend)."""
+    """Per-q15 battery delta and grid kWh from 10-min Influx (same windows as PV blend).
+
+    When bat_charge/bat_discharge are missing in series_10min, derive battery_delta from
+    the hourly energy balance on the same q15 window:
+
+        PV + grid_import + bat_discharge = load + grid_export + bat_charge
+        => battery_delta = PV - load + grid_import - grid_export
+    """
     s = series_10min or {}
     bat_in = _actual_q15_slice_kwh(s.get("bat_charge"), hour, q)
     bat_out = _actual_q15_slice_kwh(s.get("bat_discharge"), hour, q)
@@ -577,7 +584,18 @@ def _actual_q15_battery_grid(
     grid_export = _actual_q15_slice_kwh(
         s.get("grid_sell"), hour, q, grid_mode="export",
     )
-    return round(bat_in - bat_out, 4), round(grid_import, 4), round(grid_export, 4)
+    bat_delta = bat_in - bat_out
+    if abs(bat_delta) < 1e-6:
+        pv = _actual_q15_slice_kwh(s.get("pv"), hour, q)
+        load = _actual_q15_slice_kwh(s.get("load"), hour, q)
+        if (
+            abs(pv) > 1e-6
+            or abs(load) > 1e-6
+            or grid_import > 1e-6
+            or grid_export > 1e-6
+        ):
+            bat_delta = pv - load + grid_import - grid_export
+    return round(bat_delta, 4), round(grid_import, 4), round(grid_export, 4)
 
 
 def _soc_kwh_after_battery_delta(

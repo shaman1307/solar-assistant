@@ -131,3 +131,27 @@ def test_on_grid_applied_only_when_trigger_this_slot():
         "on_grid_trigger_this_slot": True,
         "ok": True,
     })
+
+
+def test_consecutive_full_export_hours_limit_home_skipped():
+    """Two back-to-back Dis H:00-(H+1):00 — no Limit home at :45 or :00 boundary."""
+    tz = ZoneInfo("Europe/Warsaw")
+    timer_h = "Dis 21:00-22:00 6.96kW cap17%"
+    timer_next = "Dis 22:00-23:00 6.96kW cap17%"
+
+    at_2145 = datetime(2026, 6, 26, 21, 45, tzinfo=tz)
+    assert timer_discharge_active_at(timer_h, at_2145) is True
+    due, _ = limit_home_due_for_timer(timer_h, at_2145, plan_hour=21)
+    assert due is False
+
+    at_2200 = datetime(2026, 6, 26, 22, 0, tzinfo=tz)
+    assert timer_discharge_active_at(timer_h, at_2200) is False
+    assert timer_discharge_active_at(timer_next, at_2200) is True
+    due_prev, _ = limit_home_due_for_timer(timer_h, at_2200, plan_hour=21)
+    assert due_prev is True
+    due_curr, _ = limit_home_due_for_timer(timer_next, at_2200, plan_hour=22)
+    assert due_curr is False
+
+    at_2215 = datetime(2026, 6, 26, 22, 15, tzinfo=tz)
+    due, _ = limit_home_due_for_timer(timer_next, at_2215, plan_hour=22)
+    assert due is False

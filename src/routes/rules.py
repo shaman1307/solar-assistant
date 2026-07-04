@@ -59,7 +59,11 @@ async def api_set_work_mode(body: dict) -> dict[str, Any]:
     if not mode:
         return {"ok": False, "error": "work_mode required"}
     ok = await sa_client.set_work_mode(cfg, mode)
-    return {"ok": ok, "work_mode": mode if ok else None}
+    result: dict[str, Any] = {"ok": ok, "work_mode": mode if ok else None}
+    if ok:
+        rules = await sa_client.get_rules(cfg, fresh=True)
+        result["battery_discharge_mode"] = rules.get("battery_discharge_mode")
+    return result
 
 
 @router.post("/api/rules/battery-discharge-mode")
@@ -69,7 +73,12 @@ async def api_set_battery_discharge_mode(body: dict) -> dict[str, Any]:
     if not mode:
         return {"ok": False, "error": "battery_discharge_mode required"}
     ok = await sa_client.set_battery_discharge_mode(cfg, mode)
-    return {"ok": ok, "battery_discharge_mode": mode if ok else None}
+    result: dict[str, Any] = {"ok": ok, "battery_discharge_mode": mode if ok else None}
+    if ok:
+        rules = await sa_client.get_rules(cfg, fresh=True)
+        result["work_mode"] = rules.get("work_mode")
+        result["battery_discharge_mode"] = rules.get("battery_discharge_mode")
+    return result
 
 
 @router.post("/api/rules/solar-power-priority")
