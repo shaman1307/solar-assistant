@@ -56,6 +56,7 @@ files=(
   src/plan_hourly_actuals.py
   src/plan_monthly_history.py
   src/plan_baseline.py
+  src/json_store.py
   src/plan_cost.py
   src/g12_pricing.py
   src/simulation_config.py
@@ -113,6 +114,10 @@ tar -czf "$tar_path" -C "$stage" .
 
 if ! tar -tzf "$tar_path" | grep -q 'scripts/reload-smart.sh'; then
   echo "Archive missing scripts/reload-smart.sh" >&2
+  exit 1
+fi
+if ! tar -tzf "$tar_path" | grep -q 'src/plan_baseline.py'; then
+  echo "Archive missing src/plan_baseline.py" >&2
   exit 1
 fi
 

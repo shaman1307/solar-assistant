@@ -23,6 +23,12 @@ if pgrep -f "${UVICORN_PATTERN}" >/dev/null 2>&1; then
 fi
 
 touch "${HOME}/project/.smart-deployed"
+echo "[reload-smart] import check ..."
+if ! "${HOME}/project/.venv/bin/python3" -c "from src.main import app" 2>/dev/null; then
+  echo "[reload-smart] FAILED - Smart import check (missing module or syntax error)"
+  "${HOME}/project/.venv/bin/python3" -c "from src.main import app" 2>&1 | tail -5
+  exit 1
+fi
 echo "[reload-smart] starting ${UNIT} ..."
 sudo systemctl start "${UNIT}"
 

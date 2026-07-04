@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from copy import deepcopy
 from datetime import datetime, timedelta
@@ -10,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import BASE_DIR
+from .json_store import atomic_json_save, load_json
 from .influxdb import now_warsaw
 
 log = logging.getLogger(__name__)
@@ -47,20 +47,13 @@ def default_session() -> dict[str, Any]:
 
 
 def load_store() -> dict[str, Any]:
-    if not _STORE_PATH.is_file():
-        return {"sessions": {}}
-    try:
-        data = json.loads(_STORE_PATH.read_text(encoding="utf-8"))
-        data.setdefault("sessions", {})
-        return data
-    except (json.JSONDecodeError, OSError) as exc:
-        log.warning("ev_charging.json read failed: %s", exc)
-        return {"sessions": {}}
+    data = load_json(_STORE_PATH, default={"sessions": {}})
+    data.setdefault("sessions", {})
+    return data
 
 
 def save_store(data: dict[str, Any]) -> None:
-    _STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _STORE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    atomic_json_save(_STORE_PATH, data)
 
 
 def max_power_kw(cfg: dict) -> float:

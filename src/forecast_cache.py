@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from .config import BASE_DIR, load_config, save_config
+from .json_store import atomic_json_save, load_json
 from . import ev_charging as ev
 from .influxdb import get_load_kwh_10min_for_date_sync, now_warsaw
 
@@ -42,18 +42,14 @@ def _empty_day() -> dict[str, Any]:
 
 
 def load_day_cache() -> dict[str, Any]:
-    if not _CACHE_PATH.is_file():
-        return {"computed_at": None, "days": {}}
-    try:
-        return json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        log.warning("forecast_day_cache read failed: %s", exc)
-        return {"computed_at": None, "days": {}}
+    data = load_json(_CACHE_PATH, default={"computed_at": None, "days": {}})
+    data.setdefault("computed_at", None)
+    data.setdefault("days", {})
+    return data
 
 
 def save_day_cache(data: dict[str, Any]) -> None:
-    _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _CACHE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    atomic_json_save(_CACHE_PATH, data)
 
 
 def invalidate_day_cache_file() -> None:

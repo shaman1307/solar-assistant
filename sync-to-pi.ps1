@@ -41,6 +41,7 @@ $files = @(
     "src\plan_hourly_actuals.py",
     "src\plan_monthly_history.py",
     "src\plan_baseline.py",
+    "src\json_store.py",
     "src\plan_cost.py",
     "src\g12_pricing.py",
     "src\simulation_config.py",
@@ -119,6 +120,10 @@ $tarListStr = (tar -tzf $tarPath 2>&1 | Out-String)
 if ($tarListStr -notmatch 'reload-smart\.sh') {
     Write-Host "Archive missing scripts/reload-smart.sh:"
     Write-Host $tarListStr
+    exit 1
+}
+if ($tarListStr -notmatch 'src/plan_baseline\.py') {
+    Write-Host "Archive missing src/plan_baseline.py"
     exit 1
 }
 

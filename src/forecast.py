@@ -29,6 +29,8 @@ OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 TIMEZONE = "Europe/Warsaw"
 OM_TIMEOUT_S = 20
+OM_FETCH_RETRIES = 2
+OM_RETRY_DELAY_S = 2
 
 _archive_cache: dict[tuple, dict[str, Any]] = {}
 ARCHIVE_CACHE_TTL_S = 86400
@@ -235,6 +237,22 @@ def fetch_pv_for_dates_sync(
     return out, om_fetch_failed
 
 
+def _http_get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
+    """GET JSON with one retry on transient network/server errors."""
+    last_exc: Exception | None = None
+    for attempt in range(OM_FETCH_RETRIES):
+        try:
+            resp = requests.get(url, params=params, timeout=OM_TIMEOUT_S)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt + 1 < OM_FETCH_RETRIES:
+                time.sleep(OM_RETRY_DELAY_S)
+    assert last_exc is not None
+    raise last_exc
+
+
 def _fetch_irradiance_archive(lat: float, lon: float, date_str: str) -> dict[str, list]:
     params = {
         "latitude": lat,
@@ -244,9 +262,7 @@ def _fetch_irradiance_archive(lat: float, lon: float, date_str: str) -> dict[str
         "hourly": "direct_radiation,diffuse_radiation",
         "timezone": TIMEZONE,
     }
-    resp = requests.get(OPEN_METEO_ARCHIVE_URL, params=params, timeout=OM_TIMEOUT_S)
-    resp.raise_for_status()
-    return resp.json()["hourly"]
+    return _http_get_json(OPEN_METEO_ARCHIVE_URL, params)["hourly"]
 
 
 def _fetch_irradiance_q15(lat: float, lon: float, *, forecast_days: int = 2) -> dict[str, list]:
@@ -257,9 +273,7 @@ def _fetch_irradiance_q15(lat: float, lon: float, *, forecast_days: int = 2) -> 
         "forecast_days": max(2, min(int(forecast_days), 16)),
         "timezone": TIMEZONE,
     }
-    resp = requests.get(OPEN_METEO_URL, params=params, timeout=OM_TIMEOUT_S)
-    resp.raise_for_status()
-    return resp.json()["minutely_15"]
+    return _http_get_json(OPEN_METEO_URL, params)["minutely_15"]
 
 
 def _fetch_irradiance(lat: float, lon: float, *, forecast_days: int = 2) -> dict[str, list]:
@@ -270,9 +284,7 @@ def _fetch_irradiance(lat: float, lon: float, *, forecast_days: int = 2) -> dict
         "forecast_days": max(2, min(int(forecast_days), 16)),
         "timezone": TIMEZONE,
     }
-    resp = requests.get(OPEN_METEO_URL, params=params, timeout=OM_TIMEOUT_S)
-    resp.raise_for_status()
-    return resp.json()["hourly"]
+    return _http_get_json(OPEN_METEO_URL, params)["hourly"]
 
 
 def _fill_pv_q15_for_date(

@@ -25,6 +25,14 @@ from .timer_plan import build_hourly_schedule
 log = logging.getLogger(__name__)
 
 _cache: dict[str, Any] | None = None
+_plan_lock: asyncio.Lock | None = None
+
+
+def _get_plan_lock() -> asyncio.Lock:
+    global _plan_lock
+    if _plan_lock is None:
+        _plan_lock = asyncio.Lock()
+    return _plan_lock
 
 
 def get_cached_plan() -> dict[str, Any] | None:
@@ -248,46 +256,58 @@ async def build_plan_simulation(
             cached["rce_current"] = cached["rce"].get("current_price_pln_kwh")
         return cached
 
-    forecast, metrics, rules, rce_prices = await fetch_plan_inputs(
-        cfg, invalidate=invalidate_inputs or force_refresh,
-    )
+    async with _get_plan_lock():
+        if not force_refresh and _cache is not None and not _plan_cache_stale(_cache):
+            cached = dict(_cache)
+            if cached.get("rce"):
+                rce_mod._refresh_current_price(cached["rce"])
+                cached["rce_current"] = cached["rce"].get("current_price_pln_kwh")
+            return cached
 
-    forecast_bundle = dict(forecast)
-    if metrics.get("today_hourly"):
-        forecast_bundle["load_actual_hourly"] = metrics["today_hourly"].get("load")
-        forecast_bundle["pv_actual_hourly"] = metrics["today_hourly"].get("pv")
+        forecast, metrics, rules, rce_prices = await fetch_plan_inputs(
+            cfg, invalidate=invalidate_inputs or force_refresh,
+        )
 
-    sim = run_simulation(
-        forecast, metrics, rules, cfg,
-        rce_prices=rce_prices,
-    )
+        forecast_bundle = dict(forecast)
+        if metrics.get("today_hourly"):
+            forecast_bundle["load_actual_hourly"] = metrics["today_hourly"].get("load")
+            forecast_bundle["pv_actual_hourly"] = metrics["today_hourly"].get("pv")
 
-    next_hour = (now_warsaw().hour + 1) % 24
-    next_hour_schedule = build_hourly_schedule(sim["rows"], next_hour, cfg, rules)
-    computed_at = now_warsaw().strftime("%Y-%m-%d %H:%M:%S")
+        sim = await asyncio.to_thread(
+            run_simulation,
+            forecast,
+            metrics,
+            rules,
+            cfg,
+            rce_prices=rce_prices,
+        )
 
-    result: dict[str, Any] = {
-        **sim,
-        "computed_at": computed_at,
-        "simulation_min_soc_pct": plan_min_soc_pct(cfg),
-        "rce_current": rce_prices.get("current_price_pln_kwh"),
-        "next_hour": next_hour,
-        "next_hour_schedule": next_hour_schedule,
-        "forecast_meta": forecast.get("meta", {}),
-        "forecast": forecast_bundle,
-        "rce": rce_prices,
-        "buy_tariff": build_buy_tariff_payload(cfg, sim["rows"]),
-        "plan_soc_q15": extract_plan_soc_q15(sim),
-    }
+        next_hour = (now_warsaw().hour + 1) % 24
+        next_hour_schedule = build_hourly_schedule(sim["rows"], next_hour, cfg, rules)
+        computed_at = now_warsaw().strftime("%Y-%m-%d %H:%M:%S")
 
-    if result.get("rce"):
-        rce_mod._refresh_current_price(result["rce"])
-        result["rce_current"] = result["rce"].get("current_price_pln_kwh")
+        result: dict[str, Any] = {
+            **sim,
+            "computed_at": computed_at,
+            "simulation_min_soc_pct": plan_min_soc_pct(cfg),
+            "rce_current": rce_prices.get("current_price_pln_kwh"),
+            "next_hour": next_hour,
+            "next_hour_schedule": next_hour_schedule,
+            "forecast_meta": forecast.get("meta", {}),
+            "forecast": forecast_bundle,
+            "rce": rce_prices,
+            "buy_tariff": build_buy_tariff_payload(cfg, sim["rows"]),
+            "plan_soc_q15": extract_plan_soc_q15(sim),
+        }
 
-    if store_cache:
-        _cache = result
+        if result.get("rce"):
+            rce_mod._refresh_current_price(result["rce"])
+            result["rce_current"] = result["rce"].get("current_price_pln_kwh")
 
-    return result
+        if store_cache:
+            _cache = result
+
+        return result
 
 
 async def hourly_plan_refresh(cfg: dict) -> dict[str, Any]:
