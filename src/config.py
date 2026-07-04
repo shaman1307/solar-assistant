@@ -80,13 +80,43 @@ def _recover_legacy_smart_mode(cfg: dict, path: Path) -> None:
         log.warning("legacy app_state.json recovery failed: %s", exc)
 
 
-def load_config() -> dict:
-    """Load sa-config.yaml; merge sa-config.local.yaml overlay when present."""
+def _read_runtime_yaml() -> dict[str, Any]:
     path = config_path()
     cfg = _load_yaml(path)
     _recover_legacy_smart_mode(cfg, path)
     if path == DEFAULT_CONFIG_PATH and LOCAL_CONFIG_PATH.is_file():
         cfg = _deep_merge(cfg, _load_yaml(LOCAL_CONFIG_PATH))
+    return cfg
+
+
+def load_config() -> dict:
+    """Load active template merged with sa-config.yaml runtime state."""
+    from .config_templates import (
+        merge_runtime_onto_template,
+        resolve_active_template_name,
+        uses_template_mode,
+    )
+    from .sqlite_store import (
+        get_installed_default_template,
+        list_config_template_names,
+        load_config_template,
+    )
+
+    runtime = _read_runtime_yaml()
+    installed_default = get_installed_default_template()
+    template_names = list_config_template_names()
+
+    if uses_template_mode(runtime):
+        template_name = resolve_active_template_name(
+            runtime,
+            installed_default=installed_default,
+            template_names=template_names,
+        )
+        template_payload = load_config_template(template_name) or {}
+        cfg = merge_runtime_onto_template(template_payload, runtime)
+    else:
+        cfg = deepcopy(runtime)
+
     cfg = merge_simulation_defaults(cfg)
     merge_grid_defaults(cfg)
     normalize_battery_power_limits(cfg)
@@ -96,5 +126,48 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
+    from .config_templates import (
+        extract_runtime_payload,
+        extract_template_payload,
+        resolve_active_template_name,
+    )
+    from .sqlite_store import (
+        get_installed_default_template,
+        list_config_template_names,
+        save_config_template,
+    )
+
+    runtime_existing = _read_runtime_yaml()
+    installed_default = get_installed_default_template()
+    template_names = list_config_template_names()
+    explicit_active = cfg.get("active_template") or runtime_existing.get("active_template")
+    active_name = str(
+        explicit_active
+        or resolve_active_template_name(
+            runtime_existing,
+            installed_default=installed_default,
+            template_names=template_names,
+        )
+    )
+
+    template_payload = extract_template_payload(cfg)
+    save_config_template(active_name, template_payload)
+
+    runtime = extract_runtime_payload(cfg)
+    for key, val in extract_runtime_payload(runtime_existing).items():
+        runtime.setdefault(key, val)
+    if "plan_overrides" in runtime_existing and "plan_overrides" not in runtime:
+        runtime["plan_overrides"] = runtime_existing["plan_overrides"]
+    if explicit_active:
+        runtime["active_template"] = str(explicit_active)
+    else:
+        runtime.pop("active_template", None)
+    runtime.pop("default_template", None)
+
     with open(config_path(), "w", encoding="utf-8") as fh:
-        yaml.dump(cfg, fh, allow_unicode=True, default_flow_style=False)
+        yaml.dump(runtime, fh, allow_unicode=True, default_flow_style=False)
+
+
+def load_runtime_config() -> dict[str, Any]:
+    """Raw sa-config.yaml (+ local overlay) without template merge."""
+    return _read_runtime_yaml()

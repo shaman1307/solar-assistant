@@ -21,7 +21,7 @@ _LEGACY_EV_JSON = BASE_DIR / "data" / "ev_charging.json"
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 6
 
 # Monthly history totals mirrored from payload JSON (schema v2+).
 _MONTH_HISTORY_TOTAL_COLUMNS: tuple[tuple[str, str], ...] = (
@@ -90,6 +90,23 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             payload_json TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS deposits (
+            month_id TEXT PRIMARY KEY,
+            deposit_initial REAL NOT NULL,
+            deposit_current REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS config_templates (
+            name TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS config_template_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
         """
     )
     row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
@@ -99,6 +116,9 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             (str(_SCHEMA_VERSION),),
         )
         conn.commit()
+        from .config_templates import seed_templates_from_yaml
+
+        seed_templates_from_yaml(conn)
         return
     stored_version = int(row["value"])
     if stored_version < _SCHEMA_VERSION:
@@ -164,6 +184,100 @@ def _backfill_month_history_columns(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_to_v5(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS config_templates (
+            name TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS config_template_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """,
+    )
+    from .config_templates import seed_templates_from_yaml
+
+    seed_templates_from_yaml(conn)
+    log.info("SQLite schema migrated to v5 (config templates)")
+
+
+def _migrate_to_v4(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS deposits (
+            month_id TEXT PRIMARY KEY,
+            deposit_initial REAL NOT NULL,
+            deposit_current REAL NOT NULL
+        )
+        """,
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO deposits(month_id, deposit_initial, deposit_current)
+        VALUES('2026-05', 174.0, 174.0)
+        """,
+    )
+    log.info("SQLite schema migrated to v4 (deposits table, May 2026 seed)")
+
+
+def _migrate_to_v6(conn: sqlite3.Connection) -> None:
+    """One-time backfill: June 2026 closed-month deposit + fix corrupted month_history stubs."""
+    row = conn.execute(
+        "SELECT value FROM meta WHERE key = 'deposits_june_backfill_v1'",
+    ).fetchone()
+    if row is not None:
+        return
+
+    june_month = "2026-06"
+    june_deposit = 502.4514
+    may_current_after_june = round(DEPOSIT_SEED_AMOUNT - 101.9208, 4)
+
+    conn.execute(
+        "DELETE FROM month_history WHERE month IN ('2026-05', '2026-06', '2026-07')",
+    )
+    conn.execute("DELETE FROM deposits WHERE month_id = '2026-07'")
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO deposits(month_id, deposit_initial, deposit_current)
+        VALUES(?, ?, ?)
+        """,
+        (DEPOSIT_SEED_MONTH, DEPOSIT_SEED_AMOUNT, DEPOSIT_SEED_AMOUNT),
+    )
+    conn.execute(
+        """
+        INSERT INTO deposits(month_id, deposit_initial, deposit_current)
+        VALUES(?, ?, ?)
+        ON CONFLICT(month_id) DO UPDATE SET
+            deposit_initial = excluded.deposit_initial,
+            deposit_current = excluded.deposit_current
+        """,
+        (june_month, june_deposit, june_deposit),
+    )
+    conn.execute(
+        "UPDATE deposits SET deposit_current = ? WHERE month_id = ?",
+        (may_current_after_june, DEPOSIT_SEED_MONTH),
+    )
+    conn.execute(
+        """
+        INSERT INTO meta(key, value) VALUES('deposits_june_backfill_v1', '1')
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+    )
+    log.info(
+        "SQLite schema migrated to v6 (June 2026 deposit backfill: %s=%s, May current=%s)",
+        june_month,
+        june_deposit,
+        may_current_after_june,
+    )
+
+
 def _migrate_to_v3(conn: sqlite3.Connection) -> None:
     existing = _month_history_table_columns(conn)
     if "import_cost_total" not in existing:
@@ -188,6 +302,12 @@ def _apply_schema_migrations(conn: sqlite3.Connection, from_version: int) -> Non
         _migrate_to_v2(conn)
     if from_version < 3:
         _migrate_to_v3(conn)
+    if from_version < 4:
+        _migrate_to_v4(conn)
+    if from_version < 5:
+        _migrate_to_v5(conn)
+    if from_version < 6:
+        _migrate_to_v6(conn)
     conn.execute(
         "UPDATE meta SET value = ? WHERE key = 'schema_version'",
         (str(_SCHEMA_VERSION),),
@@ -387,3 +507,161 @@ def reset_connection_for_tests() -> None:
         if _conn is not None:
             _conn.close()
             _conn = None
+
+
+DEPOSIT_SEED_MONTH = "2026-05"
+DEPOSIT_SEED_AMOUNT = 174.0
+
+
+def ensure_deposit_seed() -> None:
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO deposits(month_id, deposit_initial, deposit_current)
+            VALUES(?, ?, ?)
+            """,
+            (DEPOSIT_SEED_MONTH, DEPOSIT_SEED_AMOUNT, DEPOSIT_SEED_AMOUNT),
+        )
+        conn.commit()
+
+
+def load_all_deposits() -> dict[str, dict[str, float]]:
+    ensure_deposit_seed()
+    with _lock:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT month_id, deposit_initial, deposit_current FROM deposits ORDER BY month_id",
+        ).fetchall()
+    return {
+        row["month_id"]: {
+            "initial": float(row["deposit_initial"]),
+            "current": float(row["deposit_current"]),
+        }
+        for row in rows
+    }
+
+
+def reset_deposit_current_to_initial() -> None:
+    with _lock:
+        conn = _connect()
+        conn.execute("UPDATE deposits SET deposit_current = deposit_initial")
+        conn.commit()
+
+
+def upsert_open_month_deposit(month_id: str, value: float) -> None:
+    amount = round(float(value), 4)
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            """
+            INSERT INTO deposits(month_id, deposit_initial, deposit_current)
+            VALUES(?, ?, ?)
+            ON CONFLICT(month_id) DO UPDATE SET
+                deposit_initial = excluded.deposit_initial,
+                deposit_current = excluded.deposit_current
+            """,
+            (month_id, amount, amount),
+        )
+        conn.commit()
+
+
+def save_all_deposits(deposits: dict[str, dict[str, float]]) -> None:
+    with _lock:
+        conn = _connect()
+        for month_id, row in deposits.items():
+            conn.execute(
+                "UPDATE deposits SET deposit_current = ? WHERE month_id = ?",
+                (round(float(row["current"]), 4), month_id),
+            )
+        conn.commit()
+
+
+def sum_deposit_current(deposits: dict[str, dict[str, float]] | None = None) -> float:
+    rows = deposits if deposits is not None else load_all_deposits()
+    return round(sum(float(r["current"]) for r in rows.values()), 4)
+
+
+def _template_now_iso() -> str:
+    return now_warsaw().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def get_installed_default_template() -> str:
+    from .config_templates import INSTALLED_DEFAULT_TEMPLATE
+
+    with _lock:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT value FROM config_template_meta WHERE key = 'installed_default'",
+        ).fetchone()
+    if row:
+        return str(row["value"])
+    return INSTALLED_DEFAULT_TEMPLATE
+
+
+def list_config_template_names() -> list[str]:
+    with _lock:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT name FROM config_templates ORDER BY name COLLATE NOCASE",
+        ).fetchall()
+    return [str(r["name"]) for r in rows]
+
+
+def load_config_template(name: str) -> dict[str, Any] | None:
+    with _lock:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT payload_json FROM config_templates WHERE name = ?",
+            (name,),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row["payload_json"])
+    except json.JSONDecodeError as exc:
+        log.warning("config template JSON corrupt for %s: %s", name, exc)
+        return None
+
+
+def load_config_templates_store() -> dict[str, dict[str, Any]]:
+    with _lock:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT name, payload_json FROM config_templates ORDER BY name COLLATE NOCASE",
+        ).fetchall()
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        try:
+            out[str(row["name"])] = json.loads(row["payload_json"])
+        except json.JSONDecodeError as exc:
+            log.warning("config template JSON corrupt for %s: %s", row["name"], exc)
+    return out
+
+
+def save_config_template(name: str, payload: dict[str, Any]) -> None:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            """
+            INSERT INTO config_templates(name, payload_json, updated_at)
+            VALUES(?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                updated_at = excluded.updated_at
+            """,
+            (name, body, _template_now_iso()),
+        )
+        conn.commit()
+
+
+def delete_config_template(name: str) -> bool:
+    with _lock:
+        conn = _connect()
+        cur = conn.execute(
+            "DELETE FROM config_templates WHERE name = ?",
+            (name,),
+        )
+        conn.commit()
+        return cur.rowcount > 0

@@ -13,12 +13,9 @@ from .. import rce as rce_mod
 from .. import sa_client
 from ..config import load_config, save_config
 from ..influxdb import now_warsaw
-from ..grid_config import BILLING_MODEL_VERSION
+from ..plan_deposits import DEPOSIT_START_MONTH, open_month_id, run_deposit_cascade
 from ..plan_monthly_history import build_month_history
-from ..sqlite_store import (
-    load_month_history,
-    save_month_history,
-)
+from ..sqlite_store import load_month_history, sum_deposit_current
 from ..plan_simulation import (
     build_buy_tariff_payload,
     build_plan_simulation,
@@ -42,6 +39,20 @@ _SA_DAILY_ENERGY_KEYS = (
     "battery_charged_today",
     "battery_discharged_today",
 )
+
+
+async def _live_deposit_total(cfg: dict[str, Any]) -> float:
+    """Sum of deposit_current after replay through the open calendar month."""
+    open_month = open_month_id()
+    if open_month < DEPOSIT_START_MONTH:
+        return sum_deposit_current()
+    payload = load_month_history(open_month)
+    if payload is None:
+        payload = await build_month_history(open_month, cfg)
+    if payload.get("error"):
+        return sum_deposit_current()
+    _, total = run_deposit_cascade(open_month, payload)
+    return total
 
 
 @router.get("/api/metrics")
@@ -117,11 +128,13 @@ async def api_history_month(month: str, refresh: bool = False) -> dict[str, Any]
         cached = load_month_history(month)
         if cached is not None:
             cached.pop("_cached_at", None)
-            return cached
+            result, _deposit_total = run_deposit_cascade(month, cached)
+            result["deposit_total"] = await _live_deposit_total(cfg)
+            return result
     result = await build_month_history(month, cfg)
     if not result.get("error"):
-        result["billing_model_version"] = BILLING_MODEL_VERSION
-        save_month_history(month, result)
+        result, _deposit_total = run_deposit_cascade(month, result)
+        result["deposit_total"] = await _live_deposit_total(cfg)
     return result
 
 

@@ -34,6 +34,7 @@ done
 files=(
   src/main.py
   src/config.py
+  src/config_templates.py
   src/cache_registry.py
   src/routes/__init__.py
   src/routes/ui.py
@@ -58,6 +59,7 @@ files=(
   src/plan_baseline.py
   src/json_store.py
   src/plan_cost.py
+  src/plan_deposits.py
   src/g12_pricing.py
   src/simulation_config.py
   src/plan_simulation.py
@@ -82,6 +84,7 @@ files=(
   scripts/enable-smart-autostart.sh
   smart.service
   requirements.txt
+  config-templates.yaml
 )
 
 if [[ "$INSTALL_SERVICE" -eq 1 ]]; then

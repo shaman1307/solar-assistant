@@ -19,6 +19,7 @@ $PI_URL = "http://192.168.8.57:8000"
 $files = @(
     "src\main.py",
     "src\config.py",
+    "src\config_templates.py",
     "src\cache_registry.py",
     "src\routes\__init__.py",
     "src\routes\ui.py",
@@ -43,6 +44,7 @@ $files = @(
     "src\plan_baseline.py",
     "src\json_store.py",
     "src\plan_cost.py",
+    "src\plan_deposits.py",
     "src\g12_pricing.py",
     "src\grid_config.py",
     "src\sqlite_store.py",
@@ -70,7 +72,8 @@ $files = @(
     "scripts\enable-smart-autostart.sh",
     "smart.service",
     # sa-config.yaml is Pi-local state (overrides, passwords) — never overwrite on deploy.
-    "requirements.txt"
+    "requirements.txt",
+    "config-templates.yaml"
 )
 
 if ($InstallService) {
