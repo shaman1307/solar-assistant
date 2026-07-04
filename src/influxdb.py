@@ -326,6 +326,74 @@ def _influx_chart_soc(
     return out
 
 
+def _split_battery_power_chart_kw(
+    bat_kw: list[float | None],
+) -> tuple[list[float | None], list[float | None]]:
+    """Split signed mean battery power (kW) into charge (+) and discharge (+) chart series.
+
+    Influx ``Battery power``: positive = charging into battery, negative = discharge.
+    """
+    charge: list[float | None] = []
+    discharge: list[float | None] = []
+    for v in bat_kw:
+        if v is None:
+            charge.append(None)
+            discharge.append(None)
+            continue
+        fv = float(v)
+        if fv > 0:
+            charge.append(round(fv, 3))
+            discharge.append(0.0)
+        elif fv < 0:
+            charge.append(0.0)
+            discharge.append(round(-fv, 3))
+        else:
+            charge.append(0.0)
+            discharge.append(0.0)
+    return charge, discharge
+
+
+def _derive_battery_chart_kw(
+    pv_kw: list[float | None],
+    load_kw: list[float | None],
+    grid_buy_kw: list[float | None],
+    grid_sell_kw: list[float | None],
+) -> tuple[list[float | None], list[float | None]]:
+    """Derive per-slot battery charge/discharge (kW) from PV, load, and grid flows.
+
+    Hourly energy balance (positive kWh):
+
+        PV + grid_import + bat_discharge = load + grid_export + bat_charge
+
+    Per 10-min bucket with mean kW (same convention as chart series):
+
+        net_charge_kw = pv + import_kw - load - export_kw
+    """
+    n = max(len(pv_kw), len(load_kw), len(grid_buy_kw), len(grid_sell_kw))
+    charge: list[float | None] = [None] * n
+    discharge: list[float | None] = [None] * n
+    for i in range(n):
+        pv = pv_kw[i] if i < len(pv_kw) else None
+        load = load_kw[i] if i < len(load_kw) else None
+        buy = grid_buy_kw[i] if i < len(grid_buy_kw) else None
+        sell = grid_sell_kw[i] if i < len(grid_sell_kw) else None
+        if pv is None and load is None and buy is None and sell is None:
+            continue
+        import_kw = abs(float(buy)) if buy is not None and float(buy) < 0 else 0.0
+        export_kw = float(sell) if sell is not None and float(sell) > 0 else 0.0
+        net = float(pv or 0) + import_kw - float(load or 0) - export_kw
+        if net > 0:
+            charge[i] = round(net, 3)
+            discharge[i] = 0.0
+        elif net < 0:
+            charge[i] = 0.0
+            discharge[i] = round(-net, 3)
+        else:
+            charge[i] = 0.0
+            discharge[i] = 0.0
+    return charge, discharge
+
+
 def _split_grid_power_chart_kw(
     grid_kw: list[float | None],
 ) -> tuple[list[float | None], list[float | None]]:
@@ -411,11 +479,22 @@ def _query_day_chart_series(
     else:
         grid_buy = _hourly_kwh_to_chart_kw(grid_buy_hourly)
         grid_sell = _hourly_kwh_to_chart_kw(grid_sell_hourly)
+
+    bat_kw = _influx_chart_mean_kw("Battery power", since, until, date_str, offset_h)
+    if any(v is not None for v in bat_kw):
+        bat_charge, bat_discharge = _split_battery_power_chart_kw(bat_kw)
+    else:
+        bat_charge, bat_discharge = _derive_battery_chart_kw(
+            pv, load, grid_buy, grid_sell,
+        )
+
     return {
         "pv": pv,
         "load": load,
         "grid_buy": grid_buy,
         "grid_sell": grid_sell,
+        "bat_charge": bat_charge,
+        "bat_discharge": bat_discharge,
         "soc": soc,
     }
 
