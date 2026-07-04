@@ -11,6 +11,7 @@ from typing import Any
 
 import yaml
 
+from .grid_config import merge_grid_defaults
 from .simulation_config import merge_simulation_defaults, normalize_battery_power_limits
 
 log = logging.getLogger(__name__)
@@ -87,6 +88,7 @@ def load_config() -> dict:
     if path == DEFAULT_CONFIG_PATH and LOCAL_CONFIG_PATH.is_file():
         cfg = _deep_merge(cfg, _load_yaml(LOCAL_CONFIG_PATH))
     cfg = merge_simulation_defaults(cfg)
+    merge_grid_defaults(cfg)
     normalize_battery_power_limits(cfg)
     ev = cfg.setdefault("ev", {})
     ev.setdefault("max_power_kw", 11.0)

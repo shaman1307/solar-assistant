@@ -46,7 +46,17 @@ grid:
     offpeak_price_pln_kwh: 0.5
     peak_energy_only_pln_kwh: 0.6
     offpeak_energy_only_pln_kwh: 0.4
-  feed_in_price_pln: 0.20
+  grid_export_threshold_pln_kwh: 0.5
+  distribution:
+    # G12 official tariff table 2 (ROZLICZENIE DYSTRYBUCJI), netto × 1.23 brutto
+    subscription_pln_month: 0.9102
+    fixed_network_pln_month: 24.8091
+    capacity_pln_month: 29.5815
+    peak_variable_network_pln_kwh: 0.4728   # opłata sieciowa zmienna dzienna (L1)
+    offpeak_variable_network_pln_kwh: 0.1017  # opłata sieciowa zmienna nocna (L2)
+    quality_pln_kwh: 0.0408
+    oze_pln_kwh: 0.0090
+    cogeneration_pln_kwh: 0.0037
 
 sa:
   host: "localhost"

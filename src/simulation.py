@@ -60,7 +60,7 @@ def g12_battery_export_economics(cfg: dict) -> dict[str, float]:
     energy = float(g12["offpeak_energy_only_pln_kwh"])
     distribution = offpeak - energy
     tariff = g12_tariff_from_cfg(cfg)
-    min_rce = battery_export_break_even_rce(tariff)
+    min_rce = battery_export_break_even_rce(tariff, cfg)
     return {
         "offpeak_full_pln": offpeak,
         "offpeak_energy_pln": energy,

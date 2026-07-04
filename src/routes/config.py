@@ -11,6 +11,7 @@ from .. import forecast as forecast_mod
 from ..cache_registry import invalidate_all_caches
 from ..config import load_config, save_config
 from ..simulation_config import normalize_battery_power_limits
+from ..sqlite_store import invalidate_month_history
 from ..plan_simulation import build_plan_simulation, invalidate_plan_cache
 
 router = APIRouter()
@@ -46,6 +47,8 @@ async def api_save_config(body: dict) -> dict[str, str]:
     save_config(body)
     forecast_mod.invalidate_cache()
     invalidate_plan_cache()
+    invalidate_month_history()
+    await build_plan_simulation(load_config(), force_refresh=True, invalidate_inputs=False)
     return {"status": "saved"}
 
 

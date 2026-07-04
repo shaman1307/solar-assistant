@@ -7,6 +7,7 @@ from . import influxdb as influxdb_mod
 from . import rce as rce_mod
 from . import sa_client
 from .plan_simulation import invalidate_plan_cache
+from .sqlite_store import ensure_month_history_billing_model
 
 
 def invalidate_all_caches() -> None:
@@ -16,3 +17,4 @@ def invalidate_all_caches() -> None:
     rce_mod.invalidate_cache()
     invalidate_plan_cache()
     sa_client.invalidate_rules_cache()
+    ensure_month_history_billing_model()

@@ -3,20 +3,15 @@ RCE (Rynek Cen Energii) electricity price fetcher — PSE public API.
 
 API endpoint: https://api.raporty.pse.pl/api/rce-pln
 Resolution:   15-minute intervals
-Unit:         PLN/MWh  →  divide by 1000 → PLN/kWh
+PSE unit:     PLN/MWh netto → converted to PLN/kWh brutto (×1.23 VAT) for billing.
 Tomorrow:     published by PSE usually after 14:00.
 
-Returned structure:
+Returned structure (all PLN/kWh values are brutto):
   {
-    "current_price_pln_kwh": 0.312,          # price for the current 15-min slot
-    "current_period": "2026-06-18 14:00",    # slot label
-    "today":    [0.312, 0.298, ...],         # 24 hourly averages (PLN/kWh)
-    "tomorrow": [0.280, 0.270, ...],         # 24 hourly averages (may be null if not yet published)
-    "series_15min": [...],                   # 96 slots/day at 15-min resolution (PLN/kWh)
-    "dates": {
-        "today":    "2026-06-18",
-        "tomorrow": "2026-06-19",
-    }
+    "current_price_pln_kwh": 0.384,          # current 15-min slot
+    "current_period": "2026-06-18 14:00",
+    "today":    [0.384, 0.367, ...],         # 24 hourly averages
+    ...
   }
 """
 
@@ -31,6 +26,7 @@ from typing import Any
 
 import requests
 
+from .grid_config import VAT_BRUTTO_MULTIPLIER
 from .influxdb import now_warsaw
 
 log = logging.getLogger(__name__)
@@ -38,6 +34,11 @@ log = logging.getLogger(__name__)
 PSE_API_BASE = "https://api.raporty.pse.pl/api"
 CACHE_TTL_S = 1800  # 30 minutes — matches PSE publish cadence
 _cache: dict[str, Any] = {}
+
+
+def rce_pln_kwh_brutto_from_mwh(rce_pln_mwh: float) -> float:
+    """Convert PSE rce_pln (netto PLN/MWh) to billable PLN/kWh brutto."""
+    return round(float(rce_pln_mwh) / 1000.0 * VAT_BRUTTO_MULTIPLIER, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +60,7 @@ def invalidate_cache() -> None:
 
 
 def hourly_rce_for_dates(*dates: str) -> dict[str, list[float | None]]:
-    """Hourly RCE (PLN/kWh) for each YYYY-MM-DD date via PSE API."""
+    """Hourly RCE (PLN/kWh brutto) for each YYYY-MM-DD date via PSE API."""
     unique = sorted({d for d in dates if d})
     if not unique:
         return {}
@@ -74,7 +75,7 @@ def hourly_rce_for_dates(*dates: str) -> dict[str, list[float | None]]:
             dt = datetime.strptime(dtime_str[:16], "%Y-%m-%d %H:%M")
         except ValueError:
             continue
-        pln_kwh = float(rce_mwh) / 1000.0
+        pln_kwh = rce_pln_kwh_brutto_from_mwh(rce_mwh)
         end_q = dt.minute // 15
         if end_q == 0:
             slot_dt = dt - timedelta(hours=1)
@@ -106,7 +107,7 @@ async def get_hourly_rce_for_dates(*dates: str) -> dict[str, list[float | None]]
 
 
 def quarter_rce_for_dates(*dates: str) -> dict[str, list[float | None]]:
-    """96-slot RCE (PLN/kWh) per date — index = hour*4 + quarter (q0 = HH:00–HH:15)."""
+    """96-slot RCE (PLN/kWh brutto) per date — index = hour*4 + quarter (q0 = HH:00–HH:15)."""
     unique = sorted({d for d in dates if d})
     if not unique:
         return {}
@@ -121,7 +122,7 @@ def quarter_rce_for_dates(*dates: str) -> dict[str, list[float | None]]:
             dt = datetime.strptime(dtime_str[:16], "%Y-%m-%d %H:%M")
         except ValueError:
             continue
-        pln_kwh = round(float(rce_mwh) / 1000.0, 4)
+        pln_kwh = rce_pln_kwh_brutto_from_mwh(rce_mwh)
         # PSE dtime is period end; map to clock-hour quarter (q0 = :00–:15).
         end_q = dt.minute // 15
         if end_q == 0:
@@ -204,7 +205,7 @@ def _fetch_and_build() -> dict[str, Any]:
         except ValueError:
             continue
         date_key = dt.strftime("%Y-%m-%d")
-        pln_kwh = float(rce_mwh) / 1000.0
+        pln_kwh = rce_pln_kwh_brutto_from_mwh(rce_mwh)
         end_q = dt.minute // 15
         if end_q == 0:
             slot_dt = dt - timedelta(hours=1)
@@ -372,18 +373,3 @@ def _simulation_steps(now: datetime) -> int:
     start = now.replace(minute=0, second=0, microsecond=0)
     return int((end - start).total_seconds() // 3600) + 1
 
-
-def effective_feed_in_price(
-    rce_price: float | None,
-    cfg: dict,
-    use_rce: bool = False,
-) -> float:
-    """Return the effective feed-in price for this hour.
-
-    If SA grid-export rule is active and a live RCE price is available,
-    use the RCE price (in PLN/kWh).  Otherwise fall back to the configured
-    fixed feed-in price.
-    """
-    if use_rce and rce_price is not None:
-        return rce_price
-    return float(cfg["grid"]["feed_in_price_pln"])

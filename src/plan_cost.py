@@ -19,8 +19,8 @@ def _attach_import_split(
     total_cost = energy_cost + service_cost
     result["import_energy_cost"] = round(imp_energy, 4)
     result["service_cost"] = round(service_cost, 4)
-    result["energy_cost"] = round(energy_cost, 2)
-    result["cost"] = round(total_cost, 2)
+    result["energy_cost"] = round(energy_cost, 4)
+    result["cost"] = round(total_cost, 4)
     return result
 
 
@@ -52,8 +52,8 @@ def hour_grid_cash_pln(
         export_revenue = 0.0
         eff_credit: float | None = None
     else:
-        credit_batt = export_credit_price(rce_price, tariff, from_battery=True)
-        credit_pv = export_credit_price(rce_price, tariff, from_battery=False)
+        credit_batt = export_credit_price(rce_price, tariff, from_battery=True, cfg=cfg)
+        credit_pv = export_credit_price(rce_price, tariff, from_battery=False, cfg=cfg)
         export_revenue = batt * credit_batt + pv_exp * credit_pv
         eff_credit = export_revenue / exp
 
@@ -62,7 +62,7 @@ def hour_grid_cash_pln(
         {
             "import_cost": round(import_cost, 4),
             "export_revenue": round(export_revenue, 4),
-            "cost": round(net, 2),
+            "cost": round(net, 4),
             "export_credit": round(eff_credit, 4) if eff_credit is not None else None,
         },
         grid_import=imp,
@@ -80,7 +80,7 @@ def hour_meter_cash_pln(
     *,
     g12_zone: str = "offpeak",
 ) -> dict[str, float | None]:
-    """Cash for factual Influx history: import × buy, export × hourly RCE."""
+    """Cash for factual Influx history: import × buy (brutto), export × hourly RCE (brutto)."""
     imp = max(0.0, float(grid_import))
     exp = max(0.0, float(grid_export))
     import_cost = imp * float(buy_price)
@@ -95,7 +95,7 @@ def hour_meter_cash_pln(
         {
             "import_cost": round(import_cost, 4),
             "export_revenue": round(export_revenue, 4),
-            "cost": round(net, 2),
+            "cost": round(net, 4),
             "export_credit": round(export_credit, 4) if export_credit is not None else None,
         },
         grid_import=imp,
@@ -180,13 +180,35 @@ def compute_plan_totals(rows: list[dict]) -> dict:
         "grid_import": round(sum(float(r["grid_import"]) for r in rows), 2),
         "grid_export": round(sum(float(r["grid_export"]) for r in rows), 2),
         "soc": rows[-1]["soc"],
-        "import_cost": round(import_cost, 2),
-        "export_revenue": round(export_revenue, 2),
-        "energy_cost": round(energy_cost, 2),
-        "service_cost": round(service_cost, 2),
-        "cost": round(energy_cost + service_cost, 2),
+        "import_cost": round(import_cost, 4),
+        "export_revenue": round(export_revenue, 4),
+        "energy_cost": round(energy_cost, 4),
+        "service_cost": round(service_cost, 4),
+        "cost": round(energy_cost + service_cost, 4),
         "action": "",
         "rce_price": None,
         "g12_zone": "",
         "buy_price": None,
     }
+
+
+def month_energy_cost_total(export_revenue: float, import_energy_cost: float) -> float:
+    """Export RCE credit minus G12 import tariff (brutto)."""
+    return round(export_revenue - import_energy_cost, 4)
+
+
+def month_import_cost_total(service_cost: float, service_fee: float = 0.0) -> float:
+    """Distribution service cost plus monthly service fee."""
+    return round(service_cost + service_fee, 4)
+
+
+def month_savings_pln(
+    baseline_cost: float,
+    baseline_service_fee: float,
+    energy_cost_total: float,
+    import_cost_total: float,
+) -> float:
+    """Saved = baseline bill − actual bill (import total − energy total)."""
+    baseline_bill = baseline_cost + baseline_service_fee
+    actual_bill = import_cost_total - energy_cost_total
+    return round(baseline_bill - actual_bill, 4)

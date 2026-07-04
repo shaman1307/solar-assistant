@@ -306,6 +306,8 @@ async def build_plan_simulation(
 
         if store_cache:
             _cache = result
+            from .sqlite_store import save_plan_snapshot
+            save_plan_snapshot(result)
 
         return result
 

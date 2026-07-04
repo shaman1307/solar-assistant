@@ -90,6 +90,7 @@ def build_baseline_history_rows(
         rows.append(
             {
                 "hour": h,
+                "g12_zone": g12_zone,
                 "grid_import": result.grid_import,
                 "grid_export": result.grid_export,
                 "energy_cost": cash["energy_cost"],
@@ -103,10 +104,23 @@ def build_baseline_history_rows(
 def summarize_baseline_rows(rows: list[dict[str, Any]]) -> dict[str, float]:
     energy_cost = sum(float(r.get("energy_cost") or 0.0) for r in rows)
     service_cost = sum(float(r.get("service_cost") or 0.0) for r in rows)
+    peak_import = sum(
+        float(r.get("grid_import") or 0.0)
+        for r in rows
+        if r.get("g12_zone") == "peak"
+    )
+    offpeak_import = sum(
+        float(r.get("grid_import") or 0.0)
+        for r in rows
+        if r.get("g12_zone") == "offpeak"
+    )
     return {
-        "baseline_energy_cost": round(energy_cost, 2),
-        "baseline_service_cost": round(service_cost, 2),
-        "baseline_cost": round(energy_cost + service_cost, 2),
+        "baseline_energy_cost": round(energy_cost, 4),
+        "baseline_service_cost": round(service_cost, 4),
+        "baseline_cost": round(energy_cost + service_cost, 4),
+        "baseline_grid_import_peak": round(peak_import, 4),
+        "baseline_grid_import_offpeak": round(offpeak_import, 4),
+        "baseline_grid_import": round(peak_import + offpeak_import, 4),
     }
 
 
@@ -114,11 +128,22 @@ def attach_baseline_savings(
     summary: dict[str, Any],
     baseline_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Add baseline totals and savings vs actual (smart) day summary."""
+    """Add baseline totals and savings vs actual day summary."""
+    from .plan_cost import month_energy_cost_total, month_import_cost_total, month_savings_pln
+
     baseline = summarize_baseline_rows(baseline_rows)
     summary.update(baseline)
-    smart_total = float(summary.get("energy_cost") or 0.0) + float(
-        summary.get("service_cost") or 0.0
+    export_revenue = float(summary.get("export_revenue") or 0.0)
+    import_energy = float(summary.get("import_energy_cost") or 0.0)
+    service_cost = float(summary.get("service_cost") or 0.0)
+    energy_cost_total = month_energy_cost_total(export_revenue, import_energy)
+    import_cost_total = month_import_cost_total(service_cost)
+    summary["energy_cost_total"] = energy_cost_total
+    summary["import_cost_total"] = import_cost_total
+    summary["savings_pln"] = month_savings_pln(
+        baseline["baseline_cost"],
+        0.0,
+        energy_cost_total,
+        import_cost_total,
     )
-    summary["savings_pln"] = round(baseline["baseline_cost"] - smart_total, 2)
     return summary

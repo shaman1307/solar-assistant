@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from .grid_config import grid_export_threshold_pln_kwh
 from .plan_spill import build_tail_hour_arrays, pv_load_energy_split, tail_balance_cost_pln
 from .simulation_config import (
     plan_min_soc_kwh,
@@ -28,7 +29,6 @@ class G12Tariff:
     offpeak_energy: float
     peak_full: float
     peak_energy: float
-    feed_in_fallback: float
 
 
 def g12_tariff_from_cfg(cfg: dict) -> G12Tariff:
@@ -38,12 +38,13 @@ def g12_tariff_from_cfg(cfg: dict) -> G12Tariff:
         offpeak_energy=float(g12["offpeak_energy_only_pln_kwh"]),
         peak_full=float(g12["peak_price_pln_kwh"]),
         peak_energy=float(g12["peak_energy_only_pln_kwh"]),
-        feed_in_fallback=float(cfg["grid"]["feed_in_price_pln"]),
     )
 
 
-def battery_export_break_even_rce(tariff: G12Tariff) -> float:
+def battery_export_break_even_rce(tariff: G12Tariff, cfg: dict | None = None) -> float:
     """Minimum RCE (PLN/kWh) for battery export vs self-use at offpeak buy."""
+    if cfg is not None:
+        return grid_export_threshold_pln_kwh(cfg)
     return tariff.offpeak_full
 
 
@@ -87,12 +88,13 @@ def battery_export_step_allowed(
 def optimization_battery_export_value(
     rce: float | None,
     tariff: G12Tariff,
+    cfg: dict | None = None,
 ) -> float:
     """Marginal bill benefit of battery export vs self-use at offpeak buy."""
     if rce is None:
         return 0.0
     rce_f = float(rce)
-    floor = battery_export_break_even_rce(tariff)
+    floor = battery_export_break_even_rce(tariff, cfg)
     if rce_f < floor:
         return 0.0
     return rce_f - floor
@@ -103,10 +105,11 @@ def export_credit_price(
     tariff: G12Tariff,
     *,
     from_battery: bool,
+    cfg: dict | None = None,
 ) -> float:
     if rce is None:
-        return tariff.feed_in_fallback
-    if from_battery and float(rce) < battery_export_break_even_rce(tariff):
+        return 0.0
+    if from_battery and float(rce) < battery_export_break_even_rce(tariff, cfg):
         return 0.0
     return float(rce)
 
@@ -474,7 +477,7 @@ def optimize_horizon(
     }
 
     def _pv_export_credit(rce: float | None, *, from_battery: bool) -> float:
-        return export_credit_price(rce, tariff, from_battery=from_battery)
+        return export_credit_price(rce, tariff, from_battery=from_battery, cfg=cfg)
 
     tail_start = _tail_start_hour(
         steps=steps, rce_step_offset=rce_step_offset,
@@ -504,6 +507,7 @@ def optimize_horizon(
     ]
 
     offpeak_buy = tariff.offpeak_full
+    export_floor = grid_export_threshold_pln_kwh(cfg)
 
     for step in range(steps):
         pv = pv_series[step]
@@ -512,7 +516,7 @@ def optimize_horizon(
         rce_idx = rce_step_offset + step
         rce = rce_series[rce_idx] if rce_idx < len(rce_series) else None
         allow_battery_export = battery_export_step_allowed(
-            rce_idx, rce_series, offpeak_buy,
+            rce_idx, rce_series, export_floor,
             step_scale=step_scale, epsilon=eps_step,
         )
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from .grid_config import merge_grid_defaults
+
 # Energa G12 weekday peak windows (hour ranges, start inclusive, end exclusive).
 G12_PEAK_HOURS_WEEKDAY: list[tuple[int, int]] = [(6, 13), (15, 22)]
 
@@ -35,15 +37,15 @@ def g12_buy_energy_price_pln_kwh(zone: str, cfg: dict) -> float:
 
 
 def g12_buy_service_price_pln_kwh(zone: str, cfg: dict) -> float:
-    """Non-energy (distribution + fees) share of G12 buy price, PLN/kWh brutto."""
-    g12 = cfg["grid"]["g12"]
-    if zone == "peak":
-        full = float(g12["peak_price_pln_kwh"])
-        energy = float(g12["peak_energy_only_pln_kwh"])
-    else:
-        full = float(g12["offpeak_price_pln_kwh"])
-        energy = float(g12["offpeak_energy_only_pln_kwh"])
-    return max(0.0, full - energy)
+    """Official G12 variable network rate (brutto): opłata sieciowa zmienna dzienna/nocna."""
+    merge_grid_defaults(cfg)
+    dist = cfg["grid"]["distribution"]
+    key = (
+        "peak_variable_network_pln_kwh"
+        if zone == "peak"
+        else "offpeak_variable_network_pln_kwh"
+    )
+    return float(dist[key])
 
 
 def g12_import_cost_split(

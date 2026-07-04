@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .config import BASE_DIR, load_config
+from .sqlite_store import ensure_month_history_billing_model
 from . import forecast as forecast_mod
 from .plan_simulation import build_plan_simulation
 from .routes import register_routes
@@ -31,6 +32,7 @@ log = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     cfg = load_config()
+    ensure_month_history_billing_model()
     scheduler = create_scheduler(cfg)
     scheduler.start()
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import BASE_DIR
-from .json_store import atomic_json_save, load_json
+from .sqlite_store import load_ev_store_json, migrate_ev_json_to_sqlite, save_ev_store_json
 from .influxdb import now_warsaw
 
 log = logging.getLogger(__name__)
@@ -47,13 +47,17 @@ def default_session() -> dict[str, Any]:
 
 
 def load_store() -> dict[str, Any]:
-    data = load_json(_STORE_PATH, default={"sessions": {}})
-    data.setdefault("sessions", {})
+    migrate_ev_json_to_sqlite()
+    data = load_ev_store_json()
+    if data is None:
+        data = {"sessions": {}}
+    if data.get("version") != 2:
+        data.setdefault("sessions", {})
     return data
 
 
 def save_store(data: dict[str, Any]) -> None:
-    atomic_json_save(_STORE_PATH, data)
+    save_ev_store_json(data)
 
 
 def max_power_kw(cfg: dict) -> float:

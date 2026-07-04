@@ -30,6 +30,9 @@ desktop.ini
 # Pi runtime marker (created by reload-smart.sh)
 .smart-deployed
 
+# Local SQLite (month history cache on dev machine)
+data/
+
 # Local debug dumps (curl / manual API captures)
 assets/
 /dbg_*.json

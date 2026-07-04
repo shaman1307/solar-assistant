@@ -267,9 +267,54 @@
       table-layout: fixed;
       width: 100%;
     }
+    .sim-table-month thead th {
+      white-space: normal;
+      overflow: visible;
+      line-height: 1.1;
+      hyphens: auto;
+    }
     .sim-table-month .sim-col-day { width: 14%; }
     .sim-table-month .sim-col-kwh { width: 10%; }
     .sim-table-month .sim-col-cost { width: 11%; }
+    /* Monthly history — two neutral column groups (energy balance | import distribution) */
+    .sim-table-month .mh-bg-export,
+    .sim-table-month .mh-bg-import-tariff,
+    .sim-table-month .mh-bg-energy-total,
+    .sim-table-month .mh-bg-import-part,
+    .sim-table-month .mh-bg-import-total {
+      background-color: #fafafa;
+    }
+    .sim-table-month .mh-bg-export,
+    .sim-table-month .mh-bg-import-part.mh-bg-import-part--first {
+      box-shadow: inset 2px 0 0 #d1d5db;
+    }
+    .sim-table-month .mh-bg-energy-total,
+    .sim-table-month .mh-bg-import-total {
+      background-color: #f3f4f6;
+      box-shadow: inset 1px 0 0 #e5e7eb;
+    }
+    .sim-table-month tr.bg-gray-100 .mh-bg-export,
+    .sim-table-month tr.bg-gray-100 .mh-bg-import-tariff,
+    .sim-table-month tr.bg-gray-100 .mh-bg-energy-total,
+    .sim-table-month tr.bg-gray-100 .mh-bg-import-part,
+    .sim-table-month tr.bg-gray-100 .mh-bg-import-total {
+      background-color: #ececec;
+    }
+    .sim-table-month tr.bg-gray-100 .mh-bg-energy-total,
+    .sim-table-month tr.bg-gray-100 .mh-bg-import-total {
+      background-color: #e5e7eb;
+    }
+    .sim-table-month thead th.mh-bg-export,
+    .sim-table-month thead th.mh-bg-import-tariff,
+    .sim-table-month thead th.mh-bg-energy-total,
+    .sim-table-month thead th.mh-bg-import-part,
+    .sim-table-month thead th.mh-bg-import-total {
+      background-color: #f3f4f6;
+    }
+    .sim-table-month thead th.mh-bg-energy-total,
+    .sim-table-month thead th.mh-bg-import-total {
+      background-color: #e5e7eb;
+    }
     .sim-table th,
     .sim-table td {
       padding: var(--sim-table-pad-y, 0.25rem) var(--sim-table-pad-x, 0.375rem);
@@ -300,7 +345,7 @@
         line-height: 1.1;
       }
       .sim-history-block--ea .sim-table-ea .sim-timer-cell,
-      .sim-history-block--ea .sim-table-ea thead th:nth-child(13) {
+      .sim-history-block--ea .sim-table-ea thead th:nth-child(12) {
         font-size: calc(var(--sim-table-font-size, 8px) - 1px);
       }
       .sim-history-block--ea .sim-table-ea .sim-col-rce-cell,
@@ -308,9 +353,7 @@
         font-size: calc(var(--sim-table-font-size, 8px) - 1px);
       }
       .sim-history-block--ea .sim-table-ea #sim-hdr-energy,
-      .sim-history-block--ea .sim-table-ea #sim-hdr-service,
-      .sim-history-block--ea .sim-table-ea .sim-col-energy-cell,
-      .sim-history-block--ea .sim-table-ea .sim-col-service-cell {
+      .sim-history-block--ea .sim-table-ea .sim-col-energy-cell {
         font-size: calc(var(--sim-table-font-size, 8px) - 1px);
       }
       .sim-history-block--ea .sim-table-ea col.sim-col-rce {
@@ -759,22 +802,11 @@
     .sim-history-grid {
       display: grid;
       grid-template-columns: 1fr;
-      gap: 1rem;
+      gap: 0;
       align-items: start;
     }
-    @media (min-width: 1024px) {
-      .sim-history-grid {
-        grid-template-columns: minmax(0, 2fr) minmax(18rem, 1fr);
-        gap: 0.75rem;
-      }
-      .sim-history-block--ea {
-        grid-column: 1;
-        min-width: 0;
-      }
-      .sim-history-block--month {
-        grid-column: 2;
-        min-width: 0;
-      }
+    .sim-history-block--month.sim-history-block--nested {
+      margin-top: 1.5rem;
     }
     .sim-history-block {
       min-width: 0;
@@ -2278,7 +2310,6 @@
             onchange="saveDebugTabSetting()">
           <span class="text-sm text-gray-900">Show Debug tab</span>
         </label>
-        <p class="text-xs text-gray-500">Saved immediately to backend config. Persists after refresh and redeploy.</p>
       </fieldset>
 
       <!-- Location -->
@@ -2412,21 +2443,74 @@
         </select>
         <div class="grid grid-cols-2 gap-4">
           <div>
-            <label class="text-xs text-gray-500 block mb-1 text-red-400">Peak (PLN/kWh)</label>
+            <label class="text-xs text-gray-500 block mb-1 text-red-400">Peak (PLN/kWh brutto)</label>
             <input name="grid.g12.peak_price_pln_kwh" id="inp-peak-price" type="number" step="0.0001" required
               title="Peak hours: weekdays 06–13, 15–22"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-red-500" />
           </div>
           <div>
-            <label class="text-xs text-gray-500 block mb-1 text-green-400">Off-peak (PLN/kWh)</label>
+            <label class="text-xs text-gray-500 block mb-1 text-green-400">Off-peak (PLN/kWh brutto)</label>
             <input name="grid.g12.offpeak_price_pln_kwh" id="inp-offpeak-price" type="number" step="0.0001" required
               title="Off-peak: nights 22–06, 13–15, weekends"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-green-500" />
           </div>
+        </div>
+        <div class="rounded-lg border-2 border-amber-400/70 bg-amber-50/80 p-3 space-y-2">
+          <label class="text-xs text-gray-700 block font-medium" title="Minimum RCE (PLN/kWh brutto) to allow battery export in smart planning and simulations. PV spill export is not gated by this value.">Grid export threshold (PLN/kWh)</label>
+          <input name="grid.grid_export_threshold_pln_kwh" type="number" step="0.0001" required
+            title="Minimum RCE (PLN/kWh brutto) to allow battery export in smart planning and simulations. PV spill export is not gated by this value."
+            class="w-full bg-white border border-amber-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+        </div>
+      </fieldset>
+
+      <fieldset class="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
+        <legend class="text-xs font-semibold text-gray-400 uppercase tracking-wider px-1">G12 distribution tariff (brutto)</legend>
+        <p class="text-xs font-medium text-gray-600">Fixed (PLN/month)</p>
+        <div class="grid grid-cols-2 gap-4">
           <div>
-            <label class="text-xs text-gray-500 block mb-1">Export fallback (PLN/kWh)</label>
-            <input name="grid.feed_in_price_pln" type="number" step="0.01" required
-              title="Used when live RCE price is unavailable"
+            <label class="text-xs text-gray-500 block mb-1" title="Opłata abonamentowa">Subscription</label>
+            <input name="grid.distribution.subscription_pln_month" type="number" step="0.0001" required
+              class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 block mb-1" title="Opłata sieciowa stała">Fixed network</label>
+            <input name="grid.distribution.fixed_network_pln_month" type="number" step="0.0001" required
+              class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 block mb-1" title="Opłata mocowa">Capacity fee</label>
+            <input name="grid.distribution.capacity_pln_month" type="number" step="0.0001" required
+              class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          </div>
+        </div>
+        <p class="text-xs font-medium text-gray-600 pt-1">Variable network (PLN/kWh) — Energy Import. Service Cost</p>
+        <div class="grid grid-cols-2 gap-4 rounded-lg border border-amber-200/80 bg-amber-50/50 p-3">
+          <div>
+            <label class="text-xs text-gray-500 block mb-1" title="Opłata sieciowa zmienna dzienna (L1 / peak)">Peak / L1 — zmienna dzienna</label>
+            <input name="grid.distribution.peak_variable_network_pln_kwh" type="number" step="0.0001" required
+              class="w-full bg-white border border-amber-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 block mb-1" title="Opłata sieciowa zmienna nocna (L2 / off-peak)">Off-peak / L2 — zmienna nocna</label>
+            <input name="grid.distribution.offpeak_variable_network_pln_kwh" type="number" step="0.0001" required
+              class="w-full bg-white border border-amber-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          </div>
+        </div>
+        <p class="text-xs font-medium text-gray-600 pt-1">Per import kWh (PLN/kWh) — Energy Import. Service Fee (variable part)</p>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="text-xs text-gray-500 block mb-1" title="Opłata jakościowa">Quality</label>
+            <input name="grid.distribution.quality_pln_kwh" type="number" step="0.0001" required
+              class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 block mb-1" title="Opłata OZE">OZE</label>
+            <input name="grid.distribution.oze_pln_kwh" type="number" step="0.0001" required
+              class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 block mb-1" title="Opłata kogeneracyjna">Cogeneration</label>
+            <input name="grid.distribution.cogeneration_pln_kwh" type="number" step="0.0001" required
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
         </div>
@@ -2789,7 +2873,7 @@
           <col class="sim-col-soc">
           <col class="sim-col-price">
           <col class="sim-col-rce">
-          <col class="sim-col-cost" span="2">
+          <col class="sim-col-cost">
           <col class="sim-col-timer">
           <col class="sim-col-action">
         </colgroup>
@@ -2806,17 +2890,16 @@
             <th class="font-medium text-right sim-col-buy" id="sim-hdr-buy">Buy Price<br><span class="font-normal">(PLN/kWh)</span></th>
             <th class="font-medium text-right sim-col-sell" id="sim-hdr-sell">Sell Price<br><span class="font-normal">(PLN/kWh)</span></th>
             <th class="font-medium text-right" id="sim-hdr-energy">Energy Cost<br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right" id="sim-hdr-service">Service Cost<br><span class="font-normal">(PLN)</span></th>
             <th class="font-medium">Timer Schedule</th>
             <th class="font-medium">Action</th>
           </tr>
         </thead>
         <tbody id="sim-body-total">
-          <tr><td colspan="14" class="px-3 py-6 text-center text-gray-600">Loading simulation…</td></tr>
+          <tr><td colspan="13" class="px-3 py-6 text-center text-gray-600">Loading simulation…</td></tr>
         </tbody>
         <tbody id="sim-plan-toggle" class="hidden">
           <tr class="border-b border-gray-200 bg-slate-50">
-            <td colspan="14" class="px-3 py-2">
+            <td colspan="13" class="px-3 py-2">
               <button type="button" id="sim-plan-btn" onclick="toggleSimPlan()"
                 class="text-xs font-medium text-slate-700 hover:text-slate-900">Rolling Plan ▼</button>
             </td>
@@ -2825,7 +2908,7 @@
         <tbody id="sim-body-plan" class="hidden"></tbody>
         <tbody id="sim-tomorrow-remainder-toggle" class="hidden">
           <tr class="border-t border-gray-300 bg-gray-50">
-            <td colspan="14" class="px-3 py-2">
+            <td colspan="13" class="px-3 py-2">
               <button type="button" id="sim-tomorrow-remainder-btn" onclick="toggleSimTomorrowRemainder()"
                 class="text-xs font-medium text-amber-700 hover:text-amber-900">Tomorrow remainder (not simulated) ▼</button>
             </td>
@@ -2834,9 +2917,8 @@
         <tbody id="sim-body-tomorrow-remainder" class="hidden"></tbody>
       </table>
     </div>
-    </div>
 
-    <div class="sim-history-block sim-history-block--month">
+    <div class="sim-history-block sim-history-block--month sim-history-block--nested">
     <div class="sim-history-head-row">
       <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider min-w-0 truncate">Monthly history</h2>
       <label class="flex items-center gap-1.5 whitespace-nowrap text-xs text-gray-500 shrink-0" lang="pl-PL">
@@ -2851,27 +2933,31 @@
         <colgroup>
           <col class="sim-col-day">
           <col class="sim-col-kwh" span="4">
-          <col class="sim-col-cost" span="4">
+          <col class="sim-col-cost" span="8">
         </colgroup>
         <thead>
           <tr class="border-b border-gray-200 text-gray-500 text-left">
-            <th class="font-medium">Day</th>
-            <th class="font-medium text-right">Production<br><span class="font-normal">(kWh)</span></th>
-            <th class="font-medium text-right">Consumption<br><span class="font-normal">(kWh)</span></th>
-            <th class="font-medium text-right">Grid import<br><span class="font-normal">(kWh)</span></th>
-            <th class="font-medium text-right">Grid export<br><span class="font-normal">(kWh)</span></th>
-            <th class="font-medium text-right">Energy Cost<br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right">Service Cost<br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right">Baseline<br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right">Saved<br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium mh-bg-import-part">Day</th>
+            <th class="font-medium text-right mh-bg-import-part">Production<br><span class="font-normal">(kWh)</span></th>
+            <th class="font-medium text-right mh-bg-import-part">Consumption<br><span class="font-normal">(kWh)</span></th>
+            <th class="font-medium text-right mh-bg-import-part">Grid import<br><span class="font-normal">(kWh)</span></th>
+            <th class="font-medium text-right mh-bg-import-part">Grid export<br><span class="font-normal">(kWh)</span></th>
+            <th class="font-medium text-right mh-bg-export">Energy Export.<br><span class="font-normal">RCE Cost</span><br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-import-tariff">Energy Import.<br><span class="font-normal">Tariff Cost</span><br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-energy-total">Energy Cost Total<br><span class="font-normal">(Deposit)</span><br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-import-part mh-bg-import-part--first">Energy Import.<br><span class="font-normal">Service Cost</span><br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-import-part">Energy Import.<br><span class="font-normal">Service Fee</span><br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-import-total">Energy Import<br><span class="font-normal">Cost Total (To be paid)</span><br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-import-part">Baseline<br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-import-total">Saved<br><span class="font-normal">(PLN)</span></th>
           </tr>
         </thead>
         <tbody id="history-month-body-total">
-          <tr><td colspan="9" class="px-3 py-6 text-center text-gray-500">Loading monthly history…</td></tr>
+          <tr><td colspan="13" class="px-3 py-6 text-center text-gray-500">Loading monthly history…</td></tr>
         </tbody>
         <tbody id="history-month-toggle" class="hidden">
           <tr class="border-b border-gray-200 bg-slate-50">
-            <td colspan="9" class="px-3 py-2">
+            <td colspan="13" class="px-3 py-2">
               <button type="button" id="history-month-btn" onclick="toggleHistoryMonthDays()"
                 class="text-xs font-medium text-slate-700 hover:text-slate-900">Daily breakdown ▼</button>
             </td>
@@ -2879,6 +2965,7 @@
         </tbody>
         <tbody id="history-month-body-days" class="hidden"></tbody>
       </table>
+    </div>
     </div>
     </div>
   </section>
@@ -5034,11 +5121,13 @@ function applyTariffPreset(key) {
   if (!p) return;
   const peakEl = document.querySelector('[name="grid.g12.peak_price_pln_kwh"]');
   const offEl  = document.querySelector('[name="grid.g12.offpeak_price_pln_kwh"]');
+  const exportEl = document.querySelector('[name="grid.grid_export_threshold_pln_kwh"]');
   if (peakEl) {
     peakEl.value = p.peak;
     peakEl.title = `Peak hours: ${p.peakHoursLabel}`;
   }
   if (offEl) offEl.value = p.offpeak;
+  if (exportEl) exportEl.value = p.offpeak;
 }
 
 // ---------------------------------------------------------------------------
@@ -6131,11 +6220,7 @@ async function loadAccruals(date) {
   const url = dateStr ? `api/accruals?date=${encodeURIComponent(dateStr)}` : 'api/accruals';
   try {
     const month = dateStr.slice(0, 7);
-    // Always fetch fresh data for the current month — today's costs change throughout the day
-    const isCurrentMonth = month === DEBUG_TODAY.slice(0, 7);
-    const monthFetch = isCurrentMonth
-      ? fetch('api/history-month?month=' + encodeURIComponent(month)).then(r => r.json())
-      : fetchHistoryMonthCached(month);
+    const monthFetch = fetchHistoryMonthCached(month);
     const [accrRes, monthData] = await Promise.all([
       fetch(url),
       monthFetch,
@@ -7042,7 +7127,7 @@ async function applyTimerSlot(kind, slotNum) {
 // ---------------------------------------------------------------------------
 // Simulation
 // ---------------------------------------------------------------------------
-const SIM_TABLE_COLS = 14;
+const SIM_TABLE_COLS = 13;
 const SIM_PRICE_COLS_KEY = 'sa_sim_ea_price_cols_expanded';
 
 function simEaPriceColsExpanded() {
@@ -7225,11 +7310,88 @@ function historyMonthTotalLabel(month) {
   return `${m}-${y}`;
 }
 
+function historyMonthExportDisplayValue(r, isTotal) {
+  const v = Number(r.export_revenue);
+  if (!Number.isFinite(v) || Math.abs(v) < 0.005) return isTotal ? 0 : null;
+  return v;
+}
+
+function historyMonthExportTitle(r) {
+  const v = Number(r.export_revenue);
+  if (!Number.isFinite(v)) return 'Export credit at RCE (brutto)';
+  return `RCE export: +${fmt(r.grid_export ?? 0, 2)} kWh → +${fmt(v, 2)} zł`;
+}
+
+function historyMonthImportDisplayValue(r, isTotal) {
+  const v = Number(r.import_energy_cost);
+  if (!Number.isFinite(v) || Math.abs(v) < 0.005) return isTotal ? 0 : null;
+  return -Math.abs(v);
+}
+
+function historyMonthImportTitle(r) {
+  const v = Number(r.import_energy_cost);
+  if (!Number.isFinite(v)) return 'G12 energy import (brutto)';
+  return `Import energy: −${fmt(v, 2)} zł`;
+}
+
+function historyMonthCostTotalDisplayValue(r, isTotal) {
+  if (r.energy_cost_total != null) {
+    const n = Number(r.energy_cost_total);
+    if (!Number.isFinite(n)) return null;
+    if (!isTotal && Math.abs(n) < 0.005) return null;
+    return n;
+  }
+  const exp = Number(r.export_revenue);
+  const imp = Number(r.import_energy_cost);
+  if (!Number.isFinite(exp) || !Number.isFinite(imp)) return null;
+  const n = exp - imp;
+  if (!isTotal && Math.abs(n) < 0.005) return null;
+  return n;
+}
+
+function historyMonthCostTotalTitle(r, isTotal) {
+  const total = historyMonthCostTotalDisplayValue(r, isTotal);
+  if (total == null) return 'Export RCE + import tariff';
+  const exp = historyMonthExportDisplayValue(r, isTotal);
+  const imp = historyMonthImportDisplayValue(r, isTotal);
+  return `Export RCE ${simEnergyFmt(exp)} + tariff ${simCashFmt(imp)} = ${fmt(total, 2)} zł`;
+}
+
+function historyMonthImportCostTotalDisplayValue(r, isTotal) {
+  if (r.import_cost_total != null) {
+    const n = Number(r.import_cost_total);
+    if (!Number.isFinite(n)) return null;
+    if (!isTotal && Math.abs(n) < 0.005) return null;
+    return -Math.abs(n);
+  }
+  const svc = Number(r.service_cost);
+  const fee = isTotal ? Number(r.service_fee) : 0;
+  if (!Number.isFinite(svc)) return null;
+  const n = svc + (Number.isFinite(fee) ? fee : 0);
+  if (!isTotal && Math.abs(n) < 0.005) return null;
+  return -Math.abs(n);
+}
+
+function historyMonthImportCostTotalTitle(r, isTotal) {
+  const total = historyMonthImportCostTotalDisplayValue(r, isTotal);
+  if (total == null) return 'Service Cost + Service Fee';
+  const svc = simServiceDisplayValue(r);
+  const fee = historyMonthServiceFeeDisplayValue(r, isTotal);
+  let title = `Service Cost ${simServiceFmt(svc)}`;
+  if (isTotal && fee != null) title += ` + Service Fee ${simServiceFmt(fee)}`;
+  else if (!isTotal) title += ' + Service Fee (month TOTAL only)';
+  return `${title} = ${fmt(Math.abs(Number(total)), 2)} zł to pay`;
+}
+
 function historyMonthBaselineDisplayValue(r, isTotal) {
   const energy = Number(r.baseline_energy_cost);
   const service = Number(r.baseline_service_cost);
   if (!Number.isFinite(energy) && !Number.isFinite(service)) return null;
-  const total = (Number.isFinite(energy) ? energy : 0) + (Number.isFinite(service) ? service : 0);
+  let total = (Number.isFinite(energy) ? energy : 0) + (Number.isFinite(service) ? service : 0);
+  if (isTotal) {
+    const fee = Number(r.baseline_service_fee);
+    if (Number.isFinite(fee)) total += fee;
+  }
   if (!isTotal && Math.abs(total) < 0.005) return null;
   return -total;
 }
@@ -7237,8 +7399,27 @@ function historyMonthBaselineDisplayValue(r, isTotal) {
 function historyMonthBaselineTitle(r) {
   const energy = Number(r.baseline_energy_cost);
   const service = Number(r.baseline_service_cost);
+  const fee = Number(r.baseline_service_fee);
   if (!Number.isFinite(energy) || !Number.isFinite(service)) return 'Passive load-priority bill';
-  return `Baseline energy: ${fmt(energy, 2)} zł, service: ${fmt(service, 2)} zł`;
+  let title = `Baseline energy: ${fmt(energy, 2)} zł, service: ${fmt(service, 2)} zł`;
+  if (Number.isFinite(fee)) title += `, fee: ${fmt(fee, 2)} zł`;
+  return title;
+}
+
+function historyMonthServiceFeeDisplayValue(r, isTotal) {
+  if (!isTotal) return null;
+  const v = Number(r.service_fee);
+  if (!Number.isFinite(v) || Math.abs(v) < 0.005) return null;
+  return -Math.abs(v);
+}
+
+function historyMonthServiceFeeTitle(r) {
+  const fee = Number(r.service_fee);
+  const baselineFee = Number(r.baseline_service_fee);
+  if (!Number.isFinite(fee)) return 'Part of Import Cost Total: subscription + fixed network + capacity + quality/OZE/cogeneration';
+  let title = `Part of Import Cost Total — fixed + per-kWh fees: ${fmt(fee, 2)} zł`;
+  if (Number.isFinite(baselineFee)) title += ` (baseline ${fmt(baselineFee, 2)} zł)`;
+  return title;
 }
 
 function historyMonthSavingsDisplayValue(r, isTotal) {
@@ -7251,23 +7432,38 @@ function historyMonthSavingsDisplayValue(r, isTotal) {
 
 function historyMonthSavingsTitle(r) {
   const baseline = Number(r.baseline_cost);
-  const smartEnergy = Number(r.energy_cost);
-  const smartService = Number(r.service_cost);
-  if (!Number.isFinite(baseline) || !Number.isFinite(smartEnergy) || !Number.isFinite(smartService)) {
-    return 'Baseline bill minus actual bill';
+  const baselineFee = Number(r.baseline_service_fee);
+  const energyTotal = Number(r.energy_cost_total);
+  const importTotal = Number(r.import_cost_total);
+  if (Number.isFinite(baseline) && Number.isFinite(energyTotal) && Number.isFinite(importTotal)) {
+    const baselineBill = baseline + (Number.isFinite(baselineFee) ? baselineFee : 0);
+    const actualBill = importTotal - energyTotal;
+    return `Baseline ${fmt(baselineBill, 2)} zł − (import total ${fmt(importTotal, 2)} − energy total ${fmt(energyTotal, 2)} zł) = ${fmt(Number(r.savings_pln), 2)} zł saved`;
   }
-  return `Baseline ${fmt(baseline, 2)} zł − actual ${fmt(smartEnergy + smartService, 2)} zł`;
+  return 'Baseline bill minus actual bill';
 }
 
 function makeHistoryMonthRow(r, isTotal) {
   const tr = document.createElement('tr');
   tr.className = 'border-b border-gray-200 ' + (isTotal ? 'bg-gray-100 font-semibold' : 'hover:bg-gray-50');
-  const energyCash = simEnergyDisplayValue(r, isTotal);
-  const energyTitle = energyCash == null ? '' : simEnergyTitle(r);
-  const energyCls = simCashClass(energyCash);
+  const exportVal = historyMonthExportDisplayValue(r, isTotal);
+  const exportTitle = historyMonthExportTitle(r);
+  const exportCls = simCashClass(exportVal);
+  const importVal = historyMonthImportDisplayValue(r, isTotal);
+  const importTitle = historyMonthImportTitle(r);
+  const importCls = simCashClass(importVal);
+  const costTotalVal = historyMonthCostTotalDisplayValue(r, isTotal);
+  const costTotalTitle = historyMonthCostTotalTitle(r, isTotal);
+  const costTotalCls = simCashClass(costTotalVal);
   const serviceVal = simServiceDisplayValue(r);
   const serviceTitle = simServiceTitle(r);
   const serviceCls = simServiceClass(serviceVal);
+  const serviceFeeVal = historyMonthServiceFeeDisplayValue(r, isTotal);
+  const serviceFeeTitle = historyMonthServiceFeeTitle(r);
+  const serviceFeeCls = simServiceClass(serviceFeeVal);
+  const importTotalVal = historyMonthImportCostTotalDisplayValue(r, isTotal);
+  const importTotalTitle = historyMonthImportCostTotalTitle(r, isTotal);
+  const importTotalCls = simServiceClass(importTotalVal);
   const baselineVal = historyMonthBaselineDisplayValue(r, isTotal);
   const baselineTitle = historyMonthBaselineTitle(r);
   const baselineCls = simCashClass(baselineVal);
@@ -7275,15 +7471,19 @@ function makeHistoryMonthRow(r, isTotal) {
   const savingsTitle = historyMonthSavingsTitle(r);
   const savingsCls = simCashClass(savingsVal);
   tr.innerHTML = `
-    <td class="text-gray-600 whitespace-nowrap">${r.start || r.date || ''}</td>
-    <td class="text-right text-gray-600 tabular-nums">${fmt(r.production, 2)}</td>
-    <td class="text-right text-gray-600 tabular-nums">${fmt(r.consumption, 2)}</td>
-    <td class="text-right text-gray-600 tabular-nums">${fmt(r.grid_import, 2)}</td>
-    <td class="text-right text-gray-600 tabular-nums">${fmt(r.grid_export, 2)}</td>
-    <td class="text-right tabular-nums ${energyCls}" title="${energyTitle}">${simEnergyFmt(energyCash)}</td>
-    <td class="text-right tabular-nums ${serviceCls}" title="${serviceTitle}">${simServiceFmt(serviceVal)}</td>
-    <td class="text-right tabular-nums ${baselineCls}" title="${baselineTitle}">${simCashFmt(baselineVal)}</td>
-    <td class="text-right tabular-nums ${savingsCls}" title="${savingsTitle}">${simCashFmt(savingsVal)}</td>`;
+    <td class="text-gray-600 whitespace-nowrap mh-bg-import-part">${r.start || r.date || ''}</td>
+    <td class="text-right text-gray-600 tabular-nums mh-bg-import-part">${fmt(r.production, 2)}</td>
+    <td class="text-right text-gray-600 tabular-nums mh-bg-import-part">${fmt(r.consumption, 2)}</td>
+    <td class="text-right text-gray-600 tabular-nums mh-bg-import-part">${fmt(r.grid_import, 2)}</td>
+    <td class="text-right text-gray-600 tabular-nums mh-bg-import-part">${fmt(r.grid_export, 2)}</td>
+    <td class="text-right tabular-nums mh-bg-export ${exportCls}" title="${exportTitle}">${simEnergyFmt(exportVal)}</td>
+    <td class="text-right tabular-nums mh-bg-import-tariff ${importCls}" title="${importTitle}">${simCashFmt(importVal)}</td>
+    <td class="text-right tabular-nums mh-bg-energy-total ${costTotalCls}" title="${costTotalTitle}">${simCashFmt(costTotalVal)}</td>
+    <td class="text-right tabular-nums mh-bg-import-part mh-bg-import-part--first ${serviceCls}" title="${serviceTitle}">${simServiceFmt(serviceVal)}</td>
+    <td class="text-right tabular-nums mh-bg-import-part ${serviceFeeCls}" title="${serviceFeeTitle}">${simServiceFmt(serviceFeeVal)}</td>
+    <td class="text-right tabular-nums mh-bg-import-total ${importTotalCls}" title="${importTotalTitle}">${simServiceFmt(importTotalVal)}</td>
+    <td class="text-right tabular-nums mh-bg-import-part ${baselineCls}" title="${baselineTitle}">${simCashFmt(baselineVal)}</td>
+    <td class="text-right tabular-nums mh-bg-import-total ${savingsCls}" title="${savingsTitle}">${simCashFmt(savingsVal)}</td>`;
   return tr;
 }
 
@@ -7304,11 +7504,11 @@ function renderHistoryMonthTable(data) {
   }
 
   if (data.error) {
-    bodyTotal.innerHTML = `<tr><td colspan="9" class="px-3 py-6 text-center text-red-500">${String(data.error)}</td></tr>`;
+    bodyTotal.innerHTML = `<tr><td colspan="13" class="px-3 py-6 text-center text-red-500">${String(data.error)}</td></tr>`;
     return;
   }
   if (!data.rows || !data.rows.length) {
-    bodyTotal.innerHTML = '<tr><td colspan="9" class="px-3 py-6 text-center text-gray-500">No history for this month.</td></tr>';
+    bodyTotal.innerHTML = '<tr><td colspan="13" class="px-3 py-6 text-center text-gray-500">No history for this month.</td></tr>';
     return;
   }
 
@@ -7334,7 +7534,8 @@ function toggleHistoryMonthDays() {
   btn.textContent = hidden ? label + ' ▼' : 'Hide daily breakdown ▲';
 }
 
-const HISTORY_MONTH_CACHE_KEY = 'sa_history_month_v3';
+const HISTORY_MONTH_CACHE_KEY = 'sa_history_month_v7';
+const HISTORY_MONTH_BILLING_MODEL = '5';
 
 function historyMonthCacheDay() {
   return DEBUG_TODAY;
@@ -7369,22 +7570,31 @@ function pruneStaleHistoryMonthEntries(entries) {
 function getCachedHistoryMonth(month) {
   const entry = readHistoryMonthEntries()[month];
   if (!entry || entry.day !== historyMonthCacheDay()) return null;
+  if (entry.model !== HISTORY_MONTH_BILLING_MODEL) return null;
   return entry.data;
 }
 
 function setCachedHistoryMonth(month, data) {
   const entries = readHistoryMonthEntries();
   pruneStaleHistoryMonthEntries(entries);
-  entries[month] = { day: historyMonthCacheDay(), data };
+  entries[month] = {
+    day: historyMonthCacheDay(),
+    model: HISTORY_MONTH_BILLING_MODEL,
+    data,
+  };
   writeHistoryMonthEntries(entries);
 }
 
 async function fetchHistoryMonthCached(month) {
   const cached = getCachedHistoryMonth(month);
   if (cached) return cached;
-  const res = await fetch('api/history-month?month=' + encodeURIComponent(month));
+  const res = await fetch(
+    'api/history-month?month=' + encodeURIComponent(month) + '&refresh=1',
+  );
   const data = await res.json();
-  if (!data.error) setCachedHistoryMonth(month, data);
+  if (!data.error && data.billing_model_version === HISTORY_MONTH_BILLING_MODEL) {
+    setCachedHistoryMonth(month, data);
+  }
   return data;
 }
 
@@ -7413,7 +7623,7 @@ async function loadHistoryMonth() {
       bodyDays.classList.add('hidden');
     }
     if (toggleEl) toggleEl.classList.add('hidden');
-    bodyTotal.innerHTML = '<tr><td colspan="9" class="px-3 py-6 text-center text-gray-500">Select a month to load daily totals.</td></tr>';
+    bodyTotal.innerHTML = '<tr><td colspan="13" class="px-3 py-6 text-center text-gray-500">Select a month to load daily totals.</td></tr>';
     return;
   }
   const cached = getCachedHistoryMonth(month);
@@ -7421,12 +7631,12 @@ async function loadHistoryMonth() {
     renderHistoryMonthTable(cached);
     return;
   }
-  bodyTotal.innerHTML = '<tr><td colspan="9" class="px-3 py-6 text-center text-gray-600">Loading…</td></tr>';
+  bodyTotal.innerHTML = '<tr><td colspan="13" class="px-3 py-6 text-center text-gray-600">Loading…</td></tr>';
   try {
     const data = await fetchHistoryMonthCached(month);
     renderHistoryMonthTable(data);
   } catch (e) {
-    bodyTotal.innerHTML = '<tr><td colspan="9" class="px-3 py-6 text-center text-red-500">Failed to load month.</td></tr>';
+    bodyTotal.innerHTML = '<tr><td colspan="13" class="px-3 py-6 text-center text-red-500">Failed to load month.</td></tr>';
   }
 }
 
@@ -7709,8 +7919,13 @@ function simEnergyTitle(r) {
 
 function simServiceTitle(r) {
   if (r.service_cost == null || Number(r.service_cost) <= 0.0005) return '';
-  const g12 = simG12TariffName(null);
-  return `Service import: ${fmt(r.grid_import ?? 0, 3)} kWh × ${g12} distribution/fees`;
+  const dist = configData?.grid?.distribution;
+  const peak = Number(dist?.peak_variable_network_pln_kwh);
+  const off = Number(dist?.offpeak_variable_network_pln_kwh);
+  if (Number.isFinite(peak) && Number.isFinite(off)) {
+    return `Opłata sieciowa zmienna (L1/L2): ${fmt(r.grid_import ?? 0, 3)} kWh × peak ${fmt(peak, 4)} / off-peak ${fmt(off, 4)} zł/kWh`;
+  }
+  return `Official G12 variable network: ${fmt(r.grid_import ?? 0, 3)} kWh imported`;
 }
 
 function simCashTitle(r) {
@@ -7804,9 +8019,6 @@ function makeSimRow(r, isTotal, isTomorrowRemainder, isHistory) {
   const energyCash = simEnergyDisplayValue(r, isTotal);
   const energyTitle = energyCash == null ? '' : simEnergyTitle(r);
   const energyCls = simCashClass(energyCash);
-  const serviceVal = simServiceDisplayValue(r);
-  const serviceTitle = simServiceTitle(r);
-  const serviceCls = simServiceClass(serviceVal);
 
   const timerHtml = isTotal
     ? '<td></td>'
@@ -7826,7 +8038,6 @@ function makeSimRow(r, isTotal, isTomorrowRemainder, isHistory) {
     <td class="text-right text-gray-600 tabular-nums sim-col-buy">${r.buy_price != null ? Number(r.buy_price).toFixed(2) : '—'}</td>
     ${simRceCell(r, isTotal)}
     <td class="text-right tabular-nums sim-col-energy-cell ${energyCls}" title="${energyTitle}">${simEnergyFmt(energyCash)}</td>
-    <td class="text-right tabular-nums sim-col-service-cell ${serviceCls}" title="${serviceTitle}">${simServiceFmt(serviceVal)}</td>
     ${timerHtml}
     <td class="leading-snug sim-col-action-cell">${isTotal ? '' : formatActionSpans(r.action)}</td>`;
   return tr;

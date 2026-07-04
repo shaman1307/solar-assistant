@@ -113,11 +113,11 @@ When Smart mode is on, the same hourly **:00** job extracts the **next clock hou
 | Column | Meaning |
 |--------|---------|
 | **G12 zone / buy price** | Peak or off-peak zone and full G12 buy rate (PLN/kWh brutto) for that hour |
-| **RCE price** | PSE day-ahead price used as export credit under net-billing |
+| **RCE price** | PSE day-ahead price (netto from API × 1.23) as export credit under net-billing — **brutto PLN/kWh** |
 | **Energy Cost** | Net **energy (obrót)** balance: import at the G12 energy component minus export credited at RCE (PV and battery export priced separately). Positive cash flow in the UI = export credit exceeds energy import. |
 | **Service Cost** | **Distribution and other non-energy fees** on grid import — the part of G12 brutto above the energy component (dystrybucja, opłaty sieciowe and similar per-kWh charges in the Energa tariff). Charged only on imported kWh; not offset by export. |
 
-For each imported kWh, G12 brutto splits into an **energy** share (`peak_energy_only_pln_kwh` / `offpeak_energy_only_pln_kwh` in config) and a **service** share (the remainder). Export settles against the energy side at RCE — the usual net-billing idea.
+For each imported kWh, G12 brutto splits into an **energy** share (`peak_energy_only_pln_kwh` / `offpeak_energy_only_pln_kwh` in config) and a **service** share (the remainder). Export settles against the energy side at **RCE brutto** — same VAT basis as G12 buy prices.
 
 The optimizer shifts consumption, battery charge/discharge, and grid export to **improve the energy balance** (cheaper imports, exports when RCE is high) and **cut service cost** by reducing unnecessary grid import, especially in peak hours. **Monthly history** sums Energy Cost and Service Cost per day — together they estimate how the plan affects your monthly Energa invoice.
 

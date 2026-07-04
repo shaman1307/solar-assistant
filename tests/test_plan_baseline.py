@@ -47,14 +47,32 @@ def _rce_quarters() -> list[float | None]:
 
 def test_attach_baseline_savings_math():
     summary = attach_baseline_savings(
-        {"energy_cost": 3.0, "service_cost": 1.0},
+        {
+            "export_revenue": 0.0,
+            "import_energy_cost": 3.0,
+            "service_cost": 1.0,
+        },
         [
             {"energy_cost": 2.0, "service_cost": 0.5},
             {"energy_cost": 1.0, "service_cost": 0.25},
         ],
     )
     assert summary["baseline_cost"] == 3.75
+    assert summary["energy_cost_total"] == -3.0
+    assert summary["import_cost_total"] == 1.0
     assert summary["savings_pln"] == -0.25
+
+
+def test_summarize_baseline_import_zones():
+    from src.plan_baseline import summarize_baseline_rows
+
+    totals = summarize_baseline_rows([
+        {"energy_cost": 1.0, "service_cost": 0.5, "g12_zone": "peak", "grid_import": 2.0},
+        {"energy_cost": 1.0, "service_cost": 0.25, "g12_zone": "offpeak", "grid_import": 3.0},
+    ])
+    assert totals["baseline_grid_import_peak"] == 2.0
+    assert totals["baseline_grid_import_offpeak"] == 3.0
+    assert totals["baseline_grid_import"] == 5.0
 
 
 def test_baseline_replay_produces_hourly_costs():
@@ -75,5 +93,5 @@ def test_baseline_replay_produces_hourly_costs():
     totals = summarize_baseline_rows(rows)
     assert totals["baseline_cost"] == round(
         totals["baseline_energy_cost"] + totals["baseline_service_cost"],
-        2,
+        4,
     )

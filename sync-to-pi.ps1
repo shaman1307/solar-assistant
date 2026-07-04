@@ -44,6 +44,8 @@ $files = @(
     "src\json_store.py",
     "src\plan_cost.py",
     "src\g12_pricing.py",
+    "src\grid_config.py",
+    "src\sqlite_store.py",
     "src\simulation_config.py",
     "src\plan_simulation.py",
     "src\plan_timer_override.py",

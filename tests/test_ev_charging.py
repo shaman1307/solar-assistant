@@ -32,8 +32,9 @@ def test_normalize_keeps_valid_range():
 
 
 def test_set_session_persists_disabled_slot_times(tmp_path, monkeypatch):
-    path = tmp_path / "ev_charging.json"
-    monkeypatch.setattr("src.ev_charging._STORE_PATH", path)
+    db_path = tmp_path / "solar_smart.db"
+    monkeypatch.setattr("src.sqlite_store._DB_PATH", db_path)
+    monkeypatch.setattr("src.sqlite_store._conn", None)
     monkeypatch.setattr("src.ev_charging.now_warsaw", lambda: __import__("datetime").datetime(2026, 6, 30, 12, 0))
     cfg = _cfg()
     date_str = "2026-06-30"
@@ -48,8 +49,9 @@ def test_set_session_persists_disabled_slot_times(tmp_path, monkeypatch):
 
 
 def test_get_session_for_ui_returns_defaults_when_empty(tmp_path, monkeypatch):
-    path = tmp_path / "ev_charging.json"
-    monkeypatch.setattr("src.ev_charging._STORE_PATH", path)
+    db_path = tmp_path / "solar_smart.db"
+    monkeypatch.setattr("src.sqlite_store._DB_PATH", db_path)
+    monkeypatch.setattr("src.sqlite_store._conn", None)
     monkeypatch.setattr("src.ev_charging.now_warsaw", lambda: __import__("datetime").datetime(2026, 6, 30, 12, 0))
     defaults = default_session()
     ui = get_session_for_ui("2026-06-30", _cfg())
