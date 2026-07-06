@@ -4,11 +4,29 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 UNIT=smart
+GUARD=smart-boot-guard
 LEGACY=solar-smart.service
 LEGACY_PATH="/etc/systemd/system/${LEGACY}"
+WANTS="/etc/systemd/system/multi-user.target.wants/${UNIT}.service"
+TIMER_WANTS="/etc/systemd/system/timers.target.wants/${GUARD}.timer"
+
+install_unit() {
+  local name="$1"
+  local src="${PROJECT_DIR}/${name}.service"
+  if [ ! -f "${src}" ]; then
+    echo "[enable-smart-autostart] ERROR: missing ${src}" >&2
+    exit 1
+  fi
+  sudo cp "${src}" "/etc/systemd/system/${name}.service"
+}
 
 echo "[enable-smart-autostart] installing ${UNIT}.service ..."
-sudo cp "${PROJECT_DIR}/smart.service" "/etc/systemd/system/${UNIT}.service"
+install_unit "${UNIT}"
+
+if [ -f "${PROJECT_DIR}/${GUARD}.service" ]; then
+  install_unit "${GUARD}"
+  sudo cp "${PROJECT_DIR}/${GUARD}.timer" "/etc/systemd/system/${GUARD}.timer"
+fi
 
 if [ -f "${LEGACY_PATH}" ]; then
   echo "[enable-smart-autostart] removing legacy ${LEGACY} ..."
@@ -16,9 +34,18 @@ if [ -f "${LEGACY_PATH}" ]; then
   sudo rm -f "${LEGACY_PATH}"
 fi
 
+if systemctl is-masked --quiet "${UNIT}.service" 2>/dev/null; then
+  echo "[enable-smart-autostart] unmasking ${UNIT}.service ..."
+  sudo systemctl unmask "${UNIT}.service"
+fi
+
 sudo systemctl daemon-reload
-sudo systemctl enable "${UNIT}.service"
+sudo systemctl enable --now "${UNIT}.service"
 sudo systemctl reset-failed "${UNIT}.service" 2>/dev/null || true
+
+if [ -f "/etc/systemd/system/${GUARD}.timer" ]; then
+  sudo systemctl enable --now "${GUARD}.timer"
+fi
 
 ENABLED="$(systemctl is-enabled "${UNIT}.service" 2>/dev/null || echo unknown)"
 if [ "${ENABLED}" != "enabled" ]; then
@@ -26,11 +53,37 @@ if [ "${ENABLED}" != "enabled" ]; then
   exit 1
 fi
 
-if systemctl is-active --quiet "${UNIT}.service"; then
-  echo "[enable-smart-autostart] ${UNIT} already running"
-else
-  echo "[enable-smart-autostart] starting ${UNIT} ..."
-  sudo systemctl start "${UNIT}.service"
+if [ ! -L "${WANTS}" ]; then
+  echo "[enable-smart-autostart] ERROR: boot symlink missing: ${WANTS}" >&2
+  exit 1
 fi
 
-echo "[enable-smart-autostart] enabled=$(systemctl is-enabled ${UNIT}.service) active=$(systemctl is-active ${UNIT}.service)"
+if [ -f "/etc/systemd/system/${GUARD}.timer" ]; then
+  GUARD_STATE="$(systemctl is-enabled "${GUARD}.timer" 2>/dev/null || echo unknown)"
+  if [ "${GUARD_STATE}" != "enabled" ]; then
+    echo "[enable-smart-autostart] ERROR: ${GUARD}.timer is not enabled (got ${GUARD_STATE})" >&2
+    exit 1
+  fi
+  if [ ! -L "${TIMER_WANTS}" ]; then
+    echo "[enable-smart-autostart] ERROR: timer symlink missing: ${TIMER_WANTS}" >&2
+    exit 1
+  fi
+fi
+
+ACTIVE="$(systemctl is-active "${UNIT}.service" 2>/dev/null || echo unknown)"
+if [ "${ACTIVE}" != "active" ]; then
+  echo "[enable-smart-autostart] starting ${UNIT} ..."
+  sudo systemctl start "${UNIT}.service"
+  ACTIVE="$(systemctl is-active "${UNIT}.service" 2>/dev/null || echo unknown)"
+fi
+
+echo "[enable-smart-autostart] enabled=${ENABLED} active=${ACTIVE}"
+if [ -f "/etc/systemd/system/${GUARD}.timer" ]; then
+  echo "[enable-smart-autostart] boot-guard=$(systemctl is-enabled ${GUARD}.timer) next=$(systemctl show ${GUARD}.timer -p NextElapseUSecRealtime --value 2>/dev/null || echo n/a)"
+fi
+
+if [ "${ACTIVE}" != "active" ]; then
+  echo "[enable-smart-autostart] WARN: ${UNIT} not active — last boot log:" >&2
+  journalctl -u "${UNIT}.service" -b --no-pager -n 15 >&2 || true
+  exit 1
+fi

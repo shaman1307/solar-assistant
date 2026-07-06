@@ -71,6 +71,8 @@ $files = @(
     "scripts\restore-sa-defaults.sh",
     "scripts\enable-smart-autostart.sh",
     "smart.service",
+    "smart-boot-guard.service",
+    "smart-boot-guard.timer",
     # sa-config.yaml is Pi-local state (overrides, passwords) — never overwrite on deploy.
     "requirements.txt",
     "config-templates.yaml"
@@ -144,6 +146,7 @@ $remoteParts = @(
     "tar -xzf smart-deploy.tgz",
     "test -f scripts/reload-smart.sh",
     "test -f smart.service",
+    "test -f smart-boot-guard.timer",
     "rm -f smart-deploy.tgz",
     "chmod +x scripts/reload-smart.sh scripts/enable-smart-autostart.sh",
     "bash scripts/enable-smart-autostart.sh"

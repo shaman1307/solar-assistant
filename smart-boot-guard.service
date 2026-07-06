@@ -1,0 +1,7 @@
+[Unit]
+Description=Start Solar Smart after boot if main unit did not come up
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'systemctl is-enabled --quiet smart.service || exit 0; for attempt in 1 2 3 4; do systemctl is-active --quiet smart.service && exit 0; systemctl reset-failed smart.service 2>/dev/null || true; systemctl start smart.service || true; sleep 15; done; systemctl is-active --quiet smart.service'

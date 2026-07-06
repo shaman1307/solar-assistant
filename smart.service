@@ -1,10 +1,11 @@
 [Unit]
 Description=Solar Smart
-After=network-online.target local-fs.target
-Wants=network-online.target
-# Start after SA bridge when present; smart still runs if influx-bridge is slow.
-After=influx-bridge.service
-StartLimitBurst=10
+Documentation=file:/home/solar-assistant/project/README.md
+After=local-fs.target
+# Smart uses SolarAssistant on localhost — do not block on WAN (network-online)
+# or influx-bridge boot; slow SA after reboot left smart disabled.
+DefaultDependencies=yes
+StartLimitBurst=15
 StartLimitIntervalSec=600
 
 [Service]
@@ -13,8 +14,9 @@ User=solar-assistant
 Group=solar-assistant
 WorkingDirectory=/home/solar-assistant/project
 # SD card / venv can lag behind multi-user.target on Pi Zero.
-ExecStartPre=/bin/bash -c 'for i in $(seq 1 45); do test -x /home/solar-assistant/project/.venv/bin/uvicorn && exit 0; sleep 2; done; echo "uvicorn missing after boot wait" >&2; exit 1'
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 90); do test -x /home/solar-assistant/project/.venv/bin/uvicorn && exit 0; sleep 2; done; echo "uvicorn missing after boot wait" >&2; exit 1'
 # Do NOT use fuser -k here: it can stall the Pi and disturb co-hosted SA/Influx.
+TimeoutStartSec=180
 TimeoutStopSec=30
 KillMode=mixed
 KillSignal=SIGTERM
@@ -29,7 +31,7 @@ ExecStart=/home/solar-assistant/project/.venv/bin/uvicorn src.main:app \
     --log-level info \
     --no-access-log
 Restart=always
-RestartSec=30s
+RestartSec=15s
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=smart

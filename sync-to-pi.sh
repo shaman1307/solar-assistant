@@ -83,6 +83,8 @@ files=(
   scripts/restore-sa-defaults.sh
   scripts/enable-smart-autostart.sh
   smart.service
+  smart-boot-guard.service
+  smart-boot-guard.timer
   requirements.txt
   config-templates.yaml
 )
@@ -138,6 +140,7 @@ remote_cmd="cd $REMOTE_DIR"
 remote_cmd+="; tar -xzf smart-deploy.tgz"
 remote_cmd+="; test -f scripts/reload-smart.sh"
 remote_cmd+="; test -f smart.service"
+remote_cmd+="; test -f smart-boot-guard.timer"
 remote_cmd+="; rm -f smart-deploy.tgz"
 remote_cmd+="; chmod +x scripts/reload-smart.sh scripts/enable-smart-autostart.sh"
 remote_cmd+="; bash scripts/enable-smart-autostart.sh"

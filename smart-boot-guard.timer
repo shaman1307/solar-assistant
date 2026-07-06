@@ -1,0 +1,11 @@
+[Unit]
+Description=Retry Solar Smart start after reboot
+
+[Timer]
+OnBootSec=90s
+AccuracySec=30s
+Persistent=true
+Unit=smart-boot-guard.service
+
+[Install]
+WantedBy=timers.target
