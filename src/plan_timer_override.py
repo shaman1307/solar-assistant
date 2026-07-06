@@ -80,6 +80,24 @@ def set_timer_schedule_override(
     return get_timer_overrides_for_date(cfg, date_str)
 
 
+def timer_hour_has_grid_charge(timer_txt: str, hour: int) -> bool:
+    """True when any grid-charge segment overlaps this clock hour."""
+    if not str(timer_txt or "").strip():
+        return False
+    hour_start = int(hour) * 60
+    hour_end = hour_start + 60
+    for seg in parse_timer_schedule_segments(timer_txt):
+        if seg.get("kind") != "chg":
+            continue
+        from_min = _hhmm_to_minute_of_day(seg["from"])
+        to_min = _hhmm_to_minute_of_day(seg["to"])
+        if from_min is None or to_min is None:
+            continue
+        if from_min < hour_end and to_min > hour_start:
+            return True
+    return False
+
+
 def hour_control_from_timer_override(
     hour: int,
     quarter: int,
@@ -95,6 +113,7 @@ def hour_control_from_timer_override(
     slot_end = slot_start + 15
     grid_charge_kw = 0.0
     battery_export_kwh = 0.0
+    load_from_grid = timer_hour_has_grid_charge(timer_txt, hour)
 
     for seg in parse_timer_schedule_segments(timer_txt):
         from_min = _hhmm_to_minute_of_day(seg["from"])
@@ -105,11 +124,11 @@ def hour_control_from_timer_override(
             continue
         power = float(seg["power_kw"])
         if seg["kind"] == "chg":
-            grid_charge_kw = max(grid_charge_kw, power)
+            grid_charge_kw = max(grid_charge_kw, power * step_scale)
         elif seg["kind"] == "dis":
             battery_export_kwh = max(battery_export_kwh, power * step_scale)
 
-    return HourControl(grid_charge_kw, battery_export_kwh)
+    return HourControl(grid_charge_kw, battery_export_kwh, load_from_grid)
 
 
 def _soc_at_hour_start(plan: dict[str, Any], hour: int) -> float | None:
@@ -257,6 +276,7 @@ def replay_day_plan_with_timer_overrides(
                     "battery_delta": phys.battery_delta,
                     "battery_export_kwh": batt_exp,
                     "grid_charge_kw": ctrl.grid_charge_kw,
+                    "load_from_grid": ctrl.load_from_grid,
                     "ctrl_battery_export_kwh": ctrl.battery_export_kwh,
                     "soc_pct": soc_pct,
                     "soc_end": phys.soc_end,
@@ -342,6 +362,7 @@ def replay_day_plan_with_timer_overrides(
                 "battery_delta": phys.battery_delta,
                 "battery_export_kwh": batt_exp,
                 "grid_charge_kw": ctrl.grid_charge_kw,
+                "load_from_grid": ctrl.load_from_grid,
                 "ctrl_battery_export_kwh": ctrl.battery_export_kwh,
                 "soc_pct": soc_pct,
                 "soc_end": phys.soc_end,

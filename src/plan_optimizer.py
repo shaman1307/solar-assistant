@@ -127,6 +127,7 @@ def hourly_cash_pln(
 class HourControl:
     grid_charge_kw: float
     battery_export_kwh: float
+    load_from_grid: bool = False
 
 
 @dataclass
@@ -162,15 +163,21 @@ def simulate_hour(
 
     deficit, pv_surplus = pv_load_energy_split(pv, load, eta_pv_load=eta_pv_load)
     available = max(0.0, soc - min_kwh)
+    grid_charging = control.grid_charge_kw > epsilon
+    load_on_grid = grid_charging or control.load_from_grid
 
     if deficit > epsilon:
-        supplied = min(deficit, available * eta_out)
-        withdraw_load = supplied / eta_out if eta_out > 0 else 0.0
-        soc -= withdraw_load
-        battery_delta -= withdraw_load
-        available = max(0.0, soc - min_kwh)
-        if deficit > supplied + epsilon:
-            grid_import += deficit - supplied
+        if load_on_grid:
+            # Timer grid charge: load from grid in parallel; battery charges at set rate.
+            grid_import += deficit
+        else:
+            supplied = min(deficit, available * eta_out)
+            withdraw_load = supplied / eta_out if eta_out > 0 else 0.0
+            soc -= withdraw_load
+            battery_delta -= withdraw_load
+            available = max(0.0, soc - min_kwh)
+            if deficit > supplied + epsilon:
+                grid_import += deficit - supplied
 
     export_headroom = max(0.0, ac_cap_kw - load)
     batt_export = min(max(0.0, control.battery_export_kwh), export_headroom)
@@ -312,19 +319,24 @@ def _control_options(
     reserve_soc_kwh: float,
     allow_battery_export: bool,
 ) -> list[HourControl]:
-    opts = [HourControl(0.0, 0.0)]
     head_room = battery_cap - soc_kwh
-
-    if (
+    offpeak = buy_p <= offpeak_buy + epsilon
+    allow_charge = (
         _allow_grid_charge(
             soc_kwh, pv, load, buy_p, offpeak_buy, reserve_soc_kwh,
             min_kwh, eta_out, eta_pv_load, epsilon,
         )
         and head_room > epsilon
-    ):
-        rate = min(charge_batt_cap_kw, head_room)
-        if rate > epsilon:
-            opts.append(HourControl(rate, 0.0))
+    )
+    charge_rate = min(charge_batt_cap_kw, head_room) if allow_charge else 0.0
+
+    # Flat off-peak: fill battery while forward reserve exceeds SOC (no idle gaps).
+    if offpeak and reserve_soc_kwh > soc_kwh + epsilon and charge_rate > epsilon:
+        return [HourControl(charge_rate, 0.0)]
+
+    opts = [HourControl(0.0, 0.0)]
+    if charge_rate > epsilon:
+        opts.append(HourControl(charge_rate, 0.0))
 
     max_batt_export = _max_battery_export_kwh(
         soc_kwh, pv, load,

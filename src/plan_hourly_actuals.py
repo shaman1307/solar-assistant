@@ -559,6 +559,7 @@ def _hour_control_from_slot(slot: dict[str, Any]) -> "HourControl":
             or slot.get("battery_export_kwh")
             or 0.0
         ),
+        load_from_grid=bool(slot.get("load_from_grid")),
     )
 
 

@@ -298,6 +298,7 @@ def run_day_smart_q15_plan(
             "battery_delta": phys.battery_delta,
             "battery_export_kwh": batt_exp,
             "grid_charge_kw": ctrl.grid_charge_kw,
+            "load_from_grid": ctrl.load_from_grid,
             "ctrl_battery_export_kwh": ctrl.battery_export_kwh,
             "soc_pct": soc_pct,
             "soc_end": phys.soc_end,
