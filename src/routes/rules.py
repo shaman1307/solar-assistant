@@ -144,7 +144,8 @@ async def api_apply_plan() -> dict[str, Any]:
         )
     now = now_warsaw()
     hour = now.hour
-    if not hour_has_timer_schedule(sim_result.get("rows") or [], hour):
+    rows = sim_result.get("rows") or []
+    if not hour_has_timer_schedule(rows, hour):
         return {
             "ok": True,
             "skipped": True,
@@ -154,7 +155,7 @@ async def api_apply_plan() -> dict[str, Any]:
         }
     rules = await sa_client.get_rules(cfg)
     schedule = build_sa_schedule_from_hour_row(
-        sim_result.get("rows") or [],
+        rows,
         hour,
         cfg,
         existing=rules,

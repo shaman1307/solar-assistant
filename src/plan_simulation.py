@@ -315,11 +315,30 @@ async def build_plan_simulation(
 async def hourly_plan_refresh(cfg: dict) -> dict[str, Any]:
     """Invalidate data caches, recompute plan, store result (scheduler every 15 min)."""
     log.info("Plan Simulation refresh …")
+    now = now_warsaw()
+    old = get_cached_plan()
     result = await build_plan_simulation(
         cfg,
         force_refresh=True,
         invalidate_inputs=True,
     )
+    # Freeze Timer Schedule for the current hour between :00 and :59.
+    # The plan may refresh every 15 minutes, but current-hour Timer Schedule must not change.
+    if old and isinstance(old, dict) and now.minute != 0:
+        old_rows = old.get("rows") or []
+        new_rows = result.get("rows") or []
+        old_row = next(
+            (r for r in old_rows if r.get("hour") == now.hour and r.get("start") != "TOTAL"),
+            None,
+        )
+        if old_row is not None:
+            frozen_timer = old_row.get("timer_schedule")
+            for i, r in enumerate(new_rows):
+                if r.get("hour") == now.hour and r.get("start") != "TOTAL":
+                    if not r.get("timer_schedule_manual"):
+                        new_rows[i] = {**r, "timer_schedule": frozen_timer}
+                        result["rows"] = new_rows
+                    break
     log.info(
         "Plan updated %s — Δ=%.2f kWh, export_hours=%s",
         result["computed_at"],

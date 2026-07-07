@@ -306,7 +306,8 @@ def test_sync_blended_current_hour_row_sets_export_action():
     ]
     row = {
         "action": "Discharging to Load",
-        "timer_schedule": "",
+        # Timer Schedule for the current hour is frozen (computed at :00).
+        "timer_schedule": "Dis 07:00-08:00 8.0kW cap16%",
         "buy_price": 1.24,
         "rce_price": 0.69,
         "g12_zone": "peak",
@@ -350,4 +351,4 @@ def test_sync_blended_current_hour_row_sets_export_action():
 
     assert row["action"] == ACTION_DISCHARGE_GRID
     assert row["grid_export"] == 5.0
-    assert "Dis 07:00-08:00" in row["timer_schedule"]
+    assert row["timer_schedule"] == "Dis 07:00-08:00 8.0kW cap16%"

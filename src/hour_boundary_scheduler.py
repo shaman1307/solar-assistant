@@ -19,7 +19,11 @@ from . import sa_client
 from .config import load_config
 from .influxdb import now_warsaw
 from .plan_simulation import build_plan_simulation, get_cached_plan
-from .timer_plan import build_sa_schedule_from_hour_row, hour_has_timer_schedule
+from .timer_plan import (
+    build_sa_schedule_from_hour_row,
+    hour_has_timer_schedule,
+    timer_discharge_active_at,
+)
 from .work_mode_scheduler import (
     on_grid_job_applied,
     run_work_mode_hour_start,
@@ -86,8 +90,19 @@ async def _sync_timer_from_hour_row(
     timer_txt = str(row.get("timer_schedule") or "").strip()
     status["timer_schedule"] = timer_txt
 
+    if not timer_txt:
+        status["skipped"] = True
+        status["skip_reason"] = "empty_timer_schedule"
+        status["ok"] = True
+        return status
+
     rules = await sa_client.get_rules(cfg)
-    schedule = build_sa_schedule_from_hour_row(rows, hour, cfg, existing=rules)
+    rows_for_build = list(rows)
+    for i, r in enumerate(rows_for_build):
+        if r.get("hour") == hour and r.get("start") != "TOTAL":
+            rows_for_build[i] = {**r, "timer_schedule": timer_txt}
+            break
+    schedule = build_sa_schedule_from_hour_row(rows_for_build, hour, cfg, existing=rules)
     if not schedule:
         status["skipped"] = True
         status["skip_reason"] = "unparsed_timer_schedule"
@@ -164,7 +179,16 @@ async def run_hour_boundary_start() -> dict[str, Any]:
             limit_status = await run_work_mode_limit_home()
             status["work_mode_limit"] = limit_status
             if limit_status.get("limit_due"):
-                status["timed_power"] = await _clear_timed_power_flags(cfg)
+                row = next(
+                    (r for r in rows if r.get("hour") == hour and r.get("start") != "TOTAL"),
+                    None,
+                )
+                timer_txt = str(row.get("timer_schedule") or "").strip() if row else ""
+                discharge_still_active = bool(
+                    timer_txt and timer_discharge_active_at(timer_txt, now),
+                )
+                if not discharge_still_active:
+                    status["timed_power"] = await _clear_timed_power_flags(cfg)
 
         wm = status["work_mode"]
         ts = status["timer_sync"]

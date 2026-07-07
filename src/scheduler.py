@@ -66,7 +66,7 @@ async def run_nightly_forecast_cache() -> dict[str, Any]:
 
 
 async def run_quarter_plan_refresh(*, sync_sa: bool | None = None) -> dict[str, Any]:
-    """:00/:15/:30/:45 — refresh plan cache only (SA writes at :00, early export, :58)."""
+    """:00/:15/:30/:45 — refresh plan cache; SA timer sync when plan row changes mid-hour."""
     del sync_sa
     global _last_hourly_sync
 

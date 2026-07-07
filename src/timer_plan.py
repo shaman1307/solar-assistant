@@ -774,6 +774,34 @@ def parse_timer_schedule_segments(text: str) -> list[dict[str, Any]]:
     return segments
 
 
+def quarter_start_minute(now: datetime) -> int:
+    """Start of the current 15-min slot (minute of day)."""
+    return now.hour * 60 + (now.minute // 15) * 15
+
+
+def clip_timer_schedule_not_before(timer_txt: str, earliest_from_min: int) -> str:
+    """Trim timer segments so none start before *earliest_from_min* (no retroactive slots)."""
+    if not str(timer_txt or "").strip():
+        return ""
+    parts: list[str] = []
+    for seg in parse_timer_schedule_segments(timer_txt):
+        from_min = _hhmm_to_minute_of_day(seg["from"])
+        to_min = _hhmm_to_minute_of_day(seg["to"])
+        if from_min is None or to_min is None:
+            continue
+        if to_min <= earliest_from_min:
+            continue
+        clip_from = max(from_min, earliest_from_min)
+        if to_min - clip_from < MIN_TIMER_BLOCK_MINUTES:
+            continue
+        prefix = "Chg" if seg["kind"] == "chg" else "Dis"
+        parts.append(
+            f"{prefix} {_min_to_hhmm(clip_from)}-{seg['to']} "
+            f"{seg['power_kw']:g}kW cap{seg['capacity_pct']}%"
+        )
+    return " | ".join(parts)
+
+
 def _hhmm_to_minute_of_day(hhmm: str) -> int | None:
     parts = str(hhmm).strip().split(":")
     if len(parts) != 2:
@@ -1035,6 +1063,57 @@ def build_sa_schedule_from_hour_row(
         "charge_slots": charge_slots,
         "discharge_slots": discharge_slots,
     }
+
+
+def _timer_slot_matches(sa_slot: dict[str, Any], exp_slot: dict[str, Any]) -> bool:
+    """True when SA slot 1 matches the plan-derived slot (times, power, cap)."""
+    if not _slot_is_active(exp_slot):
+        return not _slot_is_active(sa_slot)
+    if not _slot_is_active(sa_slot):
+        return False
+    for key in ("from", "to"):
+        if str(sa_slot.get(key) or "") != str(exp_slot.get(key) or ""):
+            return False
+    if abs(float(sa_slot.get("power_kw") or 0) - float(exp_slot.get("power_kw") or 0)) > 0.05:
+        return False
+    sa_cap = int(round(float(sa_slot.get("capacity_pct") or 0)))
+    exp_cap = int(round(float(exp_slot.get("capacity_pct") or 0)))
+    return sa_cap == exp_cap
+
+
+def sa_schedule_matches_plan_row(
+    rows: list[dict],
+    hour: int,
+    cfg: dict,
+    rules: dict[str, Any],
+) -> bool:
+    """True when live SA timed charge/discharge flags and slot 1 match the plan hour row."""
+    expected = build_sa_schedule_from_hour_row(rows, hour, cfg, existing=rules)
+    if expected is None:
+        return not rules.get("timed_charge_enabled") and not rules.get("timed_discharge_enabled")
+
+    if bool(rules.get("timed_charge_enabled")) != bool(expected.get("timed_charge_enabled")):
+        return False
+    if bool(rules.get("timed_discharge_enabled")) != bool(expected.get("timed_discharge_enabled")):
+        return False
+
+    sa_charge = (rules.get("charge_slots") or [{}])[0]
+    exp_charge = (expected.get("charge_slots") or [{}])[0]
+    if expected.get("timed_charge_enabled"):
+        if not _timer_slot_matches(sa_charge, exp_charge):
+            return False
+    elif _slot_is_active(sa_charge):
+        return False
+
+    sa_dis = (rules.get("discharge_slots") or [{}])[0]
+    exp_dis = (expected.get("discharge_slots") or [{}])[0]
+    if expected.get("timed_discharge_enabled"):
+        if not _timer_slot_matches(sa_dis, exp_dis):
+            return False
+    elif _slot_is_active(sa_dis):
+        return False
+
+    return True
 
 
 def format_hour_timer_schedule(hour: int, schedule: dict[str, Any]) -> str:

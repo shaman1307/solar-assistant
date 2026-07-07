@@ -1011,10 +1011,7 @@ def sync_blended_current_hour_row(
 ) -> None:
     """Apply blended q15 battery/grid to an in-progress EA row; keep display PV/load/SOC."""
     from .timer_plan import (
-        ACTION_DISCHARGE_GRID,
-        build_hour_timer_schedule,
         classify_action,
-        timer_discharge_active_at,
     )
 
     apply_q15_physics_to_row(row, q15)
@@ -1034,28 +1031,9 @@ def sync_blended_current_hour_row(
     )
     if row.get("timer_schedule_manual"):
         return
-    timer_txt = ""
-    if (
-        sa_timer_txt
-        and now is not None
-        and (
-            timer_discharge_active_at(sa_timer_txt, now)
-            or float(row.get("grid_export") or 0) > epsilon
-        )
-    ):
-        timer_txt = sa_timer_txt
-    elif hour is not None and opt_slots is not None:
-        timer_txt = build_hour_timer_schedule(
-            hour,
-            opt_slots,
-            cfg,
-            action=row["action"],
-            grid_export=float(row.get("grid_export") or 0),
-            epsilon=epsilon,
-        )
-    if not timer_txt and row["action"] == ACTION_DISCHARGE_GRID and sa_timer_txt:
-        timer_txt = sa_timer_txt
-    row["timer_schedule"] = timer_txt
+    # IMPORTANT: Timer Schedule for the current hour must not change mid-hour.
+    # It is computed at :00 and then stays frozen for display until the hour ends.
+    return
 
 
 def replay_forward_soc_on_rows(
