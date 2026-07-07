@@ -108,6 +108,32 @@ def test_limit_home_due_when_current_timer_empty():
     assert end is None
 
 
+def test_limit_home_not_due_when_plan_timer_empty_but_sa_slot_active():
+    """07:30 — plan cell cleared by refresh but SA discharge 07:00-08:00 still running."""
+    now = datetime(2026, 7, 7, 7, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
+    sa_rules = {
+        "timed_discharge_enabled": False,
+        "discharge_slots": [{
+            "from": "07:00", "to": "08:00", "power_kw": 8.0, "capacity_pct": 16,
+        }],
+    }
+    due, end = limit_home_due_for_timer(
+        "", now, plan_hour=7, sa_rules=sa_rules,
+    )
+    assert due is False
+    assert end is None
+
+
+def test_limit_home_not_due_when_plan_timer_empty_but_row_has_export():
+    now = datetime(2026, 7, 7, 7, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
+    row = {"grid_export": 5.1, "action": "Discharging to Grid and Load"}
+    due, end = limit_home_due_for_timer(
+        "", now, plan_hour=7, plan_row=row,
+    )
+    assert due is False
+    assert end is None
+
+
 def test_limit_home_not_due_when_current_discharge_active():
     txt = "Dis 21:00-22:00 6.96kW cap17%"
     now = datetime(2026, 6, 26, 21, 15, tzinfo=ZoneInfo("Europe/Warsaw"))

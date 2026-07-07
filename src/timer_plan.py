@@ -838,6 +838,89 @@ def timer_discharge_active_at(timer_txt: str, now: datetime) -> bool:
     return False
 
 
+def timer_covers_quarter(timer_txt: str, hour: int, quarter: int) -> bool:
+    """True when any discharge segment overlaps a 15-min slot in *hour*."""
+    if not str(timer_txt or "").strip():
+        return False
+    slot_start = int(hour) * 60 + int(quarter) * 15
+    slot_end = slot_start + 15
+    for seg in parse_timer_schedule_segments(timer_txt):
+        if seg.get("kind") != "dis":
+            continue
+        from_min = _hhmm_to_minute_of_day(seg["from"])
+        to_min = _hhmm_to_minute_of_day(seg["to"])
+        if from_min is None or to_min is None:
+            continue
+        if slot_start < to_min and slot_end > from_min:
+            return True
+    return False
+
+
+def sa_discharge_slot_active_at(rules: dict[str, Any] | None, now: datetime) -> bool:
+    """True when *now* is inside any active SA discharge slot window."""
+    if not rules:
+        return False
+    now_min = now.hour * 60 + now.minute
+    for slot in rules.get("discharge_slots") or []:
+        from_t = str(slot.get("from") or "00:00")
+        to_t = str(slot.get("to") or "00:00")
+        if from_t == "00:00" and to_t == "00:00":
+            continue
+        power_kw = float(slot.get("power_kw") or 0.0)
+        if power_kw <= 0 and slot.get("power_w") is not None:
+            power_kw = float(slot.get("power_w") or 0) / 1000.0
+        if power_kw <= 0:
+            continue
+        from_min = _hhmm_to_minute_of_day(from_t)
+        to_min = _hhmm_to_minute_of_day(to_t)
+        if from_min is None or to_min is None:
+            continue
+        if from_min <= now_min < to_min:
+            return True
+    return False
+
+
+def sa_discharge_timer_for_hour(
+    rules: dict[str, Any] | None,
+    hour: int,
+    *,
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    """Timer Schedule cell text from live SA discharge slot overlapping *hour*.
+
+    Uses slot window even when timed_discharge_enabled is false — SA often clears
+    the checkbox before the slot end while export is still winding down.
+    """
+    if not rules:
+        return ""
+    hour_start = int(hour) * 60
+    hour_end = hour_start + 60
+    min_soc = int(plan_min_soc_pct(cfg)) if cfg else None
+    for slot in rules.get("discharge_slots") or []:
+        from_t = str(slot.get("from") or "00:00")
+        to_t = str(slot.get("to") or "00:00")
+        if from_t == "00:00" and to_t == "00:00":
+            continue
+        from_min = _hhmm_to_minute_of_day(from_t)
+        to_min = _hhmm_to_minute_of_day(to_t)
+        if from_min is None or to_min is None:
+            continue
+        if from_min >= hour_end or to_min <= hour_start:
+            continue
+        power_kw = float(slot.get("power_kw") or 0.0)
+        if power_kw <= 0 and slot.get("power_w") is not None:
+            power_kw = float(slot.get("power_w") or 0) / 1000.0
+        cap_raw = slot.get("capacity_pct")
+        if cap_raw is not None:
+            cap = int(round(float(cap_raw)))
+        elif min_soc is not None:
+            cap = min_soc
+        else:
+            continue
+        return f"Dis {from_t}-{to_t} {power_kw:g}kW cap{cap}%"
+    return ""
+
+
 _DISCHARGE_END_LOOKBACK_MIN = 15
 
 

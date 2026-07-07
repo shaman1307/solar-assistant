@@ -291,3 +291,63 @@ def test_sync_blended_current_hour_row_matches_q15_sums():
     assert row["bat_charge"] == 0.12
     assert row["bat_discharge"] == 0.05
     assert row["battery"] == 0.07
+
+
+def test_sync_blended_current_hour_row_sets_export_action():
+    q15 = [
+        {"quarter": 0, "production": 0.1, "consumption": 0.13, "soc": 64.0,
+         "battery": -1.4, "grid_import": 0.0, "grid_export": 1.3},
+        {"quarter": 1, "production": 0.09, "consumption": 0.13, "soc": 59.0,
+         "battery": -2.1, "grid_import": 0.0, "grid_export": 1.9},
+        {"quarter": 2, "production": 0.2, "consumption": 0.14, "soc": 54.0,
+         "battery": -1.9, "grid_import": 0.0, "grid_export": 1.8},
+        {"quarter": 3, "production": 0.03, "consumption": 0.14, "soc": 54.0,
+         "battery": -0.1, "grid_import": 0.0, "grid_export": 0.0},
+    ]
+    row = {
+        "action": "Discharging to Load",
+        "timer_schedule": "",
+        "buy_price": 1.24,
+        "rce_price": 0.69,
+        "g12_zone": "peak",
+    }
+    cfg = {
+        "grid": {
+            "g12": {
+                "peak_price_pln_kwh": 1.0,
+                "offpeak_price_pln_kwh": 0.5,
+                "peak_energy_only_pln_kwh": 0.6,
+                "offpeak_energy_only_pln_kwh": 0.4,
+            },
+            "feed_in_price_pln": 0.2,
+        },
+        "battery": {"capacity_kwh": 20.0},
+        "simulation": {"min_soc_pct": 16},
+    }
+    rules = {
+        "timed_discharge_enabled": True,
+        "discharge_slots": [{
+            "from": "07:00", "to": "08:00", "power_kw": 8.0, "capacity_pct": 16,
+        }],
+    }
+    from datetime import datetime
+    from src.timer_plan import ACTION_DISCHARGE_GRID, sa_discharge_timer_for_hour
+
+    sa_timer = sa_discharge_timer_for_hour(rules, 7)
+    sync_blended_current_hour_row(
+        row,
+        q15,
+        production=0.42,
+        consumption=0.54,
+        soc=54.0,
+        cfg=cfg,
+        epsilon=0.05,
+        hour=7,
+        opt_slots=[],
+        sa_timer_txt=sa_timer,
+        now=datetime(2026, 7, 7, 7, 47),
+    )
+
+    assert row["action"] == ACTION_DISCHARGE_GRID
+    assert row["grid_export"] == 5.0
+    assert "Dis 07:00-08:00" in row["timer_schedule"]

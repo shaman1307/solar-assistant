@@ -618,9 +618,13 @@ def simulate_blended_current_hour_q15(
     opt_slots: list[dict[str, Any]],
     series_10min: dict[str, list[float | None]] | None,
     cfg: dict,
+    *,
+    sa_timer_txt: str | None = None,
 ) -> tuple[list[dict[str, Any]], float]:
     """Blended hour: DB bat/grid on frozen+refresh q slots; sim on tail; SOC chains both."""
     from .plan_optimizer import simulate_hour
+    from .plan_timer_override import hour_control_from_timer_override
+    from .timer_plan import timer_covers_quarter
     from .simulation_config import (
         get_simulation_params,
         plan_min_soc_kwh,
@@ -667,9 +671,23 @@ def simulate_blended_current_hour_q15(
             })
             continue
 
-        opt = opt_slots[q] if q < len(opt_slots) else {}
-        ctrl = _hour_control_from_slot(opt)
-        reserve = opt.get("reserve_kwh")
+        if sa_timer_txt and (
+            timer_covers_quarter(sa_timer_txt, hour, q)
+            or (
+                q > refresh >= 0
+                and any(
+                    float(s.get("grid_export") or 0) > epsilon
+                    for s in q15
+                    if s.get("from_actual")
+                )
+            )
+        ):
+            ctrl = hour_control_from_timer_override(hour, q, sa_timer_txt)
+            reserve = None
+        else:
+            opt = opt_slots[q] if q < len(opt_slots) else {}
+            ctrl = _hour_control_from_slot(opt)
+            reserve = opt.get("reserve_kwh")
         phys = simulate_hour(
             soc_kwh, pv, load, ctrl,
             battery_cap=battery_cap,
@@ -900,6 +918,7 @@ def build_blended_current_hour_q15(
     cfg: dict,
     pv_hourly: float = 0.0,
     load_hourly: float = 0.0,
+    sa_timer_txt: str | None = None,
 ) -> list[dict[str, Any]]:
     """q15 for in-progress hour: blended PV/load per slot → sim chain for bat/grid/SOC."""
     slots = blended_q15_pv_load_slots(
@@ -922,6 +941,7 @@ def build_blended_current_hour_q15(
         opt_slots,
         series_10min,
         cfg,
+        sa_timer_txt=sa_timer_txt,
     )
     return q15
 
@@ -984,8 +1004,19 @@ def sync_blended_current_hour_row(
     soc: float,
     cfg: dict,
     epsilon: float,
+    hour: int | None = None,
+    opt_slots: list[dict[str, Any]] | None = None,
+    sa_timer_txt: str | None = None,
+    now: datetime | None = None,
 ) -> None:
     """Apply blended q15 battery/grid to an in-progress EA row; keep display PV/load/SOC."""
+    from .timer_plan import (
+        ACTION_DISCHARGE_GRID,
+        build_hour_timer_schedule,
+        classify_action,
+        timer_discharge_active_at,
+    )
+
     apply_q15_physics_to_row(row, q15)
     row["production"] = round(production, 3)
     row["consumption"] = round(consumption, 3)
@@ -993,6 +1024,38 @@ def sync_blended_current_hour_row(
     row["soc_blended"] = True
 
     refresh_row_grid_cash(row, cfg, epsilon=epsilon)
+    row["action"] = classify_action(
+        bat_charge=float(row.get("bat_charge") or 0),
+        bat_discharge=float(row.get("bat_discharge") or 0),
+        grid_import=float(row.get("grid_import") or 0),
+        grid_export=float(row.get("grid_export") or 0),
+        production=float(row.get("production") or 0),
+        epsilon=epsilon,
+    )
+    if row.get("timer_schedule_manual"):
+        return
+    timer_txt = ""
+    if (
+        sa_timer_txt
+        and now is not None
+        and (
+            timer_discharge_active_at(sa_timer_txt, now)
+            or float(row.get("grid_export") or 0) > epsilon
+        )
+    ):
+        timer_txt = sa_timer_txt
+    elif hour is not None and opt_slots is not None:
+        timer_txt = build_hour_timer_schedule(
+            hour,
+            opt_slots,
+            cfg,
+            action=row["action"],
+            grid_export=float(row.get("grid_export") or 0),
+            epsilon=epsilon,
+        )
+    if not timer_txt and row["action"] == ACTION_DISCHARGE_GRID and sa_timer_txt:
+        timer_txt = sa_timer_txt
+    row["timer_schedule"] = timer_txt
 
 
 def replay_forward_soc_on_rows(

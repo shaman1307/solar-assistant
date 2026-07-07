@@ -42,7 +42,7 @@ from .plan_timer_override import (
     get_timer_overrides_for_date,
 )
 from .simulation_config import get_simulation_params, plan_min_soc_pct
-from .timer_plan import derive_timer_schedule_q15, build_hour_timer_schedule
+from .timer_plan import derive_timer_schedule_q15, sa_discharge_timer_for_hour
 
 Q15_PER_HOUR = 4
 STEP_SCALE = 1.0 / Q15_PER_HOUR
@@ -353,6 +353,7 @@ def run_simulation(
                 slots_now = smart_today["q15_by_hour"].get(h) or []
                 fpv_h = float(pv_merged[h]) if h < len(pv_merged) else 0.0
                 flo_h = float(load_merged[h]) if h < len(load_merged) else 0.0
+                sa_timer = sa_discharge_timer_for_hour(rules, h, cfg=cfg)
                 blended_q15 = build_blended_current_hour_q15(
                     h,
                     now,
@@ -364,6 +365,7 @@ def run_simulation(
                     cfg=cfg,
                     pv_hourly=fpv_h,
                     load_hourly=flo_h,
+                    sa_timer_txt=sa_timer or None,
                 )
                 pv_blend = round(sum(float(s.get("production") or 0) for s in blended_q15), 3)
                 load_blend = round(sum(float(s.get("consumption") or 0) for s in blended_q15), 3)
@@ -376,6 +378,10 @@ def run_simulation(
                     soc=soc_blend,
                     cfg=cfg,
                     epsilon=epsilon,
+                    hour=h,
+                    opt_slots=slots_now,
+                    sa_timer_txt=sa_timer or None,
+                    now=now,
                 )
                 blended_anchor_kwh = (soc_blend / 100.0) * battery_cap
                 blended_row_idx = len(all_rows)

@@ -17,9 +17,11 @@ from .influxdb import now_warsaw
 from .plan_simulation import build_plan_simulation, get_cached_plan
 from .timer_plan import (
     ACTION_CHARGE_GRID,
+    GRID_EXPORT_ACTION_MIN_KWH,
     hour_has_timer_schedule,
     normalize_action,
     plan_row_grid_export_kwh,
+    sa_discharge_slot_active_at,
     timer_discharge_active_at,
     timer_discharge_end_due,
 )
@@ -235,14 +237,22 @@ def limit_home_due_for_timer(
     now,
     *,
     plan_hour: int,
+    plan_row: dict[str, Any] | None = None,
+    sa_rules: dict[str, Any] | None = None,
 ) -> tuple[bool, str | None]:
     """Whether Limit home applies for the current hour's Timer Schedule cell."""
     timer_txt = str(timer_txt or "").strip()
-    if not timer_txt:
-        return True, None
-    if timer_discharge_active_at(timer_txt, now):
+    if timer_txt:
+        if timer_discharge_active_at(timer_txt, now):
+            return False, None
+        return timer_discharge_end_due(timer_txt, now, plan_hour=plan_hour)
+
+    # Plan cell empty — do not cut discharge while SA slot or in-hour export is active.
+    if sa_rules and sa_discharge_slot_active_at(sa_rules, now):
         return False, None
-    return timer_discharge_end_due(timer_txt, now, plan_hour=plan_hour)
+    if plan_row and plan_row_grid_export_kwh(plan_row) > GRID_EXPORT_ACTION_MIN_KWH:
+        return False, None
+    return True, None
 
 
 async def run_work_mode_limit_home() -> dict[str, Any]:
@@ -294,7 +304,14 @@ async def run_work_mode_limit_home() -> dict[str, Any]:
             return status
 
         timer_txt = str(row.get("timer_schedule") or "").strip()
-        is_due, due_end = limit_home_due_for_timer(timer_txt, now, plan_hour=hour)
+        rules = await sa_client.get_rules(cfg)
+        is_due, due_end = limit_home_due_for_timer(
+            timer_txt,
+            now,
+            plan_hour=hour,
+            plan_row=row,
+            sa_rules=rules,
+        )
         if not is_due:
             status["skipped"] = True
             status["skip_reason"] = "discharge_not_ended"
