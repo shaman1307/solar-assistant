@@ -18,7 +18,11 @@ from apscheduler.triggers.cron import CronTrigger
 from . import forecast as forecast_mod
 from . import rce as rce_mod
 from .config import load_config, save_config
-from .hour_boundary_scheduler import register_hour_boundary_jobs, run_hour_boundary_start
+from .hour_boundary_scheduler import (
+    register_hour_boundary_jobs,
+    run_hour_boundary_limit_home,
+    run_hour_boundary_start,
+)
 from .plan_simulation import fetch_plan_inputs, hourly_plan_refresh
 from .simulation import compute_balance_delta
 
@@ -46,9 +50,9 @@ def _smart_mode_enabled(cfg: dict) -> bool:
     return bool(cfg.get("smart_mode_enabled", False))
 
 
-async def _refresh_plan_cache(cfg: dict) -> dict[str, Any]:
-    """Recompute Energy arbitrage plan and store backend cache (always runs)."""
-    log.info("Plan cache refresh — recompute simulation, RCE, forecast, buy tariff …")
+async def _refresh_stored_plan(cfg: dict) -> dict[str, Any]:
+    """Recompute Energy arbitrage plan and persist to SQLite plan_latest."""
+    log.info("Plan refresh — recompute simulation, RCE, forecast, buy tariff …")
     return await hourly_plan_refresh(cfg)
 
 
@@ -66,7 +70,7 @@ async def run_nightly_forecast_cache() -> dict[str, Any]:
 
 
 async def run_quarter_plan_refresh(*, sync_sa: bool | None = None) -> dict[str, Any]:
-    """:00/:15/:30/:45 — refresh plan cache; SA timer sync when plan row changes mid-hour."""
+    """:00/:15/:30/:45 — refresh SQLite plan; SA sync when smart mode enabled."""
     del sync_sa
     global _last_hourly_sync
 
@@ -103,17 +107,18 @@ async def run_quarter_plan_refresh(*, sync_sa: bool | None = None) -> dict[str, 
             status["last_om_refresh"] = None
             log.warning("Open-Meteo PV refresh failed: %s", exc)
 
-        sim_result = await _refresh_plan_cache(cfg)
+        sim_result = await _refresh_stored_plan(cfg)
         status["plan_cache_refreshed"] = True
         status["plan_computed_at"] = sim_result.get("computed_at")
         schedule = sim_result["next_hour_schedule"]
         status["planned_action"] = schedule.get("planned_action")
         status["next_hour_schedule"] = schedule
 
-        if _smart_mode_enabled(cfg) and now.minute == 0:
-            from .hour_boundary_scheduler import run_hour_boundary_start
-
-            status["hour_boundary"] = await run_hour_boundary_start()
+        if _smart_mode_enabled(cfg):
+            if now.minute == 0:
+                status["hour_boundary"] = await run_hour_boundary_start()
+            elif now.minute in (15, 30, 45):
+                status["hour_boundary"] = await run_hour_boundary_limit_home()
 
         _last_hourly_sync = status
         return status
@@ -180,7 +185,7 @@ def create_scheduler(cfg: dict) -> AsyncIOScheduler:
         misfire_grace_time=120,
     )
     log.info(
-        "Scheduler: forecast cache + balance Δ at 23:59; SA hour boundary :00 + Limit home :00/:15/:30/:45; "
-        "plan refresh at :00/:15/:30/:45 — Europe/Warsaw.",
+        "Scheduler: forecast cache + balance Δ at 23:59; plan refresh + SA sync at "
+        ":00/:15/:30/:45 — Europe/Warsaw.",
     )
     return scheduler

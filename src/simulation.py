@@ -112,6 +112,40 @@ def _hourly_soc_kwh(
     return (pct / 100.0) * battery_cap
 
 
+def _locked_current_hour_end_soc_kwh(
+    plan_from_hour: int,
+    today_str: str,
+    battery_cap: float,
+) -> float | None:
+    """SOC at end of current (locked) hour from SQLite plan_latest.
+
+    Returns None when the stored row is not locked or not found.
+    """
+    try:
+        from .sqlite_store import read_plan
+        stored = read_plan()
+        if not stored:
+            return None
+        rows = stored.get("rows") or []
+        for row in rows:
+            if (
+                str(row.get("plan_date") or "") == today_str
+                and int(row.get("hour", -1)) == plan_from_hour
+                and row.get("hour_labels_locked")
+                and row.get("start") != "TOTAL"
+            ):
+                q15 = row.get("q15") or []
+                if q15:
+                    last_soc_pct = float(q15[-1].get("soc") or 0)
+                    return (last_soc_pct / 100.0) * battery_cap
+                soc_pct = row.get("soc")
+                if soc_pct is not None:
+                    return (float(soc_pct) / 100.0) * battery_cap
+    except Exception:
+        pass
+    return None
+
+
 def _plan_start_soc_kwh(
     plan_from_hour: int,
     today_hourly: dict | None,
@@ -239,6 +273,15 @@ def run_simulation(
     smart_tomorrow: dict[str, Any] | None = None
     if need_tomorrow_hours > 0 and smart_today:
         rce_tomorrow = quarters_by_date.get(tomorrow_str) or []
+        # Use the locked current-hour SOC as tomorrow's starting point when available.
+        # The optimizer's own h23 projection may include a hypothetical export decision
+        # that won't actually happen (row is locked). Using the actual locked row's
+        # end SOC gives a more accurate initial SOC for tomorrow's plan.
+        tomorrow_initial_soc = _locked_current_hour_end_soc_kwh(
+            plan_from_hour, today_str, battery_cap,
+        )
+        if tomorrow_initial_soc is None:
+            tomorrow_initial_soc = float(smart_today["end_soc_kwh"])
         smart_tomorrow = run_day_smart_q15_plan(
             date_str=tomorrow_str,
             pv_hourly=[float(v) for v in pv_tomorrow],
@@ -247,7 +290,7 @@ def run_simulation(
             tomorrow_load=[float(v) for v in load_tomorrow],
             cfg=cfg,
             rce_quarters=rce_tomorrow if len(rce_tomorrow) >= Q15_PER_HOUR * 24 else None,
-            initial_soc_kwh=float(smart_today["end_soc_kwh"]),
+            initial_soc_kwh=tomorrow_initial_soc,
         )
 
     today_timer_ov = get_timer_overrides_for_date(cfg, today_str)

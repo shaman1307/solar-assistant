@@ -15,15 +15,18 @@ from ..config import load_config, save_config
 from ..influxdb import now_warsaw
 from ..plan_deposits import DEPOSIT_START_MONTH, open_month_id, run_deposit_cascade
 from ..plan_monthly_history import build_month_history
-from ..sqlite_store import load_month_history, sum_deposit_current
+from ..sqlite_store import (
+    delete_plan,
+    load_month_history,
+    read_plan,
+    read_plan_buy_tariff,
+    read_plan_rce,
+    sum_deposit_current,
+)
 from ..plan_simulation import (
     build_buy_tariff_payload,
     build_plan_simulation,
     extract_plan_soc_q15,
-    get_cached_buy_tariff,
-    get_cached_plan,
-    get_cached_rce,
-    invalidate_plan_cache,
 )
 from ..plan_timer_override import is_timer_schedule_hour_editable, set_timer_schedule_override
 from ..timer_plan import parse_timer_schedule_segments
@@ -97,7 +100,7 @@ async def api_forecast() -> dict[str, Any]:
         forecast["load_actual_q15_is_kw"] = False
     forecast["load_actual_hourly"] = hourly.get("load")
     forecast["pv_actual_hourly"] = hourly.get("pv")
-    plan = get_cached_plan()
+    plan = read_plan()
     forecast["plan_soc_q15"] = extract_plan_soc_q15(plan)
     return forecast
 
@@ -105,18 +108,18 @@ async def api_forecast() -> dict[str, Any]:
 @router.get("/api/rce")
 async def api_rce() -> dict[str, Any]:
     """Return hourly RCE prices for today and tomorrow from PSE."""
-    cached = get_cached_rce()
-    if cached is not None:
-        return cached
+    stored_rce = read_plan_rce()
+    if stored_rce is not None:
+        return stored_rce
     return await rce_mod.get_rce_prices()
 
 
 @router.get("/api/buy-tariff")
 async def api_buy_tariff() -> dict[str, Any]:
     """Return rolling hourly buy-tariff prices from config (G12 zones)."""
-    cached = get_cached_buy_tariff()
-    if cached is not None:
-        return cached
+    stored_tariff = read_plan_buy_tariff()
+    if stored_tariff is not None:
+        return stored_tariff
     return build_buy_tariff_payload(load_config())
 
 
@@ -187,7 +190,7 @@ async def api_set_plan_timer_schedule(body: dict[str, Any]) -> dict[str, Any]:
     cfg = load_config()
     set_timer_schedule_override(cfg, plan_date, hour, timer_schedule)
     save_config(cfg)
-    invalidate_plan_cache()
+    delete_plan()
     plan = await build_plan_simulation(cfg, force_refresh=True, invalidate_inputs=False)
     return {"ok": True, "plan_date": plan_date, "hour": hour, "timer_schedule": timer_schedule, "plan": plan}
 

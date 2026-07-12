@@ -14,7 +14,7 @@ from typing import Any
 from . import sa_client
 from .config import load_config
 from .influxdb import now_warsaw
-from .plan_simulation import build_plan_simulation, get_cached_plan
+from .sqlite_store import read_plan
 from .timer_plan import (
     ACTION_CHARGE_GRID,
     GRID_EXPORT_ACTION_MIN_KWH,
@@ -72,15 +72,13 @@ def _smart_mode_enabled(cfg: dict) -> bool:
 
 
 async def _plan_rows(cfg: dict) -> list[dict]:
-    cached = get_cached_plan()
-    if cached and cached.get("rows"):
-        return cached["rows"]
-    result = await build_plan_simulation(
-        cfg,
-        force_refresh=False,
-        invalidate_inputs=False,
-    )
-    return result.get("rows") or []
+    """Return plan rows from SQLite (sole source of truth)."""
+    del cfg
+    stored = read_plan()
+    if not stored or not stored.get("rows"):
+        log.warning("No plan in SQLite — work mode sync skipped")
+        return []
+    return stored["rows"]
 
 
 def _hour_row(rows: list[dict], hour: int) -> dict[str, Any] | None:

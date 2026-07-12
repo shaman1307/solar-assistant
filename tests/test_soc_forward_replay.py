@@ -138,3 +138,50 @@ def test_replay_refreshes_cost_when_grid_import_zeroed():
     assert rows[0]["energy_cost"] == 0.0
     assert rows[0]["service_cost"] == 0.0
     assert rows[0]["cost"] == 0.0
+
+
+def test_replay_clears_stale_timer_when_reserve_blocks_export():
+    """Optimizer timer must clear when replay SOC chain blocks battery export."""
+    date = "2026-07-12"
+    rows = [
+        {
+            "hour": 1,
+            "plan_date": date,
+            "production": 0.0,
+            "consumption": 0.707,
+            "soc": 18.0,
+            "buy_price": 0.6229,
+            "g12_zone": "offpeak",
+            "rce_price": 0.6968,
+            "grid_import": 0.0,
+            "grid_export": 2.0,
+            "timer_schedule": "Dis 01:00-01:30 8.0kW cap16%",
+            "action": "Discharging to Grid and Load",
+        },
+    ]
+    opt_slots = [
+        {
+            "quarter": q,
+            "pv": 0.0,
+            "load": 0.177,
+            "grid_charge_kw": 0.0,
+            "ctrl_battery_export_kwh": 2.0 if q < 2 else 0.0,
+            "reserve_kwh": 4.0,
+        }
+        for q in range(4)
+    ]
+    load_q15 = [0.0] * 96
+    for q in range(4):
+        load_q15[1 * 4 + q] = 0.177
+    replay_forward_soc_on_rows(
+        rows,
+        anchor_soc_kwh=2.0,
+        q15_plan_by_date={date: {1: opt_slots}},
+        pv_q15_by_date={date: [0.0] * 96},
+        load_q15_by_date={date: load_q15},
+        cfg=_minimal_cfg(),
+    )
+    assert rows[0]["grid_export"] == 0.0
+    assert rows[0]["timer_schedule"] == ""
+    assert rows[0]["action"] == "Discharging to Load"
+    assert rows[0]["export_planned"] is False

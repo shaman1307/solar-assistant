@@ -20,13 +20,14 @@ from ..config_templates import (
 from ..simulation_config import normalize_battery_power_limits
 from ..sqlite_store import (
     delete_config_template,
+    delete_plan,
     get_installed_default_template,
     list_config_template_names,
     load_config_template,
     save_config_template,
+    invalidate_month_history,
 )
-from ..sqlite_store import invalidate_month_history
-from ..plan_simulation import build_plan_simulation, invalidate_plan_cache
+from ..plan_simulation import build_plan_simulation
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -52,16 +53,16 @@ def _template_meta_payload() -> dict[str, Any]:
 
 async def _refresh_after_config_change() -> None:
     forecast_mod.invalidate_cache()
-    invalidate_plan_cache()
+    delete_plan()
     invalidate_month_history()
     await build_plan_simulation(load_config(), force_refresh=True, invalidate_inputs=False)
 
 
 @router.post("/api/reload-caches")
 async def api_reload_caches() -> dict[str, str]:
-    """Drop in-memory caches so the next request picks up fresh data."""
+    """Drop live-input caches and delete plan_latest from SQLite."""
     invalidate_all_caches()
-    log.info("In-memory caches cleared.")
+    log.info("Live-input caches cleared; SQLite plan_latest deleted.")
     return {"status": "ok"}
 
 
@@ -172,6 +173,6 @@ async def api_save_overrides(body: dict) -> dict[str, str]:
         overrides[key] = float(val) if val not in (None, "") else None
     save_config(cfg)
     await forecast_mod.apply_overrides_to_cache(cfg)
-    invalidate_plan_cache()
+    delete_plan()
     await build_plan_simulation(cfg, force_refresh=True, invalidate_inputs=False)
     return {"status": "saved"}

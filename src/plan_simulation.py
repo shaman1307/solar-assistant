@@ -1,9 +1,9 @@
 """
-Plan Simulation — shared build pipeline and in-memory cache.
+Plan Simulation — Energy arbitrage pipeline; SQLite plan_latest is the only store.
 
 Refreshed every 15 minutes (scheduler :00/:15/:30/:45 Warsaw), regardless of
-smart_mode_enabled, with cached Load/PV forecast, Influx actuals for completed
-hours, and PSE RCE.
+smart_mode_enabled, with Load/PV forecast, Influx actuals for completed
+quarters, and PSE RCE embedded in the persisted plan payload.
 """
 
 from __future__ import annotations
@@ -18,13 +18,14 @@ from . import influxdb as influxdb_mod
 from . import rce as rce_mod
 from . import sa_client
 from .influxdb import now_warsaw
+from .plan_cache_merge import merge_incremental_plan, plan_needs_full_rebuild
 from .simulation import run_simulation
-from .simulation_config import plan_min_soc_pct
+from .simulation_config import merge_simulation_defaults, plan_min_soc_pct
+from .sqlite_store import delete_plan, read_plan, write_plan
 from .timer_plan import build_hourly_schedule
 
 log = logging.getLogger(__name__)
 
-_cache: dict[str, Any] | None = None
 _plan_lock: asyncio.Lock | None = None
 
 
@@ -35,17 +36,8 @@ def _get_plan_lock() -> asyncio.Lock:
     return _plan_lock
 
 
-def get_cached_plan() -> dict[str, Any] | None:
-    return _cache
-
-
-def invalidate_plan_cache() -> None:
-    global _cache
-    _cache = None
-
-
 def extract_plan_soc_hourly(plan: dict[str, Any] | None) -> dict[str, list[float | None]]:
-    """Hourly planned/actual SOC from Energy arbitrage cache (today + tomorrow)."""
+    """Hourly planned/actual SOC from Energy arbitrage plan (today + tomorrow)."""
     today_str = now_warsaw().strftime("%Y-%m-%d")
     tomorrow_str = (now_warsaw() + timedelta(days=1)).strftime("%Y-%m-%d")
     out: dict[str, list[float | None]] = {
@@ -119,32 +111,13 @@ def extract_plan_soc_q15(plan: dict[str, Any] | None) -> dict[str, list[float | 
     }
 
 
-def _plan_cache_stale(cached: dict[str, Any]) -> bool:
-    """True when the rolling window start (current hour) differs from cached plan."""
-    now = now_warsaw()
+def _plan_window_matches(stored: dict[str, Any], now) -> bool:
+    """True when the SQLite plan is for the same calendar day and current hour."""
     start = now.replace(minute=0, second=0, microsecond=0)
     return (
-        cached.get("today_date") != start.strftime("%Y-%m-%d")
-        or cached.get("plan_from_hour") != start.hour
+        stored.get("today_date") == start.strftime("%Y-%m-%d")
+        and stored.get("plan_from_hour") == start.hour
     )
-
-
-def get_cached_forecast() -> dict[str, Any] | None:
-    if _cache is None:
-        return None
-    return _cache.get("forecast")
-
-
-def get_cached_rce() -> dict[str, Any] | None:
-    if _cache is None:
-        return None
-    return _cache.get("rce")
-
-
-def get_cached_buy_tariff() -> dict[str, Any] | None:
-    if _cache is None:
-        return None
-    return _cache.get("buy_tariff")
 
 
 def _compute_buy_tariff_rows(cfg: dict) -> list[dict[str, Any]]:
@@ -200,8 +173,8 @@ async def fetch_plan_inputs(
 ) -> tuple[dict, dict, dict, dict]:
     """Return (forecast, metrics, rules, rce_prices)."""
     if invalidate:
-        from .cache_registry import invalidate_all_caches
-        invalidate_all_caches()
+        from .cache_registry import invalidate_input_caches
+        invalidate_input_caches()
 
     today_str = now_warsaw().strftime("%Y-%m-%d")
     results = await asyncio.gather(
@@ -236,6 +209,111 @@ async def fetch_plan_inputs(
     return forecast, metrics, rules, rce_prices
 
 
+def _wrap_sim_result(
+    sim: dict[str, Any],
+    *,
+    forecast: dict,
+    metrics: dict,
+    rce_prices: dict,
+    cfg: dict,
+    rules: dict,
+) -> dict[str, Any]:
+    forecast_bundle = dict(forecast)
+    if metrics.get("today_hourly"):
+        forecast_bundle["load_actual_hourly"] = metrics["today_hourly"].get("load")
+        forecast_bundle["pv_actual_hourly"] = metrics["today_hourly"].get("pv")
+
+    now = now_warsaw()
+    next_hour = (now.hour + 1) % 24
+    next_hour_schedule = build_hourly_schedule(sim["rows"], next_hour, cfg, rules)
+    computed_at = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    result: dict[str, Any] = {
+        **sim,
+        "computed_at": computed_at,
+        "simulation_min_soc_pct": plan_min_soc_pct(cfg),
+        "rce_current": rce_prices.get("current_price_pln_kwh"),
+        "next_hour": next_hour,
+        "next_hour_schedule": next_hour_schedule,
+        "forecast_meta": forecast.get("meta", {}),
+        "forecast": forecast_bundle,
+        "rce": rce_prices,
+        "buy_tariff": build_buy_tariff_payload(cfg, sim["rows"]),
+        "plan_soc_q15": extract_plan_soc_q15(sim),
+    }
+    if result.get("rce"):
+        rce_mod._refresh_current_price(result["rce"])
+        result["rce_current"] = result["rce"].get("current_price_pln_kwh")
+    return result
+
+
+def _preserve_current_hour_labels(
+    result: dict[str, Any],
+    existing: dict[str, Any] | None,
+    now,
+) -> None:
+    """After any rebuild: if SQLite had locked timer/action for current hour — keep it.
+
+    At :00 (hour boundary) we instead lock from the fresh optimizer output.
+    """
+    today_str = now.strftime("%Y-%m-%d")
+    hour = now.hour
+
+    if now.minute == 0:
+        # At hour boundary: lock fresh optimizer values for the new current hour.
+        for row in result.get("rows") or []:
+            if row.get("start") == "TOTAL":
+                continue
+            if str(row.get("plan_date") or "") == today_str and int(row.get("hour", -1)) == hour:
+                if not row.get("timer_schedule_manual"):
+                    row["hour_labels_locked"] = True
+                break
+        return
+
+    # Mid-hour: restore timer/action from the previously locked SQLite row.
+    if not existing:
+        return
+    existing_row = next(
+        (
+            r for r in (existing.get("rows") or [])
+            if r.get("start") != "TOTAL"
+            and str(r.get("plan_date") or "") == today_str
+            and int(r.get("hour", -1)) == hour
+        ),
+        None,
+    )
+    if existing_row is None or not existing_row.get("hour_labels_locked"):
+        return
+    for row in result.get("rows") or []:
+        if row.get("start") == "TOTAL":
+            continue
+        if str(row.get("plan_date") or "") == today_str and int(row.get("hour", -1)) == hour:
+            if not row.get("timer_schedule_manual"):
+                row["timer_schedule"] = existing_row.get("timer_schedule", "")
+                row["action"] = existing_row.get("action", "")
+                row["hour_labels_locked"] = True
+            break
+
+
+async def _run_fresh_simulation(
+    cfg: dict,
+    *,
+    invalidate_inputs: bool,
+) -> tuple[dict[str, Any], dict, dict, dict, dict]:
+    forecast, metrics, rules, rce_prices = await fetch_plan_inputs(
+        cfg, invalidate=invalidate_inputs,
+    )
+    sim = await asyncio.to_thread(
+        run_simulation,
+        forecast,
+        metrics,
+        rules,
+        cfg,
+        rce_prices=rce_prices,
+    )
+    return sim, forecast, metrics, rules, rce_prices
+
+
 async def build_plan_simulation(
     cfg: dict,
     *,
@@ -243,106 +321,102 @@ async def build_plan_simulation(
     invalidate_inputs: bool = False,
     store_cache: bool = True,
 ) -> dict[str, Any]:
-    """Run Plan Simulation; optionally refresh forecast/RCE/Influx inputs first."""
-    global _cache
-
-    from .simulation_config import merge_simulation_defaults
+    """Return Energy arbitrage plan from SQLite; rebuild when missing or forced."""
     cfg = merge_simulation_defaults(cfg)
+    now = now_warsaw()
+    cached = read_plan()
 
-    if not force_refresh and _cache is not None and not _plan_cache_stale(_cache):
-        cached = dict(_cache)
-        if cached.get("rce"):
-            rce_mod._refresh_current_price(cached["rce"])
-            cached["rce_current"] = cached["rce"].get("current_price_pln_kwh")
-        return cached
-
-    async with _get_plan_lock():
-        if not force_refresh and _cache is not None and not _plan_cache_stale(_cache):
-            cached = dict(_cache)
-            if cached.get("rce"):
-                rce_mod._refresh_current_price(cached["rce"])
-                cached["rce_current"] = cached["rce"].get("current_price_pln_kwh")
-            return cached
-
-        forecast, metrics, rules, rce_prices = await fetch_plan_inputs(
-            cfg, invalidate=invalidate_inputs or force_refresh,
-        )
-
-        forecast_bundle = dict(forecast)
-        if metrics.get("today_hourly"):
-            forecast_bundle["load_actual_hourly"] = metrics["today_hourly"].get("load")
-            forecast_bundle["pv_actual_hourly"] = metrics["today_hourly"].get("pv")
-
-        sim = await asyncio.to_thread(
-            run_simulation,
-            forecast,
-            metrics,
-            rules,
-            cfg,
-            rce_prices=rce_prices,
-        )
-
-        next_hour = (now_warsaw().hour + 1) % 24
-        next_hour_schedule = build_hourly_schedule(sim["rows"], next_hour, cfg, rules)
-        computed_at = now_warsaw().strftime("%Y-%m-%d %H:%M:%S")
-
-        result: dict[str, Any] = {
-            **sim,
-            "computed_at": computed_at,
-            "simulation_min_soc_pct": plan_min_soc_pct(cfg),
-            "rce_current": rce_prices.get("current_price_pln_kwh"),
-            "next_hour": next_hour,
-            "next_hour_schedule": next_hour_schedule,
-            "forecast_meta": forecast.get("meta", {}),
-            "forecast": forecast_bundle,
-            "rce": rce_prices,
-            "buy_tariff": build_buy_tariff_payload(cfg, sim["rows"]),
-            "plan_soc_q15": extract_plan_soc_q15(sim),
-        }
-
+    if (
+        not force_refresh
+        and cached is not None
+        and _plan_window_matches(cached, now)
+    ):
+        result = dict(cached)
         if result.get("rce"):
             rce_mod._refresh_current_price(result["rce"])
             result["rce_current"] = result["rce"].get("current_price_pln_kwh")
+        return result
 
+    async with _get_plan_lock():
+        cached = read_plan()
+        if (
+            not force_refresh
+            and cached is not None
+            and _plan_window_matches(cached, now)
+        ):
+            result = dict(cached)
+            if result.get("rce"):
+                rce_mod._refresh_current_price(result["rce"])
+                result["rce_current"] = result["rce"].get("current_price_pln_kwh")
+            return result
+
+        existing = read_plan()
+        sim, forecast, metrics, rules, rce_prices = await _run_fresh_simulation(
+            cfg, invalidate_inputs=invalidate_inputs or force_refresh,
+        )
+        result = _wrap_sim_result(
+            sim,
+            forecast=forecast,
+            metrics=metrics,
+            rce_prices=rce_prices,
+            cfg=cfg,
+            rules=rules,
+        )
+        _preserve_current_hour_labels(result, existing, now)
+        result["plan_soc_q15"] = extract_plan_soc_q15(result)
         if store_cache:
-            _cache = result
-            from .sqlite_store import save_plan_snapshot
-            save_plan_snapshot(result)
-
+            write_plan(result)
         return result
 
 
 async def hourly_plan_refresh(cfg: dict) -> dict[str, Any]:
-    """Invalidate data caches, recompute plan, store result (scheduler every 15 min)."""
+    """Scheduler refresh: incremental quarter merge or full rebuild at new day."""
     log.info("Plan Simulation refresh …")
+    cfg = merge_simulation_defaults(cfg)
     now = now_warsaw()
-    old = get_cached_plan()
-    result = await build_plan_simulation(
-        cfg,
-        force_refresh=True,
-        invalidate_inputs=True,
-    )
-    # Freeze Timer Schedule for the current hour between :00 and :59.
-    # The plan may refresh every 15 minutes, but current-hour Timer Schedule must not change.
-    if old and isinstance(old, dict) and now.minute != 0:
-        old_rows = old.get("rows") or []
-        new_rows = result.get("rows") or []
-        old_row = next(
-            (r for r in old_rows if r.get("hour") == now.hour and r.get("start") != "TOTAL"),
-            None,
+    existing = read_plan()
+
+    async with _get_plan_lock():
+        existing = read_plan()
+        sim, forecast, metrics, rules, rce_prices = await _run_fresh_simulation(
+            cfg, invalidate_inputs=True,
         )
-        if old_row is not None:
-            frozen_timer = old_row.get("timer_schedule")
-            for i, r in enumerate(new_rows):
-                if r.get("hour") == now.hour and r.get("start") != "TOTAL":
-                    if not r.get("timer_schedule_manual"):
-                        new_rows[i] = {**r, "timer_schedule": frozen_timer}
-                        result["rows"] = new_rows
-                    break
-    log.info(
-        "Plan updated %s — Δ=%.2f kWh, export_hours=%s",
-        result["computed_at"],
-        result["delta_kwh"],
-        result.get("plan_export_hours"),
-    )
-    return result
+        fresh = _wrap_sim_result(
+            sim,
+            forecast=forecast,
+            metrics=metrics,
+            rce_prices=rce_prices,
+            cfg=cfg,
+            rules=rules,
+        )
+
+        if plan_needs_full_rebuild(existing, now):
+            result = fresh
+            _preserve_current_hour_labels(result, existing, now)
+        else:
+            result = merge_incremental_plan(
+                existing or {},
+                fresh,
+                now=now,
+                metrics=metrics,
+                cfg=cfg,
+                rules=rules,
+            )
+
+        result["plan_soc_q15"] = extract_plan_soc_q15(result)
+        result["next_hour"] = (now.hour + 1) % 24
+        result["next_hour_schedule"] = build_hourly_schedule(
+            result["rows"], result["next_hour"], cfg, rules,
+        )
+        if result.get("rce"):
+            rce_mod._refresh_current_price(result["rce"])
+            result["rce_current"] = result["rce"].get("current_price_pln_kwh")
+
+        write_plan(result)
+        log.info(
+            "Plan updated %s — Δ=%.2f kWh, export_hours=%s",
+            result["computed_at"],
+            result["delta_kwh"],
+            result.get("plan_export_hours"),
+        )
+        return result

@@ -14,6 +14,7 @@ Actions:
 
 from __future__ import annotations
 
+import math
 import re
 from collections import defaultdict
 from datetime import datetime
@@ -25,6 +26,7 @@ from .simulation_config import (
     plan_timer_charge_power_kw,
     plan_timer_discharge_power_kw,
 )
+from .plan_spill import pv_load_energy_split
 
 ACTION_IDLE_GRID = "Idle - Grid Usage for Load"
 ACTION_IDLE_PV = "Idle - PV to Load. On-Grid"
@@ -372,7 +374,17 @@ def _hour_timer_segment(
     power_kw = (
         plan_timer_charge_power_kw(cfg)
         if target_action == ACTION_CHARGE_GRID
-        else plan_timer_discharge_power_kw(cfg)
+        else _infer_discharge_timer_power_kw(
+            total_kwh,
+            to_min - from_min,
+            cfg,
+            load_kwh=sum(
+                _slot_load_kwh(slots[qi]) for qi in active_q if 0 <= qi < len(slots)
+            ),
+            pv_kwh=sum(
+                _slot_pv_kwh(slots[qi]) for qi in active_q if 0 <= qi < len(slots)
+            ),
+        )
     )
     if power_kw <= 0:
         return None
@@ -539,12 +551,18 @@ def _merge_blocks_q15(rows: list[dict], target_action: str) -> list[dict[str, An
             power_kw = max(import_kwh * 4.0, 1.0)
         else:
             export_kwh = float(row.get("grid_export", row.get("feed_in", 0)) or 0)
+            load_kwh = float(row.get("consumption") or row.get("load") or 0)
+            pv_kwh = float(row.get("production") or row.get("pv") or 0)
             power_kw = max(export_kwh * 4.0, 1.0)
 
         if current and slot_min == current["_last_end_min"]:
             current["to_min"] = slot_min + 15
             current["_last_end_min"] = slot_min + 15
             current["power_kw"] = max(current["power_kw"], power_kw)
+            if target_action == ACTION_DISCHARGE_GRID:
+                current["export_kwh"] = float(current.get("export_kwh", 0.0)) + export_kwh
+                current["load_kwh"] = float(current.get("load_kwh", 0.0)) + load_kwh
+                current["pv_kwh"] = float(current.get("pv_kwh", 0.0)) + pv_kwh
             current["capacity_pct"] = round(float(row.get("soc", current["capacity_pct"])), 0)
         else:
             if current:
@@ -556,6 +574,10 @@ def _merge_blocks_q15(rows: list[dict], target_action: str) -> list[dict[str, An
                 "power_kw": power_kw,
                 "capacity_pct": round(float(row.get("soc", 80)), 0),
             }
+            if target_action == ACTION_DISCHARGE_GRID:
+                current["export_kwh"] = export_kwh
+                current["load_kwh"] = load_kwh
+                current["pv_kwh"] = pv_kwh
 
     if current:
         blocks.append(current)
@@ -563,6 +585,49 @@ def _merge_blocks_q15(rows: list[dict], target_action: str) -> list[dict[str, An
 
 
 MIN_TIMER_BLOCK_MINUTES = 30
+
+
+def _slot_load_kwh(slot: dict[str, Any]) -> float:
+    """House load kWh in a q15 slot (optimizer or EA row shape)."""
+    for key in ("load", "consumption"):
+        if slot.get(key) is not None:
+            return float(slot.get(key) or 0)
+    return 0.0
+
+
+def _slot_pv_kwh(slot: dict[str, Any]) -> float:
+    """PV production kWh in a q15 slot (optimizer or EA row shape)."""
+    for key in ("pv", "production"):
+        if slot.get(key) is not None:
+            return float(slot.get(key) or 0)
+    return 0.0
+
+
+def _infer_discharge_timer_power_kw(
+    export_kwh: float,
+    duration_min: int,
+    cfg: dict,
+    *,
+    load_kwh: float = 0.0,
+    pv_kwh: float = 0.0,
+) -> float:
+    """SA timer DC kW: export + load deficit after PV, over duration."""
+    max_kw = plan_timer_discharge_power_kw(cfg)
+    if export_kwh <= 0.001 or duration_min < MIN_TIMER_BLOCK_MINUTES:
+        return max_kw
+    params = get_simulation_params(cfg)
+    eta_out = float(params["eta_battery_out"])
+    eta_pv_load = float(params["eta_pv_load"])
+    duration_h = duration_min / 60.0
+    load_deficit, _ = pv_load_energy_split(
+        max(0.0, pv_kwh), max(0.0, load_kwh), eta_pv_load=eta_pv_load,
+    )
+    ac_kwh = export_kwh + load_deficit
+    needed_dc = ac_kwh / (duration_h * eta_out) if eta_out > 0 else ac_kwh / duration_h
+    if needed_dc <= 0.001:
+        return max_kw
+    stepped = min(max_kw, math.ceil(needed_dc * 2.0) / 2.0)
+    return round(max(stepped, 0.5), 1)
 
 
 def _filter_min_duration_blocks(
@@ -596,7 +661,17 @@ def _blocks_q15_to_slots(
             continue
 
         blk = blocks[i]
-        timer_kw = charge_kw if kind == "charge" else discharge_kw
+        if kind == "charge":
+            timer_kw = charge_kw
+        else:
+            dur = max(1, int(blk["to_min"] - blk["from_min"]))
+            timer_kw = _infer_discharge_timer_power_kw(
+                float(blk.get("export_kwh") or 0.0),
+                dur,
+                cfg,
+                load_kwh=float(blk.get("load_kwh") or 0.0),
+                pv_kwh=float(blk.get("pv_kwh") or 0.0),
+            )
         slot: dict[str, Any] = {
             "slot": i + 1,
             "from": _min_to_hhmm(blk["from_min"]),
@@ -660,6 +735,9 @@ def _remerge_overlapping_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, 
             cur["to_min"] = max(cur["to_min"], blk["to_min"])
             cur["_last_end_min"] = cur["to_min"]
             cur["power_kw"] = max(cur["power_kw"], blk["power_kw"])
+            cur["export_kwh"] = float(cur.get("export_kwh", 0.0)) + float(blk.get("export_kwh", 0.0))
+            cur["load_kwh"] = float(cur.get("load_kwh", 0.0)) + float(blk.get("load_kwh", 0.0))
+            cur["pv_kwh"] = float(cur.get("pv_kwh", 0.0)) + float(blk.get("pv_kwh", 0.0))
             cur["capacity_pct"] = blk["capacity_pct"]
         else:
             merged.append(dict(blk))

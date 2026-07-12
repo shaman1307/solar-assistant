@@ -13,12 +13,11 @@ import logging
 from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 
 from . import sa_client
 from .config import load_config
 from .influxdb import now_warsaw
-from .plan_simulation import build_plan_simulation, get_cached_plan
+from .sqlite_store import read_plan
 from .timer_plan import (
     build_sa_schedule_from_hour_row,
     hour_has_timer_schedule,
@@ -56,15 +55,13 @@ def _smart_mode_enabled(cfg: dict) -> bool:
 
 
 async def _plan_rows(cfg: dict) -> list[dict]:
-    cached = get_cached_plan()
-    if cached and cached.get("rows"):
-        return cached["rows"]
-    result = await build_plan_simulation(
-        cfg,
-        force_refresh=False,
-        invalidate_inputs=False,
-    )
-    return result.get("rows") or []
+    """Return plan rows from SQLite (sole source of truth)."""
+    del cfg
+    stored = read_plan()
+    if not stored or not stored.get("rows"):
+        log.warning("No plan in SQLite — SA timer sync skipped")
+        return []
+    return stored["rows"]
 
 
 async def _sync_timer_from_hour_row(
@@ -295,15 +292,8 @@ async def run_hour_boundary_limit_home() -> dict[str, Any]:
 
 
 def register_hour_boundary_jobs(scheduler: AsyncIOScheduler) -> None:
-    """Register :15/:30/:45 Limit-home job (:00 runs after plan refresh)."""
-    scheduler.add_job(
-        run_hour_boundary_limit_home,
-        trigger=CronTrigger(minute="15,30,45", timezone="Europe/Warsaw"),
-        id="hour_boundary_limit_home",
-        replace_existing=True,
-        misfire_grace_time=120,
-    )
+    """Limit-home at :15/:30/:45 runs from quarter_plan_refresh (after plan write)."""
     log.info(
         "Hour boundary SA sync: :00 On-grid + hour Timer Schedule (after plan refresh); "
-        ":00/:15/:30/:45 Limit home when timer empty or discharge ended.",
+        ":15/:30/:45 Limit home when timer empty or discharge ended (after plan refresh).",
     )

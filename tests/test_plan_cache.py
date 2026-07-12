@@ -1,4 +1,4 @@
-"""Plan in-memory cache: stale detection, hit, invalidate, force refresh."""
+"""Energy arbitrage plan — SQLite plan_latest (no in-memory layer)."""
 
 from __future__ import annotations
 
@@ -9,25 +9,26 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src import plan_simulation as ps
+from src.sqlite_store import delete_plan, read_plan, read_plan_forecast, write_plan
 
 
 @pytest.fixture(autouse=True)
-def _clear_plan_cache():
-    ps.invalidate_plan_cache()
+def _clear_plan_sqlite():
+    delete_plan()
     yield
-    ps.invalidate_plan_cache()
+    delete_plan()
 
 
 def _warsaw_now(*, hour: int = 14, minute: int = 0) -> datetime:
     return datetime(2026, 7, 3, hour, minute, 0)
 
 
-def _fresh_cache_entry(now: datetime) -> dict:
+def _fresh_plan_entry(now: datetime) -> dict:
     return {
         "today_date": now.strftime("%Y-%m-%d"),
         "plan_from_hour": now.hour,
         "computed_at": "2026-07-03 12:00:00",
-        "rows": [{"hour": now.hour + 1}],
+        "rows": [{"hour": now.hour, "plan_date": now.strftime("%Y-%m-%d"), "start": "x"}],
         "history_rows": [],
         "delta_kwh": 0.0,
         "forecast": {"meta": {}},
@@ -36,45 +37,33 @@ def _fresh_cache_entry(now: datetime) -> dict:
     }
 
 
-def test_plan_cache_stale_when_hour_differs(monkeypatch):
+def test_plan_window_stale_when_hour_differs(monkeypatch):
     now = _warsaw_now(hour=14)
     monkeypatch.setattr(ps, "now_warsaw", lambda: now)
-    cached = _fresh_cache_entry(now)
-    cached["plan_from_hour"] = 13
-    assert ps._plan_cache_stale(cached) is True
+    stored = _fresh_plan_entry(now)
+    stored["plan_from_hour"] = 13
+    assert ps._plan_window_matches(stored, now) is False
 
 
-def test_plan_cache_stale_when_date_differs(monkeypatch):
-    now = _warsaw_now(hour=14)
-    monkeypatch.setattr(ps, "now_warsaw", lambda: now)
-    cached = _fresh_cache_entry(now)
-    cached["today_date"] = "2026-07-02"
-    assert ps._plan_cache_stale(cached) is True
-
-
-def test_plan_cache_fresh_when_window_matches(monkeypatch):
+def test_plan_window_fresh_when_matches(monkeypatch):
     now = _warsaw_now(hour=14, minute=45)
     monkeypatch.setattr(ps, "now_warsaw", lambda: now)
-    cached = _fresh_cache_entry(now.replace(minute=0, second=0, microsecond=0))
-    assert ps._plan_cache_stale(cached) is False
+    stored = _fresh_plan_entry(now.replace(minute=0, second=0, microsecond=0))
+    assert ps._plan_window_matches(stored, now) is True
 
 
-def test_invalidate_clears_cache():
-    ps._cache = _fresh_cache_entry(_warsaw_now())
-    ps.invalidate_plan_cache()
-    assert ps.get_cached_plan() is None
-    assert ps.get_cached_forecast() is None
-    assert ps.get_cached_rce() is None
-    assert ps.get_cached_buy_tariff() is None
+def test_delete_plan_clears_sqlite():
+    write_plan(_fresh_plan_entry(_warsaw_now()))
+    delete_plan()
+    assert read_plan() is None
+    assert read_plan_forecast() is None
 
 
-def test_get_cached_plan_exposes_nested_payload():
-    entry = _fresh_cache_entry(_warsaw_now())
-    ps._cache = entry
-    assert ps.get_cached_plan() is entry
-    assert ps.get_cached_forecast() == entry["forecast"]
-    assert ps.get_cached_rce() == entry["rce"]
-    assert ps.get_cached_buy_tariff() == entry["buy_tariff"]
+def test_read_plan_reads_sqlite():
+    entry = _fresh_plan_entry(_warsaw_now())
+    write_plan(entry)
+    assert read_plan()["computed_at"] == entry["computed_at"]
+    assert read_plan_forecast() == entry["forecast"]
 
 
 async def _immediate_to_thread(fn, /, *args, **kwargs):
@@ -91,9 +80,9 @@ def _patch_build_deps(monkeypatch, *, now: datetime, fetch: AsyncMock, sim_resul
     monkeypatch.setattr(ps, "extract_plan_soc_q15", lambda sim: {"today": [None] * 96, "tomorrow": [None] * 96})
 
 
-def test_build_plan_cache_hit_skips_fetch_and_sim(monkeypatch):
+def test_build_plan_sqlite_hit_skips_fetch(monkeypatch):
     now = _warsaw_now(hour=14)
-    ps._cache = _fresh_cache_entry(now)
+    write_plan(_fresh_plan_entry(now))
     fetch = AsyncMock()
     _patch_build_deps(
         monkeypatch,
@@ -106,17 +95,16 @@ def test_build_plan_cache_hit_skips_fetch_and_sim(monkeypatch):
 
     fetch.assert_not_called()
     assert result["computed_at"] == "2026-07-03 12:00:00"
-    assert result["rows"] == [{"hour": 15}]
 
 
-def test_build_plan_stale_cache_triggers_rebuild(monkeypatch):
+def test_build_plan_stale_hour_triggers_rebuild(monkeypatch):
     now = _warsaw_now(hour=14)
-    stale = _fresh_cache_entry(now)
+    stale = _fresh_plan_entry(now)
     stale["plan_from_hour"] = 10
-    ps._cache = stale
+    write_plan(stale)
 
     sim = {
-        "rows": [{"hour": 15, "rebuilt": True}],
+        "rows": [{"hour": 14, "rebuilt": True, "plan_date": "2026-07-03", "start": "x"}],
         "history_rows": [],
         "delta_kwh": 1.0,
         "today_date": now.strftime("%Y-%m-%d"),
@@ -131,19 +119,37 @@ def test_build_plan_stale_cache_triggers_rebuild(monkeypatch):
 
     fetch.assert_awaited_once()
     assert result["rows"][0].get("rebuilt") is True
-    assert ps.get_cached_plan()["rows"][0].get("rebuilt") is True
+    assert read_plan()["rows"][0].get("rebuilt") is True
 
 
-def test_build_plan_force_refresh_bypasses_fresh_cache(monkeypatch):
-    now = _warsaw_now(hour=14)
-    ps._cache = _fresh_cache_entry(now)
+def test_force_refresh_mid_hour_preserves_locked_timer(monkeypatch):
+    """force_refresh at :28 must NOT overwrite locked timer_schedule for current hour."""
+    now = _warsaw_now(hour=22, minute=28)
+    locked_plan = _fresh_plan_entry(now.replace(minute=0, second=0, microsecond=0))
+    locked_plan["plan_from_hour"] = 22
+    locked_plan["rows"] = [{
+        "hour": 22,
+        "plan_date": "2026-07-03",
+        "start": "03-07-2026 23:00",
+        "timer_schedule": "Dis 22:00-22:45 8.0kW cap16%",
+        "action": "Discharging to Grid and Load",
+        "hour_labels_locked": True,
+    }]
+    write_plan(locked_plan)
 
     sim = {
-        "rows": [{"hour": 15, "forced": True}],
+        "rows": [{
+            "hour": 22,
+            "plan_date": "2026-07-03",
+            "start": "03-07-2026 23:00",
+            "timer_schedule": "Dis 22:00-22:30 8.0kW cap16%",
+            "action": "Idle",
+            "hour_labels_locked": False,
+        }],
         "history_rows": [],
         "delta_kwh": 0.0,
-        "today_date": now.strftime("%Y-%m-%d"),
-        "plan_from_hour": now.hour,
+        "today_date": "2026-07-03",
+        "plan_from_hour": 22,
     }
     fetch = AsyncMock(
         return_value=({"meta": {}}, {}, {}, {"current_price_pln_kwh": 0.5}),
@@ -151,16 +157,26 @@ def test_build_plan_force_refresh_bypasses_fresh_cache(monkeypatch):
     _patch_build_deps(monkeypatch, now=now, fetch=fetch, sim_result=sim)
 
     result = asyncio.run(
-        ps.build_plan_simulation({}, force_refresh=True, invalidate_inputs=False),
+        ps.build_plan_simulation({}, force_refresh=True),
     )
 
-    fetch.assert_awaited_once()
-    assert result["rows"][0].get("forced") is True
+    cur = next(r for r in result["rows"] if r["hour"] == 22)
+    assert cur["timer_schedule"] == "Dis 22:00-22:45 8.0kW cap16%"
+    assert cur["action"] == "Discharging to Grid and Load"
+    assert cur["hour_labels_locked"] is True
 
 
-def test_invalidate_all_caches_clears_plan(monkeypatch):
+def test_invalidate_all_caches_clears_sqlite_plan(monkeypatch):
     from src.cache_registry import invalidate_all_caches
 
-    ps._cache = _fresh_cache_entry(_warsaw_now())
+    write_plan(_fresh_plan_entry(_warsaw_now()))
     invalidate_all_caches()
-    assert ps.get_cached_plan() is None
+    assert read_plan() is None
+
+
+def test_invalidate_input_caches_keeps_sqlite_plan(monkeypatch):
+    from src.cache_registry import invalidate_input_caches
+
+    write_plan(_fresh_plan_entry(_warsaw_now()))
+    invalidate_input_caches()
+    assert read_plan() is not None

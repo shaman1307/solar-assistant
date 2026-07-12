@@ -346,7 +346,24 @@ def ensure_month_history_billing_model() -> bool:
         return True
 
 
-def save_plan_snapshot(plan: dict[str, Any]) -> None:
+def read_plan() -> dict[str, Any] | None:
+    """Energy arbitrage plan — sole store (SQLite plan_latest); no in-memory layer."""
+    with _lock:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT payload_json FROM plan_latest WHERE id = 1",
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row["payload_json"])
+    except json.JSONDecodeError as exc:
+        log.warning("plan_latest JSON corrupt: %s", exc)
+        return None
+
+
+def write_plan(plan: dict[str, Any]) -> None:
+    """Persist Energy arbitrage plan to SQLite."""
     payload = json.dumps(plan, ensure_ascii=False, separators=(",", ":"))
     with _lock:
         conn = _connect()
@@ -363,19 +380,41 @@ def save_plan_snapshot(plan: dict[str, Any]) -> None:
         conn.commit()
 
 
-def load_plan_snapshot() -> dict[str, Any] | None:
+def delete_plan() -> None:
+    """Remove Energy arbitrage plan from SQLite (plan_latest)."""
     with _lock:
         conn = _connect()
-        row = conn.execute(
-            "SELECT payload_json FROM plan_latest WHERE id = 1",
-        ).fetchone()
-    if not row:
+        conn.execute("DELETE FROM plan_latest WHERE id = 1")
+        conn.commit()
+
+
+def read_plan_forecast() -> dict[str, Any] | None:
+    plan = read_plan()
+    if plan is None:
         return None
-    try:
-        return json.loads(row["payload_json"])
-    except json.JSONDecodeError as exc:
-        log.warning("plan_latest JSON corrupt: %s", exc)
+    return plan.get("forecast")
+
+
+def read_plan_rce() -> dict[str, Any] | None:
+    plan = read_plan()
+    if plan is None:
         return None
+    return plan.get("rce")
+
+
+def read_plan_buy_tariff() -> dict[str, Any] | None:
+    plan = read_plan()
+    if plan is None:
+        return None
+    return plan.get("buy_tariff")
+
+
+def save_plan_snapshot(plan: dict[str, Any]) -> None:
+    write_plan(plan)
+
+
+def load_plan_snapshot() -> dict[str, Any] | None:
+    return read_plan()
 
 
 def save_month_history(month: str, payload: dict[str, Any]) -> None:

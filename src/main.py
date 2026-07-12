@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
                 cfg, force_refresh=False, invalidate_inputs=False,
             )
             log.info(
-                "Startup plan cache ready — %s, %d rows",
+                "Startup plan ready — %s, %d rows",
                 result.get("computed_at"),
                 len(result.get("rows") or []),
             )

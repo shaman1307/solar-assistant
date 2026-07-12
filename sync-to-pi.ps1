@@ -50,6 +50,7 @@ $files = @(
     "src\sqlite_store.py",
     "src\simulation_config.py",
     "src\plan_simulation.py",
+    "src\plan_cache_merge.py",
     "src\plan_timer_override.py",
     "src\scheduler.py",
     "src\hour_boundary_scheduler.py",

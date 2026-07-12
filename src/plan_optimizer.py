@@ -8,10 +8,13 @@ Objective:
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 from .grid_config import grid_export_threshold_pln_kwh
 from .plan_spill import build_tail_hour_arrays, pv_load_energy_split, tail_balance_cost_pln
@@ -236,17 +239,29 @@ def _reserve_soc_kwh_from_step(
     eta_out: float,
     eta_pv_load: float,
     epsilon: float,
+    *,
+    slots_per_hour: int = 4,
 ) -> float:
-    """Battery kWh that must remain after step (load until PV covers house)."""
+    """Battery kWh that must remain after step (load until PV covers house).
+
+    PV coverage is checked per clock hour (not single q15) so one sunny
+    15-min slot does not understate the night reserve.
+    """
     need = 0.0
-    for j in range(step + 1, len(pv_series)):
+    j = step + 1
+    while j < len(pv_series):
         deficit, _ = pv_load_energy_split(
             pv_series[j], load_series[j], eta_pv_load=eta_pv_load,
         )
         if deficit > epsilon:
             need += deficit / eta_out if eta_out > 0 else deficit
-        if pv_series[j] * eta_pv_load >= load_series[j] - epsilon:
-            break
+        j += 1
+        if slots_per_hour > 0 and j % slots_per_hour == 0:
+            h_start = j - slots_per_hour
+            pv_h = sum(pv_series[h_start:j])
+            load_h = sum(load_series[h_start:j])
+            if pv_h * eta_pv_load >= load_h - epsilon:
+                break
     return need + reserve_floor_kwh
 
 
@@ -345,8 +360,14 @@ def _control_options(
         reserve_soc_kwh=reserve_soc_kwh,
         epsilon=epsilon,
     )
-    if max_batt_export > epsilon and allow_battery_export:
-        opts.append(HourControl(0.0, max_batt_export))
+    # Power-tier export options (max / half / quarter of slot AC cap), capped by SOC reserve.
+    min_viable = max(epsilon, discharge_ac_cap_kw * 0.25)
+    if max_batt_export >= min_viable and allow_battery_export:
+        for frac in (1.0, 0.5, 0.25):
+            tier_cap = discharge_ac_cap_kw * frac
+            tier_export = min(max_batt_export, tier_cap)
+            if tier_export >= min_viable:
+                opts.append(HourControl(0.0, tier_export))
 
     seen: set[tuple[float, float]] = set()
     out: list[HourControl] = []

@@ -17,7 +17,7 @@ DEFAULT_SIMULATION: dict[str, Any] = {
     },
 }
 
-RESERVE_MIN_SOC_MARGIN = 1.2
+RESERVE_MIN_SOC_MARGIN = 1.0
 
 MAX_BATTERY_CHARGE_POWER_KW = 5.0
 MAX_BATTERY_DISCHARGE_POWER_KW = 8.0
@@ -122,7 +122,7 @@ def plan_min_soc_kwh(cfg: dict[str, Any]) -> float:
 
 
 def plan_reserve_min_soc_pct(cfg: dict[str, Any]) -> float:
-    """Night-reserve floor: min_soc_pct × RESERVE_MIN_SOC_MARGIN (e.g. 15% → 18%)."""
+    """Night-reserve floor equals min_soc_pct exactly (no extra margin)."""
     return min(100.0, plan_min_soc_pct(cfg) * RESERVE_MIN_SOC_MARGIN)
 
 

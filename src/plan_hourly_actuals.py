@@ -11,7 +11,7 @@ from .plan_cost import (
     hour_meter_cash_pln,
 )
 from .inverter_sim import _initial_soc_kwh
-from .timer_plan import classify_action
+from .timer_plan import build_hour_timer_schedule, classify_action
 
 SLOTS_PER_HOUR_10M = 6
 Q15_PER_HOUR = 4
@@ -1036,6 +1036,59 @@ def sync_blended_current_hour_row(
     return
 
 
+def _ea_q15_slots_for_timer(
+    q15: list[dict[str, Any]],
+    opt_slots: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Map EA q15 rows to optimizer-slot shape for timer derivation."""
+    out: list[dict[str, Any]] = []
+    for i, q in enumerate(q15):
+        opt = opt_slots[i] if i < len(opt_slots) else {}
+        out.append({
+            "quarter": int(q.get("quarter", i)),
+            "pv": float(q.get("production") or 0),
+            "load": float(q.get("consumption") or 0),
+            "battery_delta": float(q.get("battery") or 0),
+            "grid_import": float(q.get("grid_import") or 0),
+            "grid_export": float(q.get("grid_export") or 0),
+            "soc_pct": q.get("soc"),
+            "reserve_kwh": opt.get("reserve_kwh"),
+        })
+    return out
+
+
+def _refresh_row_labels_from_replay(
+    row: dict[str, Any],
+    q15: list[dict[str, Any]],
+    opt_slots: list[dict[str, Any]],
+    *,
+    cfg: dict,
+    epsilon: float,
+) -> None:
+    """Recompute action/timer from replayed q15 (skip locked/manual timer)."""
+    hour = int(row.get("hour", 0))
+    row["action"] = classify_action(
+        bat_charge=float(row.get("bat_charge") or 0),
+        bat_discharge=float(row.get("bat_discharge") or 0),
+        grid_import=float(row.get("grid_import") or 0),
+        grid_export=float(row.get("grid_export") or 0),
+        production=float(row.get("production") or 0),
+        epsilon=epsilon,
+    )
+    if row.get("timer_schedule_manual") or row.get("hour_labels_locked"):
+        return
+    timer_slots = _ea_q15_slots_for_timer(q15, opt_slots)
+    row["timer_schedule"] = build_hour_timer_schedule(
+        hour,
+        timer_slots,
+        cfg,
+        action=row["action"],
+        grid_export=float(row.get("grid_export") or 0),
+        bat_charge=float(row.get("bat_charge") or 0),
+        epsilon=epsilon,
+    )
+
+
 def replay_forward_soc_on_rows(
     rows: list[dict[str, Any]],
     *,
@@ -1046,9 +1099,12 @@ def replay_forward_soc_on_rows(
     cfg: dict,
 ) -> None:
     """Forward replay from anchor SOC: merged q15 PV/load → sim chain."""
+    from .simulation_config import get_simulation_params
+
     if not rows:
         return
 
+    epsilon = float(get_simulation_params(cfg)["epsilon_kwh"])
     soc_kwh = anchor_soc_kwh
     for row in rows:
         date_key = str(row.get("plan_date") or "")
@@ -1064,7 +1120,10 @@ def replay_forward_soc_on_rows(
             soc_kwh, hour, pv_by_q, load_by_q, opt_slots, cfg,
         )
         apply_q15_physics_to_row(row, q15_out)
-        refresh_row_grid_cash(row, cfg)
+        refresh_row_grid_cash(row, cfg, epsilon=epsilon)
+        _refresh_row_labels_from_replay(
+            row, q15_out, opt_slots, cfg=cfg, epsilon=epsilon,
+        )
 
 
 def apply_current_hour_blend(

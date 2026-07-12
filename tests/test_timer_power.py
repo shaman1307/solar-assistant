@@ -10,6 +10,8 @@ from src.simulation_config import (
 from src.timer_plan import (
     ACTION_CHARGE_GRID,
     ACTION_DISCHARGE_GRID,
+    ACTION_DISCHARGE_LOAD,
+    ACTION_IDLE_PV,
     build_hour_timer_schedule,
     derive_timer_schedule_q15,
 )
@@ -41,7 +43,84 @@ def test_hour_timer_discharge_uses_discharge_cap():
     txt = build_hour_timer_schedule(
         22, slots, _CFG, action=ACTION_DISCHARGE_GRID, grid_export=6.0,
     )
-    assert "8.0kW" in txt
+    assert "6.5kW" in txt
+
+
+def test_hour_timer_discharge_half_power_for_two_kwh_in_30min():
+    """~2 kWh export only in 30 min → ~4.5kW timer (physics, no parallel load)."""
+    slots = [
+        {**_discharge_slot(0.0), "quarter": 0, "load": 0.0},
+        {**_discharge_slot(1.0), "quarter": 1, "load": 0.0},
+        {**_discharge_slot(1.0), "quarter": 2, "load": 0.0},
+        {**_discharge_slot(0.0), "quarter": 3, "load": 0.0},
+    ]
+    txt = build_hour_timer_schedule(
+        0, slots, _CFG, action=ACTION_DISCHARGE_GRID, grid_export=2.0,
+    )
+    assert "4.5kW" in txt
+    assert "8.0kW" not in txt
+
+
+def test_hour_timer_discharge_includes_parallel_load():
+    """Export + house load in same 30 min window → ~6 kW DC timer."""
+    cfg = {
+        **_CFG,
+        "simulation": {
+            "min_soc_pct": 16,
+            "losses_pct": {
+                "grid_to_battery": 7.5,
+                "battery_to_load_or_grid": 7.5,
+                "pv_to_grid": 7.5,
+                "pv_to_load": 7.5,
+            },
+        },
+    }
+    slots = [
+        {"action": ACTION_DISCHARGE_GRID, "battery_delta": -0.3, "grid_export": 0.0,
+         "battery_export_kwh": 0.0, "grid_import": 0.0, "pv": 0.0, "load": 0.2485},
+        {"action": ACTION_DISCHARGE_GRID, "battery_delta": -1.2, "grid_export": 0.8672,
+         "battery_export_kwh": 0.8672, "grid_import": 0.0, "pv": 0.0, "load": 0.296},
+        {"action": ACTION_DISCHARGE_GRID, "battery_delta": -1.5, "grid_export": 1.25,
+         "battery_export_kwh": 1.25, "grid_import": 0.0, "pv": 0.0, "load": 0.1681},
+        {"action": ACTION_DISCHARGE_LOAD, "battery_delta": -0.17, "grid_export": 0.0,
+         "battery_export_kwh": 0.0, "grid_import": 0.0, "pv": 0.0, "load": 0.1542},
+    ]
+    txt = build_hour_timer_schedule(
+        0, slots, cfg, action=ACTION_DISCHARGE_GRID, grid_export=2.117,
+    )
+    assert "6.0kW" in txt
+    assert "Dis 00:15-00:45" in txt
+
+
+def test_hour_timer_discharge_subtracts_pv_from_load():
+    """PV covers part of load — battery timer lower than export+load alone."""
+    cfg = {
+        **_CFG,
+        "simulation": {
+            "min_soc_pct": 16,
+            "losses_pct": {
+                "grid_to_battery": 7.5,
+                "battery_to_load_or_grid": 7.5,
+                "pv_to_grid": 7.5,
+                "pv_to_load": 7.5,
+            },
+        },
+    }
+    slots = [
+        {"action": ACTION_DISCHARGE_LOAD, "battery_delta": -0.03, "grid_export": 0.0,
+         "battery_export_kwh": 0.0, "grid_import": 0.0, "pv": 0.1797, "load": 0.2107},
+        {"action": ACTION_DISCHARGE_LOAD, "battery_delta": -0.03, "grid_export": 0.0,
+         "battery_export_kwh": 0.0, "grid_import": 0.0, "pv": 0.1797, "load": 0.2107},
+        {"action": ACTION_DISCHARGE_GRID, "battery_delta": -0.5, "grid_export": 0.4625,
+         "battery_export_kwh": 0.4625, "grid_import": 0.0, "pv": 0.1797, "load": 0.2107},
+        {"action": ACTION_DISCHARGE_GRID, "battery_delta": -0.5, "grid_export": 0.4625,
+         "battery_export_kwh": 0.4625, "grid_import": 0.0, "pv": 0.1797, "load": 0.2107},
+    ]
+    txt = build_hour_timer_schedule(
+        19, slots, cfg, action=ACTION_DISCHARGE_GRID, grid_export=0.925,
+    )
+    assert "2.5kW" in txt
+    assert "Dis 19:30-20:00" in txt
 
 
 def test_derive_timer_schedule_q15_discharge_power():
@@ -57,7 +136,23 @@ def test_derive_timer_schedule_q15_discharge_power():
         })
     sched = derive_timer_schedule_q15(rows, _CFG)
     dis = sched["discharge_slots"][0]
-    assert dis["power_kw"] == 8.0
+    assert dis["power_kw"] == 6.5
+
+
+def test_derive_timer_schedule_q15_half_discharge_power():
+    rows = []
+    for q in range(4):
+        rows.append({
+            "start": f"2026-07-12 00:{q * 15:02d}",
+            "action": ACTION_DISCHARGE_GRID if q in (1, 2) else ACTION_DISCHARGE_LOAD,
+            "battery": -2.0 if q in (1, 2) else -0.2,
+            "grid_import": 0,
+            "grid_export": 1.0 if q in (1, 2) else 0.0,
+            "soc": 25,
+        })
+    sched = derive_timer_schedule_q15(rows, _CFG)
+    dis = sched["discharge_slots"][0]
+    assert dis["power_kw"] == 4.5
 
 
 def test_charge_timer_capped_at_battery_max():

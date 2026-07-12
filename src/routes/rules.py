@@ -8,7 +8,7 @@ from fastapi import APIRouter
 
 from .. import sa_client
 from ..config import load_config, save_config
-from ..plan_simulation import build_plan_simulation, get_cached_plan
+from ..sqlite_store import read_plan
 from ..timer_plan import build_sa_schedule_from_hour_row, hour_has_timer_schedule
 from ..scheduler import get_last_hourly_sync, run_hourly_plan_sync
 from ..hour_boundary_scheduler import (
@@ -133,15 +133,10 @@ async def api_get_smart_mode() -> dict[str, Any]:
 @router.post("/api/rules/apply-plan")
 async def api_apply_plan() -> dict[str, Any]:
     cfg = load_config()
-    cached = get_cached_plan()
-    if cached:
-        sim_result = cached
-    else:
-        sim_result = await build_plan_simulation(
-            cfg,
-            force_refresh=False,
-            invalidate_inputs=False,
-        )
+    sim_result = read_plan()
+    if not sim_result:
+        return {"ok": False, "skipped": True, "error": "no_plan_in_sqlite",
+                "next_hour": None, "planned_action": None}
     now = now_warsaw()
     hour = now.hour
     rows = sim_result.get("rows") or []
