@@ -27,6 +27,7 @@ TEMPLATE_ROOT_KEYS: tuple[str, ...] = (
     "battery",
     "ev",
     "simulation",
+    "timer_schedule",
     "grid",
     "load",
     "sa",

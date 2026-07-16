@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -12,6 +13,7 @@ from .. import rce as rce_mod
 from .. import sa_client
 from ..config import load_config
 from .. import forecast as forecast_mod
+from ..debug_plan import merge_ea_plan_into_debug_day
 from ..debug_smart_plan import (
     apply_smart_plan_for_day,
     hourly_rows_from_pv_load,
@@ -19,7 +21,10 @@ from ..debug_smart_plan import (
 )
 from ..g12_pricing import get_buy_price
 from ..inverter_sim import simulate_day_from_profile
-from ..simulation_config import plan_min_soc_pct
+from ..plan_simulation import fetch_plan_inputs
+from ..simulation import apply_locked_hour_labels_from_plan, build_energy_arbitrage_plan
+from ..simulation_config import merge_simulation_defaults, plan_min_soc_pct
+from ..sqlite_store import read_plan
 
 router = APIRouter()
 
@@ -63,6 +68,32 @@ def _day_payload(
 ) -> dict[str, Any]:
     rows = _enrich_rows(sim.get("rows") or [], date_str, rce_quarter_by_date, cfg)
     return {"date": date_str, **sim, "rows": rows}
+
+
+async def _apply_ea_smart_for_today(
+    days: list[dict[str, Any]],
+    *,
+    date_str: str,
+    next_date: str,
+    cfg: dict,
+) -> None:
+    """Smart column via the same pipeline as Energy arbitrage (with SQLite lock)."""
+    cfg = merge_simulation_defaults(cfg)
+    forecast, metrics, rules, rce_prices = await fetch_plan_inputs(cfg, invalidate=False)
+    existing_plan = read_plan()
+    ea_plan = await asyncio.to_thread(
+        build_energy_arbitrage_plan,
+        forecast,
+        metrics,
+        rules,
+        cfg,
+        rce_prices=rce_prices,
+    )
+    now = influxdb_mod.now_warsaw()
+    apply_locked_hour_labels_from_plan(ea_plan, existing_plan, now)
+    merge_ea_plan_into_debug_day(days[0], ea_plan, date_str)
+    if len(days) > 1:
+        merge_ea_plan_into_debug_day(days[1], ea_plan, next_date)
 
 
 @router.get("/api/inverter-debug")
@@ -134,8 +165,6 @@ async def api_inverter_debug(
             initial_soc_kwh=day1.get("end_soc_kwh"),
         )
     else:
-        # Future day (e.g. tomorrow when user selects today): fall back to forecast,
-        # same mechanism as day-3 horizon profile.
         next_fc = await forecast_mod.get_horizon_day_profile(next_date, cfg)
         day2 = simulate_day_from_profile(
             {"pv": next_fc["pv"], "load": next_fc["load"]},
@@ -154,25 +183,32 @@ async def api_inverter_debug(
     }
     day3_rows = hourly_rows_from_pv_load(horizon_day["pv"], horizon_day["load"])
 
-    end_soc = apply_smart_plan_for_day(
-        day1_payload,
-        day2_rows,
-        date,
-        cfg,
-        rce_quarters=rce_quarter_by_date.get(date),
-        plan_from_hour=plan_from_hour,
-        live_soc_kwh=live_soc_kwh,
-    )
-
-    if len(days) > 1:
-        apply_smart_plan_for_day(
-            days[1],
-            day3_rows,
-            next_date,
-            cfg,
-            rce_quarters=rce_quarter_by_date.get(next_date),
-            initial_soc_kwh=end_soc,
+    if date == today_str:
+        await _apply_ea_smart_for_today(
+            days,
+            date_str=date,
+            next_date=next_date,
+            cfg=cfg,
         )
+    else:
+        end_soc = apply_smart_plan_for_day(
+            day1_payload,
+            day2_rows,
+            date,
+            cfg,
+            rce_quarters=rce_quarter_by_date.get(date),
+            plan_from_hour=plan_from_hour,
+            live_soc_kwh=live_soc_kwh,
+        )
+        if len(days) > 1:
+            apply_smart_plan_for_day(
+                days[1],
+                day3_rows,
+                next_date,
+                cfg,
+                rce_quarters=rce_quarter_by_date.get(next_date),
+                initial_soc_kwh=end_soc,
+            )
 
     return {
         "date": date,

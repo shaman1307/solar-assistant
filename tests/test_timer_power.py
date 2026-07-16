@@ -129,7 +129,7 @@ def test_derive_timer_schedule_q15_discharge_power():
         rows.append({
             "start": f"2026-06-26 22:{q * 15:02d}",
             "action": ACTION_DISCHARGE_GRID,
-            "battery": 0,
+            "battery": -1.5,
             "grid_import": 0,
             "grid_export": 1.5,
             "soc": 55,

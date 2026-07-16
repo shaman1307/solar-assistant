@@ -12,7 +12,11 @@ from typing import Any
 import yaml
 
 from .grid_config import merge_grid_defaults
-from .simulation_config import merge_simulation_defaults, normalize_battery_power_limits
+from .simulation_config import (
+    merge_simulation_defaults,
+    merge_timer_schedule_defaults,
+    normalize_battery_power_limits,
+)
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +122,7 @@ def load_config() -> dict:
         cfg = deepcopy(runtime)
 
     cfg = merge_simulation_defaults(cfg)
+    merge_timer_schedule_defaults(cfg)
     merge_grid_defaults(cfg)
     normalize_battery_power_limits(cfg)
     ev = cfg.setdefault("ev", {})

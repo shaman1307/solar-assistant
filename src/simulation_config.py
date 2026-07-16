@@ -17,6 +17,12 @@ DEFAULT_SIMULATION: dict[str, Any] = {
     },
 }
 
+DEFAULT_TIMER_SCHEDULE: dict[str, Any] = {
+    "min_block_minutes": 30,
+    # Minimum hourly battery charge (import) / discharge (export) in kWh — smart Bat Charge/Discharge.
+    "min_hourly_transfer_kwh": 2.0,
+}
+
 RESERVE_MIN_SOC_MARGIN = 1.0
 
 MAX_BATTERY_CHARGE_POWER_KW = 5.0
@@ -77,6 +83,14 @@ def plan_timer_charge_grid_kw(cfg: dict[str, Any]) -> float:
     return round(dc_kw / float(eta_grid), 2)
 
 
+def merge_timer_schedule_defaults(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Ensure cfg['timer_schedule'] exists with default values (in-memory merge only)."""
+    ts = cfg.setdefault("timer_schedule", {})
+    for key, value in DEFAULT_TIMER_SCHEDULE.items():
+        ts.setdefault(key, value)
+    return cfg
+
+
 def merge_simulation_defaults(cfg: dict[str, Any]) -> dict[str, Any]:
     """Ensure cfg['simulation'] exists with default values (in-memory merge only)."""
     sim = cfg.setdefault("simulation", {})
@@ -88,6 +102,28 @@ def merge_simulation_defaults(cfg: dict[str, Any]) -> dict[str, Any]:
         else:
             sim.setdefault(key, value)
     return cfg
+
+
+def get_timer_schedule_params(cfg: dict[str, Any]) -> dict[str, float | int]:
+    """Return normalized Timer Schedule thresholds from config."""
+    ts = merge_timer_schedule_defaults(deepcopy(cfg)).get("timer_schedule", {})
+    min_block = int(ts.get("min_block_minutes", DEFAULT_TIMER_SCHEDULE["min_block_minutes"]))
+    min_block = max(15, min(60, min_block))
+    if min_block % 15 != 0:
+        min_block = max(15, (min_block // 15) * 15)
+    min_hourly = float(ts.get("min_hourly_transfer_kwh", DEFAULT_TIMER_SCHEDULE["min_hourly_transfer_kwh"]))
+    return {
+        "min_block_minutes": min_block,
+        "min_hourly_transfer_kwh": max(0.0, min_hourly),
+    }
+
+
+def plan_timer_min_block_minutes(cfg: dict[str, Any]) -> int:
+    return int(get_timer_schedule_params(cfg)["min_block_minutes"])
+
+
+def plan_timer_min_hourly_transfer_kwh(cfg: dict[str, Any]) -> float:
+    return float(get_timer_schedule_params(cfg)["min_hourly_transfer_kwh"])
 
 
 def get_simulation_params(cfg: dict[str, Any]) -> dict[str, float | int]:

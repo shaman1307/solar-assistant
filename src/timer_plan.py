@@ -25,6 +25,7 @@ from .simulation_config import (
     plan_min_soc_pct,
     plan_timer_charge_power_kw,
     plan_timer_discharge_power_kw,
+    plan_timer_min_block_minutes,
 )
 from .plan_spill import pv_load_energy_split
 
@@ -337,6 +338,30 @@ def _charge_timer_cap_pct(slots: list[dict[str, Any]], cfg: dict) -> int:
     return min_soc
 
 
+def _slot_bat_charge_kwh(slot: dict[str, Any]) -> float:
+    """Battery charge kWh in a q15 slot or EA row."""
+    if slot.get("battery_delta") is not None:
+        return max(0.0, float(slot.get("battery_delta") or 0))
+    if slot.get("bat_charge") is not None:
+        return max(0.0, float(slot.get("bat_charge") or 0))
+    bat = slot.get("battery")
+    if bat is not None:
+        return max(0.0, float(bat))
+    return 0.0
+
+
+def _slot_bat_discharge_kwh(slot: dict[str, Any]) -> float:
+    """Battery discharge kWh in a q15 slot or EA row (smart Bat Discharge)."""
+    if slot.get("battery_delta") is not None:
+        return max(0.0, -float(slot.get("battery_delta") or 0))
+    if slot.get("bat_discharge") is not None:
+        return max(0.0, float(slot.get("bat_discharge") or 0))
+    bat = slot.get("battery")
+    if bat is not None:
+        return max(0.0, -float(bat))
+    return 0.0
+
+
 def _hour_timer_segment(
     hour: int,
     slots: list[dict[str, Any]],
@@ -356,6 +381,7 @@ def _hour_timer_segment(
     if not active_q or total_kwh <= epsilon:
         return None
 
+    min_block = plan_timer_min_block_minutes(cfg)
     min_soc = int(plan_min_soc_pct(cfg))
     hour_start = hour * 60
 
@@ -364,11 +390,11 @@ def _hour_timer_segment(
     natural_from = hour_start + first_q * 15
     to_min = hour_start + (last_q + 1) * 15
     from_min = natural_from
-    if to_min - from_min < MIN_TIMER_BLOCK_MINUTES:
-        from_min = max(to_min - MIN_TIMER_BLOCK_MINUTES, hour_start)
-    if to_min - from_min < MIN_TIMER_BLOCK_MINUTES:
-        to_min = min(hour_start + 60, from_min + MIN_TIMER_BLOCK_MINUTES)
-    if to_min - from_min < MIN_TIMER_BLOCK_MINUTES:
+    if to_min - from_min < min_block:
+        from_min = max(to_min - min_block, hour_start)
+    if to_min - from_min < min_block:
+        to_min = min(hour_start + 60, from_min + min_block)
+    if to_min - from_min < min_block:
         return None
 
     power_kw = (
@@ -400,8 +426,8 @@ def _hour_timer_segment(
 def _hour_slot_totals(slots: list[dict[str, Any]]) -> dict[str, float]:
     """Hourly sums from q15 slots for action / timer display."""
     return {
-        "bat_charge": sum(max(0.0, float(s.get("battery_delta") or 0)) for s in slots),
-        "bat_discharge": sum(max(0.0, -float(s.get("battery_delta") or 0)) for s in slots),
+        "bat_charge": sum(_slot_bat_charge_kwh(s) for s in slots),
+        "bat_discharge": sum(_slot_bat_discharge_kwh(s) for s in slots),
         "grid_import": sum(float(s.get("grid_import") or 0) for s in slots),
         "grid_export": sum(float(s.get("grid_export") or 0) for s in slots),
         "production": sum(float(s.get("pv") or 0) for s in slots),
@@ -454,6 +480,9 @@ def build_hour_timer_schedule(
         )
         return seg or _fallback_charge_grid_timer(hour, slots, cfg, epsilon=epsilon)
     if act == ACTION_DISCHARGE_GRID and g_exp > 0:
+        bd = totals["bat_discharge"]
+        if bd <= epsilon:
+            return ""
         seg = _hour_timer_segment(
             hour, slots, ACTION_DISCHARGE_GRID, cfg,
             epsilon=epsilon, hour_action=act,
@@ -545,10 +574,11 @@ def _merge_blocks_q15(rows: list[dict], target_action: str) -> list[dict[str, An
 
         slot_min = _minute_of_day_from_start(row)
         if target_action == ACTION_CHARGE_GRID:
-            import_kwh = float(row.get("battery", 0) or 0) + float(
-                row.get("grid_import", row.get("buy", 0)) or 0
+            import_kwh = float(row.get("grid_import", row.get("buy", 0)) or 0)
+            power_kw = max(
+                float(row.get("battery", 0) or 0) + import_kwh,
+                1.0,
             )
-            power_kw = max(import_kwh * 4.0, 1.0)
         else:
             export_kwh = float(row.get("grid_export", row.get("feed_in", 0)) or 0)
             load_kwh = float(row.get("consumption") or row.get("load") or 0)
@@ -584,9 +614,6 @@ def _merge_blocks_q15(rows: list[dict], target_action: str) -> list[dict[str, An
     return blocks
 
 
-MIN_TIMER_BLOCK_MINUTES = 30
-
-
 def _slot_load_kwh(slot: dict[str, Any]) -> float:
     """House load kWh in a q15 slot (optimizer or EA row shape)."""
     for key in ("load", "consumption"):
@@ -613,7 +640,8 @@ def _infer_discharge_timer_power_kw(
 ) -> float:
     """SA timer DC kW: export + load deficit after PV, over duration."""
     max_kw = plan_timer_discharge_power_kw(cfg)
-    if export_kwh <= 0.001 or duration_min < MIN_TIMER_BLOCK_MINUTES:
+    min_block = plan_timer_min_block_minutes(cfg)
+    if export_kwh <= 0.001 or duration_min < min_block:
         return max_kw
     params = get_simulation_params(cfg)
     eta_out = float(params["eta_battery_out"])
@@ -632,9 +660,11 @@ def _infer_discharge_timer_power_kw(
 
 def _filter_min_duration_blocks(
     blocks: list[dict[str, Any]],
-    min_minutes: int = MIN_TIMER_BLOCK_MINUTES,
+    min_minutes: int | None = None,
 ) -> list[dict[str, Any]]:
     """Drop SA timer blocks shorter than min_minutes (after q15 merge)."""
+    if min_minutes is None:
+        min_minutes = 30
     return [b for b in blocks if (b["to_min"] - b["from_min"]) >= min_minutes]
 
 
@@ -692,9 +722,11 @@ def _extend_blocks_to_min_duration(
     blocks: list[dict[str, Any]],
     rows: list[dict],
     target_action: str,
-    min_minutes: int = MIN_TIMER_BLOCK_MINUTES,
+    min_minutes: int | None = None,
 ) -> list[dict[str, Any]]:
     """Extend short blocks across following q15 slots with the same action."""
+    if min_minutes is None:
+        min_minutes = 30
     actions_by_min: dict[int, str] = {}
     for row in rows:
         if row.get("start") == "TOTAL":
@@ -750,17 +782,24 @@ def derive_timer_schedule_q15(
     existing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     existing = existing or {}
+    min_block = plan_timer_min_block_minutes(cfg)
     charge_merged = _merge_blocks_q15(rows, ACTION_CHARGE_GRID)
     discharge_merged = _merge_blocks_q15(rows, ACTION_DISCHARGE_GRID)
     charge_blocks = _filter_min_duration_blocks(
         _remerge_overlapping_blocks(
-            _extend_blocks_to_min_duration(charge_merged, rows, ACTION_CHARGE_GRID),
+            _extend_blocks_to_min_duration(
+                charge_merged, rows, ACTION_CHARGE_GRID, min_minutes=min_block,
+            ),
         ),
+        min_minutes=min_block,
     )
     discharge_blocks = _filter_min_duration_blocks(
         _remerge_overlapping_blocks(
-            _extend_blocks_to_min_duration(discharge_merged, rows, ACTION_DISCHARGE_GRID),
+            _extend_blocks_to_min_duration(
+                discharge_merged, rows, ACTION_DISCHARGE_GRID, min_minutes=min_block,
+            ),
         ),
+        min_minutes=min_block,
     )
 
     return {
@@ -857,8 +896,14 @@ def quarter_start_minute(now: datetime) -> int:
     return now.hour * 60 + (now.minute // 15) * 15
 
 
-def clip_timer_schedule_not_before(timer_txt: str, earliest_from_min: int) -> str:
+def clip_timer_schedule_not_before(
+    timer_txt: str,
+    earliest_from_min: int,
+    *,
+    cfg: dict | None = None,
+) -> str:
     """Trim timer segments so none start before *earliest_from_min* (no retroactive slots)."""
+    min_block = plan_timer_min_block_minutes(cfg or {})
     if not str(timer_txt or "").strip():
         return ""
     parts: list[str] = []
@@ -870,7 +915,7 @@ def clip_timer_schedule_not_before(timer_txt: str, earliest_from_min: int) -> st
         if to_min <= earliest_from_min:
             continue
         clip_from = max(from_min, earliest_from_min)
-        if to_min - clip_from < MIN_TIMER_BLOCK_MINUTES:
+        if to_min - clip_from < min_block:
             continue
         prefix = "Chg" if seg["kind"] == "chg" else "Dis"
         parts.append(
@@ -1194,8 +1239,14 @@ def sa_schedule_matches_plan_row(
     return True
 
 
-def format_hour_timer_schedule(hour: int, schedule: dict[str, Any]) -> str:
-    """SA timer text for one clock hour — clipped range; omit if overlap < 30 min."""
+def format_hour_timer_schedule(
+    hour: int,
+    schedule: dict[str, Any],
+    *,
+    cfg: dict | None = None,
+) -> str:
+    """SA timer text for one clock hour — clipped range; omit if overlap below min period."""
+    min_block = plan_timer_min_block_minutes(cfg or {})
     parts: list[str] = []
     for kind, prefix in (("charge_slots", "Chg"), ("discharge_slots", "Dis")):
         for slot in schedule.get(kind) or []:
@@ -1205,7 +1256,7 @@ def format_hour_timer_schedule(hour: int, schedule: dict[str, Any]) -> str:
             if clip is None:
                 continue
             clip_from, clip_to, dur = clip
-            if dur < MIN_TIMER_BLOCK_MINUTES:
+            if dur < min_block:
                 continue
             cap = slot.get("capacity_pct", "")
             pw = slot.get("power_kw", 0)

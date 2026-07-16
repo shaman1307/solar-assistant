@@ -166,7 +166,53 @@ def _plan_start_soc_kwh(
     return live_soc_kwh
 
 
-def run_simulation(
+def apply_locked_hour_labels_from_plan(
+    result: dict[str, Any],
+    existing: dict[str, Any] | None,
+    now: datetime,
+) -> None:
+    """After any rebuild: if SQLite had locked timer/action for current hour — keep it.
+
+    At :00 (hour boundary) we instead lock from the fresh optimizer output.
+    """
+    today_str = now.strftime("%Y-%m-%d")
+    hour = now.hour
+
+    if now.minute == 0:
+        for row in result.get("rows") or []:
+            if row.get("start") == "TOTAL":
+                continue
+            if str(row.get("plan_date") or "") == today_str and int(row.get("hour", -1)) == hour:
+                if not row.get("timer_schedule_manual"):
+                    row["hour_labels_locked"] = True
+                break
+        return
+
+    if not existing:
+        return
+    existing_row = next(
+        (
+            r for r in (existing.get("rows") or [])
+            if r.get("start") != "TOTAL"
+            and str(r.get("plan_date") or "") == today_str
+            and int(r.get("hour", -1)) == hour
+        ),
+        None,
+    )
+    if existing_row is None or not existing_row.get("hour_labels_locked"):
+        return
+    for row in result.get("rows") or []:
+        if row.get("start") == "TOTAL":
+            continue
+        if str(row.get("plan_date") or "") == today_str and int(row.get("hour", -1)) == hour:
+            if not row.get("timer_schedule_manual"):
+                row["timer_schedule"] = existing_row.get("timer_schedule", "")
+                row["action"] = existing_row.get("action", "")
+                row["hour_labels_locked"] = True
+            break
+
+
+def build_energy_arbitrage_plan(
     forecast: dict[str, Any],
     live_metrics: dict[str, Any],
     rules: dict[str, Any],
@@ -573,6 +619,19 @@ def run_simulation(
         "proposed_schedule": timer_schedule,
         "g12_tariff_name": cfg["grid"]["g12"].get("tariff_name", "G12"),
     }
+
+
+def run_simulation(
+    forecast: dict[str, Any],
+    live_metrics: dict[str, Any],
+    rules: dict[str, Any],
+    cfg: dict,
+    rce_prices: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Rolling energy arbitrage plan (same core as Rules / Debug smart today)."""
+    return build_energy_arbitrage_plan(
+        forecast, live_metrics, rules, cfg, rce_prices=rce_prices,
+    )
 
 
 def compute_balance_delta(

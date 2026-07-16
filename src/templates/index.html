@@ -2494,6 +2494,23 @@
         </div>
       </fieldset>
 
+      <!-- Timer Schedule thresholds -->
+      <fieldset class="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
+        <legend class="text-xs font-semibold text-gray-400 uppercase tracking-wider px-1">Timer Schedule</legend>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="text-xs text-gray-500 block mb-1">Min import/export period (min)</label>
+            <input name="timer_schedule.min_block_minutes" type="number" step="15" min="15" max="60" required value="30"
+              class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 block mb-1">Min hourly battery charge/discharge (kWh)</label>
+            <input name="timer_schedule.min_hourly_transfer_kwh" type="number" step="0.1" min="0" required value="2"
+              class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          </div>
+        </div>
+      </fieldset>
+
       <!-- Buy Tariff -->
       <fieldset class="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
         <legend class="text-xs font-semibold text-gray-400 uppercase tracking-wider px-1">Buy Tariff</legend>
@@ -5297,6 +5314,8 @@ function populateForm(cfg) {
     'simulation.losses_pct.battery_to_load_or_grid': 7.5,
     'simulation.losses_pct.pv_to_grid': 7.5,
     'simulation.losses_pct.pv_to_load': 7.5,
+    'timer_schedule.min_block_minutes': 30,
+    'timer_schedule.min_hourly_transfer_kwh': 2,
     'battery.max_charge_power_kw': 5,
     'battery.max_discharge_power_kw': 8,
   };

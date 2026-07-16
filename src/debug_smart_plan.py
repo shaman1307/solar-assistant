@@ -15,6 +15,7 @@ from .simulation_config import (
     plan_min_soc_kwh,
     plan_reserve_min_soc_kwh,
     plan_timer_discharge_ac_kw,
+    plan_timer_min_hourly_transfer_kwh,
 )
 from .timer_plan import (
     classify_action as timer_classify_action,
@@ -160,6 +161,264 @@ def merge_today_hourly_profile(
     return pv, load
 
 
+def _hour_bat_charge_kwh(slots: list[dict[str, Any]]) -> float:
+    return sum(max(0.0, float(s.get("battery_delta") or 0)) for s in slots)
+
+
+def _hour_bat_discharge_kwh(slots: list[dict[str, Any]]) -> float:
+    return sum(max(0.0, -float(s.get("battery_delta") or 0)) for s in slots)
+
+
+def _hour_battery_grid_export_kwh(slots: list[dict[str, Any]]) -> float:
+    return sum(max(0.0, float(s.get("battery_export_kwh") or 0)) for s in slots)
+
+
+def _hours_below_min_battery_transfer(
+    q15_by_hour: dict[int, list[dict[str, Any]]],
+    *,
+    min_kwh: float,
+    epsilon: float,
+    from_hour: int,
+) -> tuple[set[int], set[int]]:
+    """Hours where planned grid battery export/charge is below the configured floor."""
+    strip_discharge: set[int] = set()
+    strip_charge: set[int] = set()
+    if min_kwh <= epsilon:
+        return strip_discharge, strip_charge
+
+    for h in range(max(0, int(from_hour)), 24):
+        slots = q15_by_hour.get(h) or []
+        if not slots:
+            continue
+        bat_dis = _hour_bat_discharge_kwh(slots)
+        bat_chg = _hour_bat_charge_kwh(slots)
+        batt_grid = _hour_battery_grid_export_kwh(slots)
+        has_export_intent = batt_grid > epsilon or any(
+            float(s.get("ctrl_battery_export_kwh") or 0) > epsilon for s in slots
+        )
+        has_grid_charge = any(float(s.get("grid_charge_kw") or 0) > epsilon for s in slots)
+        if epsilon < batt_grid < min_kwh:
+            strip_discharge.add(h)
+        elif has_export_intent and epsilon < bat_dis < min_kwh:
+            strip_discharge.add(h)
+        if has_grid_charge and epsilon < bat_chg < min_kwh:
+            strip_charge.add(h)
+    return strip_discharge, strip_charge
+
+
+def _soc_at_hour_start(
+    q15_by_hour: dict[int, list[dict[str, Any]]],
+    hour: int,
+    *,
+    from_hour: int,
+    initial_soc_kwh: float,
+) -> float:
+    if hour <= from_hour:
+        return initial_soc_kwh
+    prev = q15_by_hour.get(hour - 1) or []
+    if prev:
+        return float(prev[-1].get("soc_end") or initial_soc_kwh)
+    return initial_soc_kwh
+
+
+def _simulate_q15_controls(
+    controls: list[HourControl],
+    reserves: list[float],
+    *,
+    start_step: int,
+    steps: int,
+    initial_soc_kwh: float,
+    pv_q: list[float],
+    load_q: list[float],
+    rce_q: list[float | None],
+    start_dt: datetime,
+    cfg: dict,
+    battery_cap: float,
+    min_kwh: float,
+    discharge_ac_kw: float,
+    eps_q: float,
+    eta_grid: float,
+    eta_out: float,
+    eta_pv_load: float,
+    eta_pv_grid: float,
+    strip_discharge_hours: set[int] | None = None,
+    strip_charge_hours: set[int] | None = None,
+    keep_hours_before: int | None = None,
+    q15_by_hour_keep: dict[int, list[dict[str, Any]]] | None = None,
+) -> tuple[dict[int, list[dict[str, Any]]], list[dict[str, Any]], float]:
+    """Replay optimizer controls into q15 slots (optional per-hour grid battery strip)."""
+    strip_discharge_hours = strip_discharge_hours or set()
+    strip_charge_hours = strip_charge_hours or set()
+    q15_by_hour: dict[int, list[dict[str, Any]]] = {h: [] for h in range(24)}
+    if q15_by_hour_keep:
+        for h, slots in q15_by_hour_keep.items():
+            q15_by_hour[h] = list(slots)
+
+    q15_plan_rows: list[dict[str, Any]] = []
+    if keep_hours_before is not None and q15_by_hour_keep:
+        for h in range(keep_hours_before):
+            for slot in q15_by_hour_keep.get(h) or []:
+                q = int(slot.get("quarter", 0))
+                dt = start_dt.replace(hour=h, minute=q * 15)
+                q15_plan_rows.append({
+                    "start": dt.strftime("%d-%m-%Y %H:%M"),
+                    "hour": h,
+                    "action": slot.get("action"),
+                    "soc": slot.get("soc_pct"),
+                    "grid_import": round(float(slot.get("grid_import") or 0), 4),
+                    "grid_export": round(float(slot.get("grid_export") or 0), 4),
+                    "battery": round(float(slot.get("battery_delta") or 0), 4),
+                })
+
+    soc = initial_soc_kwh
+    from_hour = start_step // Q15_PER_HOUR
+    replay_from_hour = keep_hours_before if keep_hours_before is not None else from_hour
+
+    for step in range(steps):
+        global_step = start_step + step
+        h = global_step // Q15_PER_HOUR
+        if h < replay_from_hour:
+            continue
+        quarter = global_step % Q15_PER_HOUR
+        ctrl = controls[step] if step < len(controls) else HourControl(0.0, 0.0)
+        if h in strip_discharge_hours:
+            ctrl = HourControl(ctrl.grid_charge_kw, 0.0, ctrl.load_from_grid)
+        if h in strip_charge_hours:
+            ctrl = HourControl(0.0, ctrl.battery_export_kwh, ctrl.load_from_grid)
+
+        phys = simulate_hour(
+            soc, pv_q[step], load_q[step], ctrl,
+            battery_cap=battery_cap,
+            min_kwh=min_kwh,
+            ac_cap_kw=discharge_ac_kw * STEP_SCALE,
+            eta_grid=eta_grid,
+            eta_out=eta_out,
+            eta_pv_load=eta_pv_load,
+            eta_pv_grid=eta_pv_grid,
+            epsilon=eps_q,
+            reserve_soc_kwh=reserves[step],
+        )
+        batt_exp = min(ctrl.battery_export_kwh, phys.grid_export)
+        soc_pct = (phys.soc_end / battery_cap) * 100.0 if battery_cap else 0.0
+        action = timer_classify_action(
+            bat_charge=max(0.0, phys.battery_delta),
+            bat_discharge=max(0.0, -phys.battery_delta),
+            grid_import=phys.grid_import,
+            grid_export=phys.grid_export,
+            production=pv_q[step],
+            epsilon=eps_q,
+        )
+        dt = start_dt + timedelta(hours=h, minutes=quarter * 15)
+        slot = {
+            "hour": h,
+            "quarter": quarter,
+            "action": action,
+            "pv": pv_q[step],
+            "load": load_q[step],
+            "grid_import": phys.grid_import,
+            "grid_export": phys.grid_export,
+            "battery_delta": phys.battery_delta,
+            "battery_export_kwh": batt_exp,
+            "grid_charge_kw": ctrl.grid_charge_kw,
+            "load_from_grid": ctrl.load_from_grid,
+            "ctrl_battery_export_kwh": ctrl.battery_export_kwh,
+            "soc_pct": soc_pct,
+            "soc_end": phys.soc_end,
+            "reserve_kwh": reserves[step],
+            "rce": rce_q[global_step] if global_step < len(rce_q) else None,
+        }
+        q15_by_hour[h] = [
+            s for s in q15_by_hour.get(h, []) if int(s.get("quarter", -1)) != quarter
+        ]
+        q15_by_hour[h].append(slot)
+        q15_by_hour[h].sort(key=lambda s: int(s.get("quarter", 0)))
+        q15_plan_rows.append({
+            "start": dt.strftime("%d-%m-%Y %H:%M"),
+            "hour": h,
+            "action": action,
+            "soc": soc_pct,
+            "grid_import": round(phys.grid_import, 4),
+            "grid_export": round(phys.grid_export, 4),
+            "battery": round(phys.battery_delta, 4),
+        })
+        soc = phys.soc_end
+
+    return q15_by_hour, q15_plan_rows, soc
+
+
+def _apply_min_hourly_transfer_floor(
+    q15_by_hour: dict[int, list[dict[str, Any]]],
+    q15_plan_rows: list[dict[str, Any]],
+    controls: list[HourControl],
+    reserves: list[float],
+    *,
+    start_step: int,
+    steps: int,
+    from_hour: int,
+    initial_soc_kwh: float,
+    pv_q: list[float],
+    load_q: list[float],
+    rce_q: list[float | None],
+    start_dt: datetime,
+    cfg: dict,
+    battery_cap: float,
+    min_kwh: float,
+    discharge_ac_kw: float,
+    eps_q: float,
+    eta_grid: float,
+    eta_out: float,
+    eta_pv_load: float,
+    eta_pv_grid: float,
+) -> tuple[dict[int, list[dict[str, Any]]], list[dict[str, Any]], float]:
+    """Drop sub-threshold grid battery import/export and replay SOC from the first affected hour."""
+    min_hourly = plan_timer_min_hourly_transfer_kwh(cfg)
+    strip_dis, strip_chg = _hours_below_min_battery_transfer(
+        q15_by_hour, min_kwh=min_hourly, epsilon=eps_q, from_hour=from_hour,
+    )
+    if not strip_dis and not strip_chg:
+        end_soc = initial_soc_kwh
+        for h in range(23, from_hour - 1, -1):
+            slots = q15_by_hour.get(h) or []
+            if slots:
+                end_soc = float(slots[-1].get("soc_end") or end_soc)
+                break
+        return q15_by_hour, q15_plan_rows, end_soc
+
+    replay_hour = min(strip_dis | strip_chg)
+    replay_soc = _soc_at_hour_start(
+        q15_by_hour, replay_hour, from_hour=from_hour, initial_soc_kwh=initial_soc_kwh,
+    )
+    keep: dict[int, list[dict[str, Any]]] = {}
+    for h in range(replay_hour):
+        if q15_by_hour.get(h):
+            keep[h] = list(q15_by_hour[h])
+
+    return _simulate_q15_controls(
+        controls,
+        reserves,
+        start_step=start_step,
+        steps=steps,
+        initial_soc_kwh=replay_soc,
+        pv_q=pv_q,
+        load_q=load_q,
+        rce_q=rce_q,
+        start_dt=start_dt,
+        cfg=cfg,
+        battery_cap=battery_cap,
+        min_kwh=min_kwh,
+        discharge_ac_kw=discharge_ac_kw,
+        eps_q=eps_q,
+        eta_grid=eta_grid,
+        eta_out=eta_out,
+        eta_pv_load=eta_pv_load,
+        eta_pv_grid=eta_pv_grid,
+        strip_discharge_hours=strip_dis,
+        strip_charge_hours=strip_chg,
+        keep_hours_before=replay_hour,
+        q15_by_hour_keep=keep,
+    )
+
+
 def run_day_smart_q15_plan(
     *,
     date_str: str,
@@ -255,67 +514,50 @@ def run_day_smart_q15_plan(
         step_scale=STEP_SCALE, end_dt=end_dt, today_date=today_date, forecast=forecast,
     )
 
-    soc = initial_soc_kwh
-    q15_plan_rows: list[dict[str, Any]] = []
-    q15_by_hour: dict[int, list[dict[str, Any]]] = {h: [] for h in range(24)}
+    q15_by_hour, q15_plan_rows, soc = _simulate_q15_controls(
+        controls,
+        reserves,
+        start_step=start_step,
+        steps=steps,
+        initial_soc_kwh=initial_soc_kwh,
+        pv_q=pv_q,
+        load_q=load_q,
+        rce_q=rce_q,
+        start_dt=start_dt,
+        cfg=cfg,
+        battery_cap=battery_cap,
+        min_kwh=min_kwh,
+        discharge_ac_kw=discharge_ac_kw,
+        eps_q=eps_q,
+        eta_grid=eta_grid,
+        eta_out=eta_out,
+        eta_pv_load=eta_pv_load,
+        eta_pv_grid=eta_pv_grid,
+    )
 
-    for step in range(steps):
-        global_step = start_step + step
-        h = global_step // Q15_PER_HOUR
-        quarter = global_step % Q15_PER_HOUR
-        ctrl = controls[step] if step < len(controls) else HourControl(0.0, 0.0)
-        phys = simulate_hour(
-            soc, pv_q[step], load_q[step], ctrl,
-            battery_cap=battery_cap,
-            min_kwh=min_kwh,
-            ac_cap_kw=discharge_ac_kw * STEP_SCALE,
-            eta_grid=eta_grid,
-            eta_out=eta_out,
-            eta_pv_load=eta_pv_load,
-            eta_pv_grid=eta_pv_grid,
-            epsilon=eps_q,
-            reserve_soc_kwh=reserves[step],
-        )
-        batt_exp = min(ctrl.battery_export_kwh, phys.grid_export)
-        soc_pct = (phys.soc_end / battery_cap) * 100.0 if battery_cap else 0.0
-        action = timer_classify_action(
-            bat_charge=max(0.0, phys.battery_delta),
-            bat_discharge=max(0.0, -phys.battery_delta),
-            grid_import=phys.grid_import,
-            grid_export=phys.grid_export,
-            production=pv_q[step],
-            epsilon=eps_q,
-        )
-        dt = start_dt + timedelta(hours=h, minutes=quarter * 15)
-        slot = {
-            "hour": h,
-            "quarter": quarter,
-            "action": action,
-            "pv": pv_q[step],
-            "load": load_q[step],
-            "grid_import": phys.grid_import,
-            "grid_export": phys.grid_export,
-            "battery_delta": phys.battery_delta,
-            "battery_export_kwh": batt_exp,
-            "grid_charge_kw": ctrl.grid_charge_kw,
-            "load_from_grid": ctrl.load_from_grid,
-            "ctrl_battery_export_kwh": ctrl.battery_export_kwh,
-            "soc_pct": soc_pct,
-            "soc_end": phys.soc_end,
-            "reserve_kwh": reserves[step],
-            "rce": rce_q[global_step] if global_step < len(rce_q) else None,
-        }
-        q15_by_hour[h].append(slot)
-        q15_plan_rows.append({
-            "start": dt.strftime("%d-%m-%Y %H:%M"),
-            "hour": h,
-            "action": action,
-            "soc": soc_pct,
-            "grid_import": round(phys.grid_import, 4),
-            "grid_export": round(phys.grid_export, 4),
-            "battery": round(phys.battery_delta, 4),
-        })
-        soc = phys.soc_end
+    q15_by_hour, q15_plan_rows, soc = _apply_min_hourly_transfer_floor(
+        q15_by_hour,
+        q15_plan_rows,
+        controls,
+        reserves,
+        start_step=start_step,
+        steps=steps,
+        from_hour=from_hour,
+        initial_soc_kwh=initial_soc_kwh,
+        pv_q=pv_q,
+        load_q=load_q,
+        rce_q=rce_q,
+        start_dt=start_dt,
+        cfg=cfg,
+        battery_cap=battery_cap,
+        min_kwh=min_kwh,
+        discharge_ac_kw=discharge_ac_kw,
+        eps_q=eps_q,
+        eta_grid=eta_grid,
+        eta_out=eta_out,
+        eta_pv_load=eta_pv_load,
+        eta_pv_grid=eta_pv_grid,
+    )
 
     return {
         "q15_by_hour": q15_by_hour,

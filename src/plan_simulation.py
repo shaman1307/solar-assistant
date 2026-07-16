@@ -19,7 +19,7 @@ from . import rce as rce_mod
 from . import sa_client
 from .influxdb import now_warsaw
 from .plan_cache_merge import merge_incremental_plan, plan_needs_full_rebuild
-from .simulation import run_simulation
+from .simulation import apply_locked_hour_labels_from_plan, run_simulation
 from .simulation_config import merge_simulation_defaults, plan_min_soc_pct
 from .sqlite_store import delete_plan, read_plan, write_plan
 from .timer_plan import build_hourly_schedule
@@ -247,54 +247,6 @@ def _wrap_sim_result(
     return result
 
 
-def _preserve_current_hour_labels(
-    result: dict[str, Any],
-    existing: dict[str, Any] | None,
-    now,
-) -> None:
-    """After any rebuild: if SQLite had locked timer/action for current hour — keep it.
-
-    At :00 (hour boundary) we instead lock from the fresh optimizer output.
-    """
-    today_str = now.strftime("%Y-%m-%d")
-    hour = now.hour
-
-    if now.minute == 0:
-        # At hour boundary: lock fresh optimizer values for the new current hour.
-        for row in result.get("rows") or []:
-            if row.get("start") == "TOTAL":
-                continue
-            if str(row.get("plan_date") or "") == today_str and int(row.get("hour", -1)) == hour:
-                if not row.get("timer_schedule_manual"):
-                    row["hour_labels_locked"] = True
-                break
-        return
-
-    # Mid-hour: restore timer/action from the previously locked SQLite row.
-    if not existing:
-        return
-    existing_row = next(
-        (
-            r for r in (existing.get("rows") or [])
-            if r.get("start") != "TOTAL"
-            and str(r.get("plan_date") or "") == today_str
-            and int(r.get("hour", -1)) == hour
-        ),
-        None,
-    )
-    if existing_row is None or not existing_row.get("hour_labels_locked"):
-        return
-    for row in result.get("rows") or []:
-        if row.get("start") == "TOTAL":
-            continue
-        if str(row.get("plan_date") or "") == today_str and int(row.get("hour", -1)) == hour:
-            if not row.get("timer_schedule_manual"):
-                row["timer_schedule"] = existing_row.get("timer_schedule", "")
-                row["action"] = existing_row.get("action", "")
-                row["hour_labels_locked"] = True
-            break
-
-
 async def _run_fresh_simulation(
     cfg: dict,
     *,
@@ -362,7 +314,7 @@ async def build_plan_simulation(
             cfg=cfg,
             rules=rules,
         )
-        _preserve_current_hour_labels(result, existing, now)
+        apply_locked_hour_labels_from_plan(result, existing, now)
         result["plan_soc_q15"] = extract_plan_soc_q15(result)
         if store_cache:
             write_plan(result)
@@ -392,7 +344,7 @@ async def hourly_plan_refresh(cfg: dict) -> dict[str, Any]:
 
         if plan_needs_full_rebuild(existing, now):
             result = fresh
-            _preserve_current_hour_labels(result, existing, now)
+            apply_locked_hour_labels_from_plan(result, existing, now)
         else:
             result = merge_incremental_plan(
                 existing or {},
