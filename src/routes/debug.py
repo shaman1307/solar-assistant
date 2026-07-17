@@ -25,6 +25,7 @@ from ..plan_simulation import fetch_plan_inputs
 from ..simulation import apply_locked_hour_labels_from_plan, build_energy_arbitrage_plan
 from ..simulation_config import merge_simulation_defaults, plan_min_soc_pct
 from ..sqlite_store import read_plan
+from ..app_logging import list_log_dates, parse_log_date, read_log_day
 
 router = APIRouter()
 
@@ -220,3 +221,28 @@ async def api_inverter_debug(
         "days": days,
         **{k: v for k, v in day1_payload.items() if k != "date"},
     }
+
+
+@router.get("/api/debug/logs/days")
+async def api_debug_log_days() -> dict[str, Any]:
+    """List dates that have a daily log file (newest first)."""
+    days = list_log_dates()
+    return {"days": days, "default": days[0] if days else None}
+
+
+@router.get("/api/debug/logs")
+async def api_debug_log(date: str = "") -> dict[str, Any]:
+    """Return text of one daily log file under logs/YYYY/MM/."""
+    if not date.strip():
+        days = list_log_dates(limit=1)
+        date = days[0] if days else ""
+    if parse_log_date(date) is None:
+        return {
+            "date": date,
+            "exists": False,
+            "error": "invalid_date",
+            "text": "",
+            "truncated": False,
+            "path": None,
+        }
+    return read_log_day(date)

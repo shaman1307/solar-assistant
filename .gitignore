@@ -33,6 +33,9 @@ desktop.ini
 # Local SQLite (month history cache on dev machine)
 data/
 
+# Daily app logs (logs/YYYY/MM/YYYY-MM-DD.log)
+logs/
+
 # Local debug dumps (curl / manual API captures)
 assets/
 /dbg_*.json

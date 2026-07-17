@@ -30,6 +30,7 @@ $files = @(
     "src\routes\debug.py",
     "src\debug_smart_plan.py",
     "src\debug_plan.py",
+    "src\app_logging.py",
     "src\inverter_sim.py",
     "src\influxdb.py",
     "src\forecast.py",

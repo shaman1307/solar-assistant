@@ -3168,6 +3168,28 @@
       </table>
     </div>
   </section>
+
+  <section class="bg-white rounded-xl border border-gray-200 p-4">
+    <div class="flex flex-wrap items-end justify-between gap-4 mb-3">
+      <div>
+        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Application Log</h2>
+        <p class="text-[11px] text-gray-400 mt-0.5" id="debug-log-path">logs/YYYY/MM/YYYY-MM-DD.log</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-3">
+        <label class="text-sm text-gray-700">
+          Day
+          <select id="debug-log-date"
+            class="ml-2 rounded-lg border border-gray-300 px-2 py-1 text-sm text-gray-900 min-w-[10rem]"
+            onchange="loadDebugLog()"></select>
+        </label>
+        <button type="button" onclick="loadDebugLog()"
+          class="px-3 py-1.5 rounded-lg bg-gray-100 text-gray-800 text-sm font-medium hover:bg-gray-200">Refresh</button>
+      </div>
+    </div>
+    <pre id="debug-log-text"
+      class="text-[11px] leading-relaxed font-mono text-gray-800 bg-gray-50 border border-gray-100 rounded-lg p-3 overflow-auto whitespace-pre-wrap break-words"
+      style="max-height:28rem; min-height:10rem">Loading…</pre>
+  </section>
 </div>
 
 <!-- ===================================================================== -->
@@ -3695,6 +3717,7 @@ function initPageTab() {
       return;
     }
     loadInverterDebug();
+    loadDebugLogDays();
   }
 }
 
@@ -8901,6 +8924,65 @@ async function loadInverterDebug() {
     renderDebugCharts(data);
   } catch (e) {
     console.warn('inverter debug error', e);
+  }
+}
+
+async function loadDebugLogDays() {
+  const sel = document.getElementById('debug-log-date');
+  const pre = document.getElementById('debug-log-text');
+  if (!sel) return;
+  try {
+    const res = await fetch('api/debug/logs/days');
+    const data = await res.json();
+    const days = data.days || [];
+    const prev = sel.value;
+    sel.innerHTML = '';
+    if (!days.length) {
+      const opt = document.createElement('option');
+      opt.value = DEBUG_TODAY;
+      opt.textContent = DEBUG_TODAY;
+      sel.appendChild(opt);
+      if (pre) pre.textContent = 'No log files yet.';
+      return;
+    }
+    days.forEach((d) => {
+      const opt = document.createElement('option');
+      opt.value = d;
+      opt.textContent = d;
+      sel.appendChild(opt);
+    });
+    sel.value = days.includes(prev) ? prev : (data.default || days[0]);
+    await loadDebugLog();
+  } catch (e) {
+    console.warn('debug log days error', e);
+    if (pre) pre.textContent = 'Failed to load log day list.';
+  }
+}
+
+async function loadDebugLog() {
+  const sel = document.getElementById('debug-log-date');
+  const pre = document.getElementById('debug-log-text');
+  const pathEl = document.getElementById('debug-log-path');
+  if (!pre) return;
+  const date = sel?.value || DEBUG_TODAY;
+  pre.textContent = 'Loading…';
+  try {
+    const res = await fetch(`api/debug/logs?date=${encodeURIComponent(date)}`);
+    const data = await res.json();
+    if (pathEl) pathEl.textContent = data.path || `logs/…/${date}.log`;
+    if (data.error === 'invalid_date') {
+      pre.textContent = 'Invalid date.';
+      return;
+    }
+    if (!data.exists) {
+      pre.textContent = `No log file for ${date}.`;
+      return;
+    }
+    pre.textContent = data.text || '(empty)';
+    pre.scrollTop = pre.scrollHeight;
+  } catch (e) {
+    console.warn('debug log error', e);
+    pre.textContent = 'Failed to load log.';
   }
 }
 

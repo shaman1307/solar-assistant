@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import BASE_DIR, load_config
 from .sqlite_store import ensure_month_history_billing_model
 from . import forecast as forecast_mod
+from .app_logging import setup_app_file_logging
 from .plan_simulation import build_plan_simulation
 from .routes import register_routes
 from .scheduler import create_scheduler
@@ -26,6 +27,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
 )
+setup_app_file_logging()
 log = logging.getLogger(__name__)
 
 
