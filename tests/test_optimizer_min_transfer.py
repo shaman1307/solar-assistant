@@ -1,9 +1,7 @@
-"""Optimizer plan respects min_hourly_transfer_kwh for grid battery flows."""
+"""Optimizer hour-sum correction for min_hourly_transfer_kwh."""
 
-from src.debug_smart_plan import (
-    _hour_battery_grid_export_kwh,
-    run_day_smart_q15_plan,
-)
+from src.debug_smart_plan import run_day_smart_q15_plan
+from src.plan_optimizer import HourControl, _correct_min_hourly_transfer_controls
 
 
 def _cfg(**timer_schedule) -> dict:
@@ -52,8 +50,60 @@ def _rce_peak_afternoon() -> list[float]:
     return q
 
 
-def test_plan_zeros_sub_threshold_bat_discharge():
-    """Hours with <2 kWh planned battery grid export/discharge must be cleared."""
+def test_correct_zeros_sub_threshold_hour_export():
+    """Hour with export sum 0.9 kWh must be cleared when floor is 2.0."""
+    controls = [
+        HourControl(0.0, 0.0),
+        HourControl(0.0, 0.45),
+        HourControl(0.0, 0.45),
+        HourControl(0.0, 0.0),
+    ]
+    out = _correct_min_hourly_transfer_controls(
+        controls,
+        rce_step_offset=16 * 4,
+        step_scale=0.25,
+        min_hourly_kwh=2.0,
+        epsilon=0.05,
+    )
+    assert all(c.battery_export_kwh == 0.0 for c in out)
+
+
+def test_correct_keeps_export_at_or_above_floor():
+    controls = [
+        HourControl(0.0, 0.5),
+        HourControl(0.0, 0.5),
+        HourControl(0.0, 0.5),
+        HourControl(0.0, 0.5),
+    ]
+    out = _correct_min_hourly_transfer_controls(
+        controls,
+        rce_step_offset=0,
+        step_scale=0.25,
+        min_hourly_kwh=2.0,
+        epsilon=0.05,
+    )
+    assert sum(c.battery_export_kwh for c in out) == 2.0
+
+
+def test_correct_zeros_sub_threshold_hour_charge():
+    controls = [
+        HourControl(0.4, 0.0),
+        HourControl(0.4, 0.0),
+        HourControl(0.0, 0.0),
+        HourControl(0.0, 0.0),
+    ]
+    out = _correct_min_hourly_transfer_controls(
+        controls,
+        rce_step_offset=0,
+        step_scale=0.25,
+        min_hourly_kwh=2.0,
+        epsilon=0.05,
+    )
+    assert all(c.grid_charge_kw == 0.0 for c in out)
+
+
+def test_plan_no_sub_threshold_battery_export():
+    """End-to-end: with min_hourly=2, no hour has 0 < battery grid export < 2."""
     pv = [0.0] * 24
     load = [0.7] * 24
     pv[16] = 4.61
@@ -61,10 +111,7 @@ def test_plan_zeros_sub_threshold_bat_discharge():
     load[16] = 0.69
     load[17] = 0.82
 
-    cfg_hi = _cfg(min_hourly_transfer_kwh=2.0)
-    cfg_lo = _cfg(min_hourly_transfer_kwh=0.0)
-
-    common = dict(
+    plan = run_day_smart_q15_plan(
         date_str="2026-07-16",
         pv_hourly=pv,
         load_hourly=load,
@@ -73,30 +120,11 @@ def test_plan_zeros_sub_threshold_bat_discharge():
         rce_quarters=_rce_peak_afternoon(),
         initial_soc_kwh=42.0,
         from_hour=0,
+        cfg=_cfg(min_hourly_transfer_kwh=2.0),
     )
-
-    plan_hi = run_day_smart_q15_plan(**common, cfg=cfg_hi)
-    plan_lo = run_day_smart_q15_plan(**common, cfg=cfg_lo)
-    assert plan_hi and plan_lo
-
+    assert plan
     eps = 0.05
-    micro_hours = []
     for h in range(24):
-        slots_lo = (plan_lo.get("q15_by_hour") or {}).get(h) or []
-        bat_dis = _hour_battery_grid_export_kwh(slots_lo)
-        if bat_dis <= eps:
-            bat_dis = sum(max(0.0, -float(s.get("battery_delta") or 0)) for s in slots_lo)
-        has_export = bat_dis > eps or any(
-            float(s.get("ctrl_battery_export_kwh") or 0) > eps for s in slots_lo
-        )
-        batt_grid = sum(max(0.0, float(s.get("battery_export_kwh") or 0)) for s in slots_lo)
-        volume = batt_grid if batt_grid > eps else bat_dis
-        if has_export and eps < volume < 2.0:
-            micro_hours.append(h)
-
-    assert micro_hours, "fixture should include sub-threshold battery export hours"
-    for h in micro_hours:
-        slots_hi = (plan_hi.get("q15_by_hour") or {}).get(h) or []
-        batt_grid_hi = sum(max(0.0, float(s.get("battery_export_kwh") or 0)) for s in slots_hi)
-        assert batt_grid_hi < 0.01, f"hour {h}: expected zero battery grid export, got {batt_grid_hi}"
-        assert not any(float(s.get("ctrl_battery_export_kwh") or 0) > 0.001 for s in slots_hi)
+        slots = (plan.get("q15_by_hour") or {}).get(h) or []
+        batt_grid = sum(max(0.0, float(s.get("battery_export_kwh") or 0)) for s in slots)
+        assert not (eps < batt_grid < 2.0), f"hour {h}: sub-threshold export {batt_grid}"

@@ -23,6 +23,7 @@ from .simulation_config import (
     plan_reserve_min_soc_kwh,
     plan_timer_charge_power_kw,
     plan_timer_discharge_ac_kw,
+    plan_timer_min_hourly_transfer_kwh,
 )
 
 
@@ -379,6 +380,40 @@ def _control_options(
     return out
 
 
+def _correct_min_hourly_transfer_controls(
+    controls: list[HourControl],
+    *,
+    rce_step_offset: int,
+    step_scale: float,
+    min_hourly_kwh: float,
+    epsilon: float,
+) -> list[HourControl]:
+    """Per clock hour: if battery→grid export or grid→battery charge sum is below the
+    configured floor, zero that flow for every 15-min slot in the hour.
+    """
+    if min_hourly_kwh <= epsilon or not controls:
+        return controls
+    slots_per_hour = max(1, int(round(1.0 / step_scale)) if step_scale > 0 else 1)
+    out = list(controls)
+    by_hour: dict[int, list[int]] = {}
+    for i in range(len(out)):
+        hour = (rce_step_offset + i) // slots_per_hour
+        by_hour.setdefault(hour, []).append(i)
+
+    for idxs in by_hour.values():
+        export_h = sum(out[i].battery_export_kwh for i in idxs)
+        charge_h = sum(out[i].grid_charge_kw for i in idxs)
+        if epsilon < export_h < min_hourly_kwh:
+            for i in idxs:
+                c = out[i]
+                out[i] = HourControl(c.grid_charge_kw, 0.0, c.load_from_grid)
+        if epsilon < charge_h < min_hourly_kwh:
+            for i in idxs:
+                c = out[i]
+                out[i] = HourControl(0.0, c.battery_export_kwh, c.load_from_grid)
+    return out
+
+
 def build_extended_pv_load_for_reserve(
     pv_series: list[float],
     load_series: list[float],
@@ -483,6 +518,7 @@ def optimize_horizon(
     reserve_floor_kwh = plan_reserve_min_soc_kwh(cfg)
     discharge_ac_kw = plan_timer_discharge_ac_kw(cfg)
     charge_dc_kw = plan_timer_charge_power_kw(cfg)
+    min_hourly_transfer = plan_timer_min_hourly_transfer_kwh(cfg)
     epsilon = float(params["epsilon_kwh"])
     eta_grid = float(params["eta_grid_battery"])
     eta_out = float(params["eta_battery_out"])
@@ -615,4 +651,11 @@ def optimize_horizon(
         controls.append(ctrl)
         b = soc_bin
     controls.reverse()
-    return controls
+    # Sub-pass per clock hour: sum battery↔grid flows across 15-min slots; zero if below floor.
+    return _correct_min_hourly_transfer_controls(
+        controls,
+        rce_step_offset=rce_step_offset,
+        step_scale=step_scale,
+        min_hourly_kwh=min_hourly_transfer,
+        epsilon=eps_step,
+    )
