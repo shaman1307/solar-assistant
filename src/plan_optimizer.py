@@ -27,6 +27,122 @@ from .simulation_config import (
     plan_timer_min_hourly_transfer_kwh,
 )
 
+# --- Policy / DP constants ---
+DP_SOC_BIN_KWH = 0.5
+DP_COST_INF = 1e15
+MIN_EPS_STEP_KWH = 0.001
+EXPORT_POWER_FRACS = (1.0, 0.5, 0.25)
+EXPORT_MIN_FRAC = 0.25
+CONTROL_DEDUP_DECIMALS = 3
+HOURS_PER_DAY = 24
+# Calendar AM bound only when that day has no peak hours at all (e.g. weekend).
+_ALL_OFFPEAK_COVER_HOUR_END = 12
+
+
+def morning_cover_bound_from_hour_buys(
+    hour_buys: list[float],
+    *,
+    offpeak_buy: float,
+    epsilon: float = 0.0,
+) -> int | None:
+    """Exclusive clock hour when daytime PV cover may end overnight need.
+
+    Derived from this calendar day's buy prices (not hardcoded 6–13):
+    - two+ peak blocks → end of the first (morning) block;
+    - one block starting before noon → its end;
+    - one block starting late (evening only, e.g. truncated series) → its start
+      so evening PV does not look like morning cover;
+    - all offpeak (weekend) → None.
+    """
+    n = min(HOURS_PER_DAY, len(hour_buys))
+    if n <= 0:
+        return None
+    off = float(offpeak_buy)
+    eps = float(epsilon)
+    is_peak = [float(hour_buys[h]) > off + eps for h in range(n)]
+    blocks: list[tuple[int, int]] = []
+    i = 0
+    while i < n:
+        if not is_peak[i]:
+            i += 1
+            continue
+        j = i + 1
+        while j < n and is_peak[j]:
+            j += 1
+        blocks.append((i, j))
+        i = j
+    if not blocks:
+        return None
+    if len(blocks) >= 2:
+        return blocks[0][1]
+    start, end = blocks[0]
+    if start < _ALL_OFFPEAK_COVER_HOUR_END:
+        return end
+    # Single late block only (evening peak visible; morning absent from series).
+    return start
+
+
+def _day_hour_buys_from_series(
+    buy_series: list[float] | None,
+    day_index: int,
+    *,
+    slots_per_hour: int,
+    global_step_offset: int,
+    offpeak_buy: float,
+) -> list[float]:
+    """24 hourly buy samples for calendar day_index in the step timeline."""
+    slots_per_day = HOURS_PER_DAY * slots_per_hour
+    off = float(offpeak_buy)
+    out: list[float] = []
+    for h in range(HOURS_PER_DAY):
+        global_step = day_index * slots_per_day + h * slots_per_hour
+        si = global_step - global_step_offset
+        if buy_series is None or si < 0 or si >= len(buy_series):
+            out.append(off)
+        else:
+            out.append(float(buy_series[si]))
+    return out
+
+
+def _pv_cover_ends_overnight_need(
+    *,
+    local_hour: int,
+    start_local_hour: int,
+    crossed_midnight: bool,
+    seen_insufficient: bool,
+    cover_bound: int | None,
+) -> bool:
+    """Whether a PV-cover hour ends the overnight need walk."""
+    if seen_insufficient:
+        if crossed_midnight:
+            return True
+        if cover_bound is not None:
+            return int(local_hour) < int(cover_bound)
+        # All-offpeak day: only a morning-started walk may stop before midnight.
+        return (
+            int(start_local_hour) < _ALL_OFFPEAK_COVER_HOUR_END
+            and int(local_hour) < _ALL_OFFPEAK_COVER_HOUR_END
+        )
+    # Already self-sufficient — no overnight gap ahead today.
+    if cover_bound is not None:
+        return (
+            int(start_local_hour) < int(cover_bound)
+            and int(local_hour) < int(cover_bound)
+        )
+    return (
+        int(start_local_hour) < _ALL_OFFPEAK_COVER_HOUR_END
+        and int(local_hour) < _ALL_OFFPEAK_COVER_HOUR_END
+    )
+
+
+def eps_step_kwh(epsilon: float, step_scale: float) -> float:
+    """Per-step epsilon floor shared by optimizer and q15 replay callers."""
+    return max(float(epsilon) * float(step_scale), MIN_EPS_STEP_KWH)
+
+
+def slots_per_hour_from_scale(step_scale: float) -> int:
+    return max(1, int(round(1.0 / step_scale)) if step_scale > 0 else 1)
+
 
 @dataclass(frozen=True)
 class G12Tariff:
@@ -77,7 +193,7 @@ def battery_export_step_allowed(
     """Battery export only when two consecutive q15 slots in the hour are above G12 offpeak."""
     if not _rce_at_or_above(rce_series, step, floor, epsilon=epsilon):
         return False
-    slots_per_hour = max(1, int(round(1.0 / step_scale)) if step_scale > 0 else 1)
+    slots_per_hour = slots_per_hour_from_scale(step_scale)
     q_in_hour = step % slots_per_hour
     if q_in_hour >= 1 and _rce_at_or_above(rce_series, step - 1, floor, epsilon=epsilon):
         return True
@@ -290,18 +406,21 @@ def _reserve_soc_kwh_from_step(
     eta_pv_load: float,
     epsilon: float,
     *,
+    buy_series: list[float] | None = None,
+    offpeak_buy: float | None = None,
     slots_per_hour: int = 4,
     global_step_offset: int = 0,
 ) -> float:
     """Battery kWh to keep for self-use until morning PV covers house.
 
-    Used to block grid export of energy still needed for overnight/morning
-    house load (free PV stored earlier). Does **not** by itself justify
-    grid→battery charging — see `_grid_charge_target_soc_kwh_from_step`.
+    Walk ends when generation covers load within that calendar day's real
+    tariff morning horizon (from buy prices; weekends have no morning peak).
+    Does **not** by itself justify grid→battery charging — see
+    `_grid_charge_target_soc_kwh_from_step`.
     """
     return _forward_soc_need_from_step(
         step, pv_series, load_series, reserve_floor_kwh, eta_out, eta_pv_load, epsilon,
-        buy_series=None, offpeak_buy=None, peak_deficits_only=False,
+        buy_series=buy_series, offpeak_buy=offpeak_buy, peak_deficits_only=False,
         slots_per_hour=slots_per_hour, global_step_offset=global_step_offset,
     )
 
@@ -349,14 +468,36 @@ def _forward_soc_need_from_step(
     slots_per_hour: int = 4,
     global_step_offset: int = 0,
 ) -> float:
-    """Walk forward to morning PV cover; optionally count only peak-priced deficits."""
+    """Walk forward until PV covers load in that day's tariff morning horizon.
+
+    Cover bound comes from each calendar day's buy prices (morning peak end,
+    or evening-peak start, or all-offpeak weekend). Afternoon PV cover must
+    not end the walk before tonight's deficits. With peak_deficits_only, only
+    peak-priced deficits are summed.
+    """
     need = 0.0
     j = step + 1
     slots_per_hour = max(1, slots_per_hour)
-    slots_per_day = 24 * slots_per_hour
+    slots_per_day = HOURS_PER_DAY * slots_per_hour
     start_day = (global_step_offset + step) // slots_per_day
     start_local_hour = ((global_step_offset + step) % slots_per_day) // slots_per_hour
+    off = float(offpeak_buy or 0.0)
+    bound_cache: dict[int, int | None] = {}
     seen_insufficient_hour = False
+
+    def cover_bound_for_day(day_index: int) -> int | None:
+        if day_index not in bound_cache:
+            hour_buys = _day_hour_buys_from_series(
+                buy_series, day_index,
+                slots_per_hour=slots_per_hour,
+                global_step_offset=global_step_offset,
+                offpeak_buy=off,
+            )
+            bound_cache[day_index] = morning_cover_bound_from_hour_buys(
+                hour_buys, offpeak_buy=off, epsilon=epsilon,
+            )
+        return bound_cache[day_index]
+
     while j < len(pv_series):
         deficit, _ = pv_load_energy_split(
             pv_series[j], load_series[j], eta_pv_load=eta_pv_load,
@@ -365,7 +506,6 @@ def _forward_soc_need_from_step(
             count = True
             if peak_deficits_only:
                 buy_p = float(buy_series[j]) if buy_series is not None and j < len(buy_series) else 0.0
-                off = float(offpeak_buy or 0.0)
                 count = buy_p > off + epsilon
             if count:
                 need += deficit / eta_out if eta_out > 0 else deficit
@@ -380,11 +520,13 @@ def _forward_soc_need_from_step(
             hour_day = (global_step_offset + j - 1) // slots_per_day
             local_hour = ((global_step_offset + j - 1) % slots_per_day) // slots_per_hour
             crossed_midnight = hour_day > start_day
-            if not seen_insufficient_hour:
-                if start_local_hour < 12 and local_hour < 12:
-                    break
-                continue
-            if crossed_midnight or local_hour < 12:
+            if _pv_cover_ends_overnight_need(
+                local_hour=local_hour,
+                start_local_hour=start_local_hour,
+                crossed_midnight=crossed_midnight,
+                seen_insufficient=seen_insufficient_hour,
+                cover_bound=cover_bound_for_day(hour_day),
+            ):
                 break
     return need + reserve_floor_kwh
 
@@ -414,17 +556,30 @@ def _max_battery_export_kwh(
     return min(exportable_soc * eta_out, export_headroom)
 
 
-def _allow_grid_charge(
+def _grid_charge_ac_kw(
     soc_kwh: float,
+    *,
     buy_p: float,
     offpeak_buy: float,
     charge_target_soc_kwh: float,
+    head_room_kwh: float,
+    charge_ac_cap_kw: float,
+    eta_grid: float,
     epsilon: float,
-) -> bool:
-    """Grid→battery only at offpeak, and only to cover future peak-priced load."""
+) -> float:
+    """Single grid→battery decision: offpeak + below peak-cover target + headroom.
+
+    Returns AC kWh to charge this step (0 if not allowed). Continuous fill is
+    expressed by callers taking only this action when the returned rate > 0.
+    """
     if buy_p > offpeak_buy + epsilon:
-        return False
-    return charge_target_soc_kwh > soc_kwh + epsilon
+        return 0.0
+    if charge_target_soc_kwh <= soc_kwh + epsilon:
+        return 0.0
+    if head_room_kwh <= epsilon:
+        return 0.0
+    max_ac = head_room_kwh / eta_grid if eta_grid > 0 else head_room_kwh
+    return min(charge_ac_cap_kw, max_ac)
 
 
 def _control_options(
@@ -445,27 +600,28 @@ def _control_options(
     reserve_soc_kwh: float,
     charge_target_soc_kwh: float,
     allow_battery_export: bool,
-    min_hourly_kwh: float = 0.0,
 ) -> list[HourControl]:
-    del min_hourly_kwh  # reserved for callers; charge floor is applied in hour correction
-    head_room = battery_cap - soc_kwh
-    offpeak = buy_p <= offpeak_buy + epsilon
-    allow_charge = (
-        _allow_grid_charge(
-            soc_kwh, buy_p, offpeak_buy, charge_target_soc_kwh, epsilon,
-        )
-        and head_room > epsilon
-    )
-    max_ac = head_room / eta_grid if eta_grid > 0 else head_room
-    charge_rate = min(charge_ac_cap_kw, max_ac) if allow_charge else 0.0
+    """Build DP actions for one step.
 
-    # Flat off-peak: fill while SOC is below peak-cover target (no idle gaps).
-    if offpeak and charge_target_soc_kwh > soc_kwh + epsilon and charge_rate > epsilon:
+    - reserve_soc_kwh: export floor (self-use through overnight / morning).
+    - charge_target_soc_kwh: peak-priced cover only (grid charge justification).
+    When charge is allowed, options collapse to charge-only (continuous offpeak fill).
+    """
+    head_room = battery_cap - soc_kwh
+    charge_rate = _grid_charge_ac_kw(
+        soc_kwh,
+        buy_p=buy_p,
+        offpeak_buy=offpeak_buy,
+        charge_target_soc_kwh=charge_target_soc_kwh,
+        head_room_kwh=head_room,
+        charge_ac_cap_kw=charge_ac_cap_kw,
+        eta_grid=eta_grid,
+        epsilon=epsilon,
+    )
+    if charge_rate > epsilon:
         return [HourControl(charge_rate, 0.0)]
 
     opts = [HourControl(0.0, 0.0)]
-    if charge_rate > epsilon:
-        opts.append(HourControl(charge_rate, 0.0))
 
     max_batt_export = _max_battery_export_kwh(
         soc_kwh, pv, load,
@@ -474,10 +630,9 @@ def _control_options(
         reserve_soc_kwh=reserve_soc_kwh,
         epsilon=epsilon,
     )
-    # Power-tier export options (max / half / quarter of slot AC cap), capped by SOC reserve.
-    min_viable = max(epsilon, discharge_ac_cap_kw * 0.25)
+    min_viable = max(epsilon, discharge_ac_cap_kw * EXPORT_MIN_FRAC)
     if max_batt_export >= min_viable and allow_battery_export:
-        for frac in (1.0, 0.5, 0.25):
+        for frac in EXPORT_POWER_FRACS:
             tier_cap = discharge_ac_cap_kw * frac
             tier_export = min(max_batt_export, tier_cap)
             if tier_export >= min_viable:
@@ -486,7 +641,10 @@ def _control_options(
     seen: set[tuple[float, float]] = set()
     out: list[HourControl] = []
     for o in opts:
-        key = (round(o.grid_charge_kw, 3), round(o.battery_export_kwh, 3))
+        key = (
+            round(o.grid_charge_kw, CONTROL_DEDUP_DECIMALS),
+            round(o.battery_export_kwh, CONTROL_DEDUP_DECIMALS),
+        )
         if key not in seen:
             seen.add(key)
             out.append(o)
@@ -509,7 +667,7 @@ def _correct_min_hourly_transfer_controls(
     """
     if min_hourly_kwh <= epsilon or not controls:
         return controls
-    slots_per_hour = max(1, int(round(1.0 / step_scale)) if step_scale > 0 else 1)
+    slots_per_hour = slots_per_hour_from_scale(step_scale)
     out = list(controls)
     by_hour: dict[int, list[int]] = {}
     for i in range(len(out)):
@@ -536,6 +694,23 @@ def _correct_min_hourly_transfer_controls(
     return out
 
 
+def _should_extend_reserve_horizon(
+    *,
+    step_scale: float,
+    end_dt: datetime,
+    today_date,
+    forecast: dict[str, Any] | None,
+) -> bool:
+    """True when same-calendar-day q15 horizon should append tomorrow for reserve."""
+    forecast_data = forecast or {}
+    return (
+        step_scale < 1.0
+        and end_dt.date() == today_date
+        and bool((forecast_data.get("tomorrow") or {}).get("pv"))
+        and bool((forecast_data.get("tomorrow") or {}).get("load"))
+    )
+
+
 def build_extended_pv_load_for_reserve(
     pv_series: list[float],
     load_series: list[float],
@@ -550,26 +725,21 @@ def build_extended_pv_load_for_reserve(
         "today": {"pv": [], "load": []},
         "tomorrow": {"pv": [], "load": []},
     }
-    pv_for_reserve = pv_series
-    load_for_reserve = load_series
-    if (
-        step_scale < 1.0
-        and end_dt.date() == today_date
-        and forecast_data.get("tomorrow", {}).get("pv")
-        and forecast_data.get("tomorrow", {}).get("load")
+    if not _should_extend_reserve_horizon(
+        step_scale=step_scale, end_dt=end_dt, today_date=today_date, forecast=forecast_data,
     ):
-        rep = int(round(1.0 / step_scale))
-        if rep > 0:
-            pv_tomorrow = [float(v) for v in (forecast_data["tomorrow"]["pv"] or [])][:24]
-            load_tomorrow = [float(v) for v in (forecast_data["tomorrow"]["load"] or [])][:24]
-            pv_ext = list(pv_series)
-            load_ext = list(load_series)
-            for h in range(24):
-                pv_ext.extend([pv_tomorrow[h] * step_scale] * rep)
-                load_ext.extend([load_tomorrow[h] * step_scale] * rep)
-            pv_for_reserve = pv_ext
-            load_for_reserve = load_ext
-    return pv_for_reserve, load_for_reserve
+        return pv_series, load_series
+    rep = slots_per_hour_from_scale(step_scale)
+    pv_tomorrow = [float(v) for v in (forecast_data["tomorrow"]["pv"] or [])][:HOURS_PER_DAY]
+    load_tomorrow = [float(v) for v in (forecast_data["tomorrow"]["load"] or [])][:HOURS_PER_DAY]
+    pv_ext = list(pv_series)
+    load_ext = list(load_series)
+    for h in range(HOURS_PER_DAY):
+        pv_h = pv_tomorrow[h] if h < len(pv_tomorrow) else 0.0
+        load_h = load_tomorrow[h] if h < len(load_tomorrow) else 0.0
+        pv_ext.extend([pv_h * step_scale] * rep)
+        load_ext.extend([load_h * step_scale] * rep)
+    return pv_ext, load_ext
 
 
 def build_extended_buy_for_reserve(
@@ -587,19 +757,16 @@ def build_extended_buy_for_reserve(
         "tomorrow": {"pv": [], "load": []},
     }
     buy_for_reserve = list(buy_series)
-    if (
-        step_scale < 1.0
-        and end_dt.date() == today_date
-        and forecast_data.get("tomorrow", {}).get("pv")
-        and forecast_data.get("tomorrow", {}).get("load")
+    if not _should_extend_reserve_horizon(
+        step_scale=step_scale, end_dt=end_dt, today_date=today_date, forecast=forecast_data,
     ):
-        rep = int(round(1.0 / step_scale))
-        if rep > 0:
-            tomorrow = today_date + timedelta(days=1)
-            base = datetime(tomorrow.year, tomorrow.month, tomorrow.day)
-            for h in range(24):
-                price, _ = get_buy_price(base.replace(hour=h), cfg)
-                buy_for_reserve.extend([float(price)] * rep)
+        return buy_for_reserve
+    rep = slots_per_hour_from_scale(step_scale)
+    tomorrow = today_date + timedelta(days=1)
+    base = datetime(tomorrow.year, tomorrow.month, tomorrow.day)
+    for h in range(HOURS_PER_DAY):
+        price, _ = get_buy_price(base.replace(hour=h), cfg)
+        buy_for_reserve.extend([float(price)] * rep)
     return buy_for_reserve
 
 
@@ -617,6 +784,9 @@ def reserve_soc_per_step(
     today_date=None,
     forecast: dict[str, Any] | None = None,
     global_step_offset: int = 0,
+    buy_prices: list[float] | None = None,
+    cfg: dict | None = None,
+    offpeak_buy: float | None = None,
 ) -> list[float]:
     """Reserve floor (kWh) after each step — through midnight until next-day PV."""
     end = end_dt or datetime.now()
@@ -624,11 +794,23 @@ def reserve_soc_per_step(
         pv_series, load_series,
         step_scale=step_scale, end_dt=end, today_date=today_date, forecast=forecast,
     )
-    eps_step = max(epsilon * step_scale, 0.001)
-    slots_per_hour = max(1, int(round(1.0 / step_scale)) if step_scale > 0 else 1)
+    buy_r = list(buy_prices) if buy_prices is not None else []
+    if cfg is not None and buy_prices is not None:
+        buy_r = build_extended_buy_for_reserve(
+            buy_prices,
+            step_scale=step_scale, end_dt=end, today_date=today_date,
+            forecast=forecast, cfg=cfg,
+        )
+    off = float(offpeak_buy) if offpeak_buy is not None else (
+        float(cfg["grid"]["g12"]["offpeak_price_pln_kwh"]) if cfg is not None else 0.0
+    )
+    eps_step = eps_step_kwh(epsilon, step_scale)
+    slots_per_hour = slots_per_hour_from_scale(step_scale)
     return [
         _reserve_soc_kwh_from_step(
             s, pv_r, load_r, reserve_floor_kwh, eta_out, eta_pv_load, eps_step,
+            buy_series=buy_r if buy_r else None,
+            offpeak_buy=off,
             slots_per_hour=slots_per_hour,
             global_step_offset=global_step_offset,
         )
@@ -646,7 +828,7 @@ def _tail_start_hour(
     """First calendar hour after the last optimized step (no double-count with DP)."""
     if steps <= 0:
         return end_dt.hour
-    slots_per_hour = max(1, int(round(1.0 / step_scale)) if step_scale > 0 else 1)
+    slots_per_hour = slots_per_hour_from_scale(step_scale)
     last_global = rce_step_offset + steps - 1
     return (last_global // slots_per_hour) + 1
 
@@ -686,11 +868,11 @@ def optimize_horizon(
     tariff = g12_tariff_from_cfg(cfg)
     discharge_ac_step = discharge_ac_kw * step_scale
     charge_ac_step = charge_ac_kw * step_scale
-    eps_step = max(epsilon * step_scale, 0.001)
+    eps_step = eps_step_kwh(epsilon, step_scale)
 
-    bin_kwh = max(0.5, battery_cap / max(1, int((battery_cap - min_kwh) / 0.5)))
+    bin_kwh = max(DP_SOC_BIN_KWH, battery_cap / max(1, int((battery_cap - min_kwh) / DP_SOC_BIN_KWH)))
     max_bin = int(math.ceil((battery_cap - min_kwh) / bin_kwh))
-    inf = 1e15
+    inf = DP_COST_INF
 
     dp: list[dict[int, float]] = [{} for _ in range(steps + 1)]
     soc_at: list[dict[int, float]] = [{} for _ in range(steps + 1)]
@@ -730,12 +912,14 @@ def optimize_horizon(
         step_scale=step_scale, end_dt=end_dt, today_date=today_date,
         forecast=forecast_data, cfg=cfg,
     )
-    slots_per_hour = max(1, int(round(1.0 / step_scale)) if step_scale > 0 else 1)
+    slots_per_hour = slots_per_hour_from_scale(step_scale)
 
     reserves = [
         _reserve_soc_kwh_from_step(
             s, pv_for_reserve, load_for_reserve, reserve_floor_kwh,
             eta_out, eta_pv_load, eps_step,
+            buy_series=buy_for_reserve,
+            offpeak_buy=tariff.offpeak_full,
             slots_per_hour=slots_per_hour,
             global_step_offset=rce_step_offset,
         )
@@ -764,6 +948,8 @@ def optimize_horizon(
             rce_idx, rce_series, export_floor,
             step_scale=step_scale, epsilon=eps_step,
         )
+        # Same peak/offpeak split as charge_target (two discrete G12 buy rates).
+        g12_zone = "peak" if buy_p > offpeak_buy + eps_step else "offpeak"
 
         for soc_bin, cost_in in list(dp[step].items()):
             soc = soc_at[step].get(
@@ -784,7 +970,6 @@ def optimize_horizon(
                 reserve_soc_kwh=reserve,
                 charge_target_soc_kwh=charge_target,
                 allow_battery_export=allow_battery_export,
-                min_hourly_kwh=min_hourly_transfer,
             ):
                 phys = simulate_hour(
                     soc, pv, load, ctrl,
@@ -799,7 +984,7 @@ def optimize_horizon(
                 step_cost = hour_grid_cash_pln(
                     phys.grid_import, phys.grid_export, buy_p, rce, cfg,
                     battery_export=min(ctrl.battery_export_kwh, phys.grid_export),
-                    g12_zone="peak" if buy_p > (tariff.peak_full + tariff.offpeak_full) * 0.5 else "offpeak",
+                    g12_zone=g12_zone,
                 )["cost"]
                 nb = min(max_bin, _soc_bin(phys.soc_end, min_kwh, bin_kwh))
                 total = cost_in + step_cost

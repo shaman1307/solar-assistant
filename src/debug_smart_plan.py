@@ -7,7 +7,13 @@ from typing import Any
 
 from .config import load_config
 from .g12_pricing import get_buy_price
-from .plan_optimizer import HourControl, optimize_horizon, reserve_soc_per_step, simulate_hour
+from .plan_optimizer import (
+    HourControl,
+    eps_step_kwh,
+    optimize_horizon,
+    reserve_soc_per_step,
+    simulate_hour,
+)
 from .plan_hourly_actuals import interval_end_label
 from .simulation_config import (
     get_simulation_params,
@@ -276,7 +282,7 @@ def run_day_smart_q15_plan(
     min_kwh = plan_min_soc_kwh(cfg)
     discharge_ac_kw = plan_timer_discharge_ac_kw(cfg)
     epsilon = float(params["epsilon_kwh"])
-    eps_q = max(epsilon * STEP_SCALE, 0.001)
+    eps_q = eps_step_kwh(epsilon, STEP_SCALE)
     eta_grid = float(params["eta_grid_battery"])
     eta_out = float(params["eta_battery_out"])
     eta_pv_load = float(params["eta_pv_load"])
@@ -352,6 +358,8 @@ def run_day_smart_q15_plan(
         eta_out=eta_out, eta_pv_load=eta_pv_load, epsilon=epsilon,
         step_scale=STEP_SCALE, end_dt=end_dt, today_date=today_date, forecast=forecast,
         global_step_offset=start_step,
+        buy_prices=buy_q,
+        cfg=cfg,
     )
 
     q15_by_hour, q15_plan_rows, soc = _simulate_q15_controls(
