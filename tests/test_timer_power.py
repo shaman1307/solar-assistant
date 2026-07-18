@@ -190,9 +190,9 @@ def test_normalize_clamps_above_hardware_max():
         }},
     }
     normalize_battery_power_limits(cfg)
-    assert cfg["battery"]["max_charge_power_kw"] == 5.0
+    assert cfg["battery"]["max_charge_power_kw"] == 6.0
     assert cfg["battery"]["max_discharge_power_kw"] == 8.0
-    assert plan_timer_charge_power_kw(cfg) == 5.0
+    assert plan_timer_charge_power_kw(cfg) == 6.0
     assert plan_timer_discharge_power_kw(cfg) == 8.0
 
 

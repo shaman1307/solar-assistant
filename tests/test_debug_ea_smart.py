@@ -280,7 +280,39 @@ def test_preserve_history_timer_and_action_on_rebuild():
     assert fresh["rows"][0]["timer_schedule"] == ""
 
 
-def test_preserve_skips_empty_wiped_timer():
+def test_preserve_does_not_freeze_tomorrow_forecast_timers():
+    """Tomorrow plan hours must stay open for re-optimize."""
+    from src.simulation import preserve_history_timer_schedules_from_plan
+
+    today = "2026-07-18"
+    tomorrow = "2026-07-19"
+    existing = {
+        "history_rows": [],
+        "rows": [
+            {
+                "plan_date": tomorrow,
+                "hour": 0,
+                "timer_schedule": "Chg 00:00-01:00 5.0kW cap47%",
+                "action": "Charging from Grid",
+                "hour_labels_locked": True,
+            },
+        ],
+    }
+    fresh = {
+        "today_date": today,
+        "plan_from_hour": 21,
+        "history_rows": [],
+        "rows": [
+            {
+                "plan_date": tomorrow,
+                "hour": 0,
+                "timer_schedule": "Chg 00:00-00:30 6.0kW cap26%",
+                "action": "Charging from Grid",
+            },
+        ],
+    }
+    preserve_history_timer_schedules_from_plan(fresh, existing)
+    assert fresh["rows"][0]["timer_schedule"] == "Chg 00:00-00:30 6.0kW cap26%"
     """Empty prior timer must not lock history; fill_missing can recover."""
     from src.simulation import preserve_history_timer_schedules_from_plan
 

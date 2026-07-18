@@ -287,8 +287,13 @@ def preserve_history_timer_schedules_from_plan(
         if key is None:
             continue
         plan_date, hour = key
-        # Only freeze hours already past for today (or other dates).
-        if today_str and plan_date == today_str and hour >= plan_from:
+        # Freeze only completed hours (today before plan_from, or earlier days).
+        # Tomorrow's forecast hours must keep the freshly optimized timer.
+        if not today_str:
+            continue
+        if plan_date > today_str:
+            continue
+        if plan_date == today_str and hour >= plan_from:
             continue
         src = preserved.get(key)
         if src is None:

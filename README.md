@@ -160,7 +160,7 @@ inverter:
 
 battery:
   capacity_kwh: 10.0
-  max_charge_power_kw: 5.0      # SA timer charge power (kW DC)
+  max_charge_power_kw: 6.0      # SA timer charge power (kW DC)
   max_discharge_power_kw: 5.0   # SA timer discharge power (kW DC)
 
 simulation:

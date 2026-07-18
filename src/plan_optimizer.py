@@ -11,11 +11,12 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 log = logging.getLogger(__name__)
 
+from .g12_pricing import get_buy_price
 from .grid_config import grid_export_threshold_pln_kwh
 from .plan_spill import build_tail_hour_arrays, pv_load_energy_split, tail_balance_cost_pln
 from .simulation_config import (
@@ -292,32 +293,98 @@ def _reserve_soc_kwh_from_step(
     slots_per_hour: int = 4,
     global_step_offset: int = 0,
 ) -> float:
-    """Battery kWh that must remain after step until next-day PV covers house.
+    """Battery kWh to keep for self-use until morning PV covers house.
 
-    Walks forward across midnight. Same-calendar-day sun never ends the window
-    (evening PV ≥ load must not zero overnight reserve). Stops on the first
-    clock hour *after* the day boundary where PV covers house load.
+    Used to block grid export of energy still needed for overnight/morning
+    house load (free PV stored earlier). Does **not** by itself justify
+    grid→battery charging — see `_grid_charge_target_soc_kwh_from_step`.
     """
+    return _forward_soc_need_from_step(
+        step, pv_series, load_series, reserve_floor_kwh, eta_out, eta_pv_load, epsilon,
+        buy_series=None, offpeak_buy=None, peak_deficits_only=False,
+        slots_per_hour=slots_per_hour, global_step_offset=global_step_offset,
+    )
+
+
+def _grid_charge_target_soc_kwh_from_step(
+    step: int,
+    pv_series: list[float],
+    load_series: list[float],
+    buy_series: list[float],
+    reserve_floor_kwh: float,
+    eta_out: float,
+    eta_pv_load: float,
+    epsilon: float,
+    offpeak_buy: float,
+    *,
+    slots_per_hour: int = 4,
+    global_step_offset: int = 0,
+) -> float:
+    """SOC worth buying from the grid into the battery.
+
+    Only future *peak*-priced house deficits count (e.g. weekday morning until
+    PV covers). Overnight/offpeak deficits do not — buying offpeak into the
+    battery to later serve offpeak load loses round-trip energy; better to
+    import for the house when SOC hits min (especially all-offpeak weekends).
+    """
+    return _forward_soc_need_from_step(
+        step, pv_series, load_series, reserve_floor_kwh, eta_out, eta_pv_load, epsilon,
+        buy_series=buy_series, offpeak_buy=offpeak_buy, peak_deficits_only=True,
+        slots_per_hour=slots_per_hour, global_step_offset=global_step_offset,
+    )
+
+
+def _forward_soc_need_from_step(
+    step: int,
+    pv_series: list[float],
+    load_series: list[float],
+    reserve_floor_kwh: float,
+    eta_out: float,
+    eta_pv_load: float,
+    epsilon: float,
+    *,
+    buy_series: list[float] | None,
+    offpeak_buy: float | None,
+    peak_deficits_only: bool,
+    slots_per_hour: int = 4,
+    global_step_offset: int = 0,
+) -> float:
+    """Walk forward to morning PV cover; optionally count only peak-priced deficits."""
     need = 0.0
     j = step + 1
-    slots_per_day = 24 * max(1, slots_per_hour)
+    slots_per_hour = max(1, slots_per_hour)
+    slots_per_day = 24 * slots_per_hour
     start_day = (global_step_offset + step) // slots_per_day
+    start_local_hour = ((global_step_offset + step) % slots_per_day) // slots_per_hour
+    seen_insufficient_hour = False
     while j < len(pv_series):
         deficit, _ = pv_load_energy_split(
             pv_series[j], load_series[j], eta_pv_load=eta_pv_load,
         )
         if deficit > epsilon:
-            need += deficit / eta_out if eta_out > 0 else deficit
+            count = True
+            if peak_deficits_only:
+                buy_p = float(buy_series[j]) if buy_series is not None and j < len(buy_series) else 0.0
+                off = float(offpeak_buy or 0.0)
+                count = buy_p > off + epsilon
+            if count:
+                need += deficit / eta_out if eta_out > 0 else deficit
+            seen_insufficient_hour = True
         j += 1
-        if slots_per_hour > 0 and j % slots_per_hour == 0:
+        if j % slots_per_hour == 0:
             h_start = j - slots_per_hour
             pv_h = sum(pv_series[h_start:j])
             load_h = sum(load_series[h_start:j])
+            if pv_h * eta_pv_load < load_h - epsilon:
+                continue
             hour_day = (global_step_offset + j - 1) // slots_per_day
-            if (
-                hour_day > start_day
-                and pv_h * eta_pv_load >= load_h - epsilon
-            ):
+            local_hour = ((global_step_offset + j - 1) % slots_per_day) // slots_per_hour
+            crossed_midnight = hour_day > start_day
+            if not seen_insufficient_hour:
+                if start_local_hour < 12 and local_hour < 12:
+                    break
+                continue
+            if crossed_midnight or local_hour < 12:
                 break
     return need + reserve_floor_kwh
 
@@ -349,29 +416,15 @@ def _max_battery_export_kwh(
 
 def _allow_grid_charge(
     soc_kwh: float,
-    pv: float,
-    load: float,
     buy_p: float,
     offpeak_buy: float,
-    reserve_soc_kwh: float,
-    min_kwh: float,
-    eta_out: float,
-    eta_pv_load: float,
+    charge_target_soc_kwh: float,
     epsilon: float,
 ) -> bool:
-    """Grid charge at offpeak only to restore load reserve or cover load deficit."""
+    """Grid→battery only at offpeak, and only to cover future peak-priced load."""
     if buy_p > offpeak_buy + epsilon:
         return False
-    if reserve_soc_kwh > soc_kwh + epsilon:
-        return True
-    _, pv_surplus = pv_load_energy_split(pv, load, eta_pv_load=eta_pv_load)
-    if pv_surplus > epsilon:
-        return False
-    deficit, _ = pv_load_energy_split(pv, load, eta_pv_load=eta_pv_load)
-    if deficit <= epsilon or eta_out <= 0:
-        return False
-    available = max(0.0, soc_kwh - min_kwh)
-    return available * eta_out + epsilon < deficit
+    return charge_target_soc_kwh > soc_kwh + epsilon
 
 
 def _control_options(
@@ -390,22 +443,24 @@ def _control_options(
     buy_p: float,
     offpeak_buy: float,
     reserve_soc_kwh: float,
+    charge_target_soc_kwh: float,
     allow_battery_export: bool,
+    min_hourly_kwh: float = 0.0,
 ) -> list[HourControl]:
+    del min_hourly_kwh  # reserved for callers; charge floor is applied in hour correction
     head_room = battery_cap - soc_kwh
     offpeak = buy_p <= offpeak_buy + epsilon
     allow_charge = (
         _allow_grid_charge(
-            soc_kwh, pv, load, buy_p, offpeak_buy, reserve_soc_kwh,
-            min_kwh, eta_out, eta_pv_load, epsilon,
+            soc_kwh, buy_p, offpeak_buy, charge_target_soc_kwh, epsilon,
         )
         and head_room > epsilon
     )
     max_ac = head_room / eta_grid if eta_grid > 0 else head_room
     charge_rate = min(charge_ac_cap_kw, max_ac) if allow_charge else 0.0
 
-    # Flat off-peak: fill battery while forward reserve exceeds SOC (no idle gaps).
-    if offpeak and reserve_soc_kwh > soc_kwh + epsilon and charge_rate > epsilon:
+    # Flat off-peak: fill while SOC is below peak-cover target (no idle gaps).
+    if offpeak and charge_target_soc_kwh > soc_kwh + epsilon and charge_rate > epsilon:
         return [HourControl(charge_rate, 0.0)]
 
     opts = [HourControl(0.0, 0.0)]
@@ -446,8 +501,11 @@ def _correct_min_hourly_transfer_controls(
     min_hourly_kwh: float,
     epsilon: float,
 ) -> list[HourControl]:
-    """Per clock hour: if battery→grid export or grid→battery charge sum is below the
-    configured floor, zero that flow for every 15-min slot in the hour.
+    """Per clock hour: enforce min_hourly_transfer_kwh on battery↔grid flows.
+
+    Export below the floor is cleared (avoid tiny Dis blocks).
+    Charge below the floor is scaled up to the floor so a real overnight
+    reserve top-up is not deleted (that re-opens a morning SOC gap).
     """
     if min_hourly_kwh <= epsilon or not controls:
         return controls
@@ -466,9 +524,15 @@ def _correct_min_hourly_transfer_controls(
                 c = out[i]
                 out[i] = HourControl(c.grid_charge_kw, 0.0, c.load_from_grid)
         if epsilon < charge_h < min_hourly_kwh:
+            scale = min_hourly_kwh / charge_h
             for i in idxs:
                 c = out[i]
-                out[i] = HourControl(0.0, c.battery_export_kwh, c.load_from_grid)
+                if c.grid_charge_kw > epsilon:
+                    out[i] = HourControl(
+                        c.grid_charge_kw * scale,
+                        c.battery_export_kwh,
+                        c.load_from_grid,
+                    )
     return out
 
 
@@ -506,6 +570,37 @@ def build_extended_pv_load_for_reserve(
             pv_for_reserve = pv_ext
             load_for_reserve = load_ext
     return pv_for_reserve, load_for_reserve
+
+
+def build_extended_buy_for_reserve(
+    buy_series: list[float],
+    *,
+    step_scale: float,
+    end_dt: datetime,
+    today_date,
+    forecast: dict[str, Any] | None,
+    cfg: dict,
+) -> list[float]:
+    """Extend buy prices into tomorrow in lockstep with extended reserve PV/load."""
+    forecast_data = forecast or {
+        "today": {"pv": [], "load": []},
+        "tomorrow": {"pv": [], "load": []},
+    }
+    buy_for_reserve = list(buy_series)
+    if (
+        step_scale < 1.0
+        and end_dt.date() == today_date
+        and forecast_data.get("tomorrow", {}).get("pv")
+        and forecast_data.get("tomorrow", {}).get("load")
+    ):
+        rep = int(round(1.0 / step_scale))
+        if rep > 0:
+            tomorrow = today_date + timedelta(days=1)
+            base = datetime(tomorrow.year, tomorrow.month, tomorrow.day)
+            for h in range(24):
+                price, _ = get_buy_price(base.replace(hour=h), cfg)
+                buy_for_reserve.extend([float(price)] * rep)
+    return buy_for_reserve
 
 
 def reserve_soc_per_step(
@@ -630,18 +725,33 @@ def optimize_horizon(
         pv_series, load_series,
         step_scale=step_scale, end_dt=end_dt, today_date=today_date, forecast=forecast_data,
     )
+    buy_for_reserve = build_extended_buy_for_reserve(
+        buy_prices,
+        step_scale=step_scale, end_dt=end_dt, today_date=today_date,
+        forecast=forecast_data, cfg=cfg,
+    )
+    slots_per_hour = max(1, int(round(1.0 / step_scale)) if step_scale > 0 else 1)
 
     reserves = [
         _reserve_soc_kwh_from_step(
             s, pv_for_reserve, load_for_reserve, reserve_floor_kwh,
             eta_out, eta_pv_load, eps_step,
-            slots_per_hour=max(1, int(round(1.0 / step_scale)) if step_scale > 0 else 1),
+            slots_per_hour=slots_per_hour,
+            global_step_offset=rce_step_offset,
+        )
+        for s in range(steps)
+    ]
+    offpeak_buy = tariff.offpeak_full
+    charge_targets = [
+        _grid_charge_target_soc_kwh_from_step(
+            s, pv_for_reserve, load_for_reserve, buy_for_reserve,
+            reserve_floor_kwh, eta_out, eta_pv_load, eps_step, offpeak_buy,
+            slots_per_hour=slots_per_hour,
             global_step_offset=rce_step_offset,
         )
         for s in range(steps)
     ]
 
-    offpeak_buy = tariff.offpeak_full
     export_floor = grid_export_threshold_pln_kwh(cfg)
 
     for step in range(steps):
@@ -661,6 +771,7 @@ def optimize_horizon(
                 min(battery_cap, _soc_from_bin(soc_bin, min_kwh, bin_kwh)),
             )
             reserve = reserves[step]
+            charge_target = charge_targets[step]
             for ctrl in _control_options(
                 soc, pv, load,
                 battery_cap=battery_cap, min_kwh=min_kwh,
@@ -671,7 +782,9 @@ def optimize_horizon(
                 eta_pv_load=eta_pv_load,
                 epsilon=eps_step, buy_p=buy_p, offpeak_buy=offpeak_buy,
                 reserve_soc_kwh=reserve,
+                charge_target_soc_kwh=charge_target,
                 allow_battery_export=allow_battery_export,
+                min_hourly_kwh=min_hourly_transfer,
             ):
                 phys = simulate_hour(
                     soc, pv, load, ctrl,
