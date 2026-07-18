@@ -203,12 +203,12 @@ def month_import_cost_total(service_cost: float, service_fee: float = 0.0) -> fl
 
 
 def month_savings_pln(
-    baseline_cost: float,
-    baseline_service_fee: float,
-    energy_cost_total: float,
-    import_cost_total: float,
+    actual_export_revenue: float,
+    actual_import_tariff: float,
+    baseline_export_revenue: float,
+    baseline_import_tariff: float,
 ) -> float:
-    """Saved = baseline bill − actual bill (import total − energy total)."""
-    baseline_bill = baseline_cost + baseline_service_fee
-    actual_bill = import_cost_total - energy_cost_total
-    return round(baseline_bill - actual_bill, 4)
+    """Saved = actual energy net − baseline energy net (export RCE − import tariff)."""
+    actual_net = float(actual_export_revenue) - float(actual_import_tariff)
+    baseline_net = float(baseline_export_revenue) - float(baseline_import_tariff)
+    return round(actual_net - baseline_net, 4)

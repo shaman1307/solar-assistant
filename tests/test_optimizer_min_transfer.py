@@ -128,3 +128,38 @@ def test_plan_no_sub_threshold_battery_export():
         slots = (plan.get("q15_by_hour") or {}).get(h) or []
         batt_grid = sum(max(0.0, float(s.get("battery_export_kwh") or 0)) for s in slots)
         assert not (eps < batt_grid < 2.0), f"hour {h}: sub-threshold export {batt_grid}"
+
+
+def test_no_grid_export_when_evening_soc_only_covers_night():
+    """Evening sun must not collapse reserve — no Dis when SOC is night-critical."""
+    pv = [0.0] * 24
+    load = [0.9] * 24
+    # Hour 17–18 still sunny enough to cover house (old bug zeroed overnight reserve).
+    pv[17] = 1.2
+    pv[18] = 1.0
+    rce = [0.4] * 96
+    for h in range(17, 22):
+        for qi in range(4):
+            rce[h * 4 + qi] = 0.75  # above export threshold
+
+    # Dark morning so reserve spans the full night (not tomorrow hour-0 sun).
+    tomorrow_pv = [0.0] * 8 + [2.0] * 16
+    tomorrow_load = [0.9] * 24
+    initial = 43.0 * 0.38  # ~16.3 kWh — only covers overnight need
+    # Weekday evening = G12 peak → no grid charge to inflate SOC above reserve.
+    plan = run_day_smart_q15_plan(
+        date_str="2026-07-16",
+        pv_hourly=pv,
+        load_hourly=load,
+        tomorrow_pv=tomorrow_pv,
+        tomorrow_load=tomorrow_load,
+        rce_quarters=rce,
+        initial_soc_kwh=initial,
+        from_hour=17,
+        cfg=_cfg(min_hourly_transfer_kwh=0.0),
+    )
+    assert plan
+    for h in (17, 18, 19):
+        slots = (plan.get("q15_by_hour") or {}).get(h) or []
+        batt_grid = sum(float(s.get("battery_export_kwh") or 0) for s in slots)
+        assert batt_grid < 0.05, f"hour {h}: unexpected grid export {batt_grid}"

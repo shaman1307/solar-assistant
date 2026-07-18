@@ -5,13 +5,16 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+# Optimizer / simulation always plan a full calendar day (config horizon removed).
+PLAN_HORIZON_HOURS = 24
+
 DEFAULT_SIMULATION: dict[str, Any] = {
     "min_soc_pct": 15,
-    "horizon_hours": 24,
     "epsilon_kwh": 0.05,
     "losses_pct": {
         "grid_to_battery": 7.5,
         "battery_to_load_or_grid": 7.5,
+        "pv_to_battery": 7.5,
         "pv_to_grid": 7.5,
         "pv_to_load": 7.5,
     },
@@ -139,10 +142,11 @@ def get_simulation_params(cfg: dict[str, Any]) -> dict[str, float | int]:
 
     return {
         "min_soc_pct": float(sim["min_soc_pct"]),
-        "horizon_hours": int(sim["horizon_hours"]),
+        "horizon_hours": PLAN_HORIZON_HOURS,
         "epsilon_kwh": float(sim["epsilon_kwh"]),
         "eta_grid_battery": eta("grid_to_battery"),
         "eta_battery_out": eta("battery_to_load_or_grid"),
+        "eta_pv_battery": eta("pv_to_battery"),
         "eta_pv_grid": eta("pv_to_grid"),
         "eta_pv_load": eta("pv_to_load"),
     }

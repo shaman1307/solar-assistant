@@ -29,13 +29,13 @@ templates:
       max_power_kw: 11.0
     simulation:
       min_soc_pct: 16
-      horizon_hours: 24
       epsilon_kwh: 0.05
       default_charge_rate_kw: 2
       morning_surplus_break_hour: 8
       losses_pct:
         grid_to_battery: 7.5
         battery_to_load_or_grid: 7.5
+        pv_to_battery: 7.5
         pv_to_grid: 7.5
         pv_to_load: 7.5
     timer_schedule:

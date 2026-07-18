@@ -113,7 +113,8 @@ def hour_control_from_timer_override(
     slot_end = slot_start + 15
     grid_charge_kw = 0.0
     battery_export_kwh = 0.0
-    load_from_grid = timer_hour_has_grid_charge(timer_txt, hour)
+    # House load stays on battery (load priority); grid import is charge only.
+    load_from_grid = False
 
     for seg in parse_timer_schedule_segments(timer_txt):
         from_min = _hhmm_to_minute_of_day(seg["from"])
@@ -196,6 +197,7 @@ def replay_day_plan_with_timer_overrides(
     eta_out = float(params["eta_battery_out"])
     eta_pv_load = float(params["eta_pv_load"])
     eta_pv_grid = float(params["eta_pv_grid"])
+    eta_pv_battery = float(params["eta_pv_battery"])
 
     start_dt = datetime.strptime(date_str, "%Y-%m-%d")
     today_date = start_dt.date()
@@ -229,6 +231,7 @@ def replay_day_plan_with_timer_overrides(
         end_dt=end_dt,
         today_date=today_date,
         forecast=forecast,
+        global_step_offset=start_step,
     )
 
     h = replay_from
@@ -252,6 +255,7 @@ def replay_day_plan_with_timer_overrides(
                     eta_out=eta_out,
                     eta_pv_load=eta_pv_load,
                     eta_pv_grid=eta_pv_grid,
+                    eta_pv_battery=eta_pv_battery,
                     epsilon=eps_q,
                     reserve_soc_kwh=reserve,
                 )
@@ -338,6 +342,7 @@ def replay_day_plan_with_timer_overrides(
                 eta_out=eta_out,
                 eta_pv_load=eta_pv_load,
                 eta_pv_grid=eta_pv_grid,
+                eta_pv_battery=eta_pv_battery,
                 epsilon=eps_q,
                 reserve_soc_kwh=reserve,
             )

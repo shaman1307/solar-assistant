@@ -86,10 +86,10 @@ def compute_energy_deposit_total(
 
 def _recalc_totals_savings(totals: dict[str, Any]) -> None:
     totals["savings_pln"] = month_savings_pln(
-        float(totals.get("baseline_cost") or 0.0),
-        float(totals.get("baseline_service_fee") or 0.0),
-        float(totals.get("energy_cost_total") or 0.0),
-        float(totals.get("import_cost_total") or 0.0),
+        float(totals.get("export_revenue") or 0.0),
+        float(totals.get("import_energy_cost") or 0.0),
+        float(totals.get("baseline_export_revenue") or 0.0),
+        float(totals.get("baseline_import_energy_cost") or 0.0),
     )
 
 
@@ -100,6 +100,8 @@ def _empty_totals() -> dict[str, Any]:
         "energy_cost_total": 0.0,
         "import_cost_total": 0.0,
         "baseline_cost": 0.0,
+        "baseline_export_revenue": 0.0,
+        "baseline_import_energy_cost": 0.0,
         "baseline_service_fee": 0.0,
         "savings_pln": 0.0,
     }

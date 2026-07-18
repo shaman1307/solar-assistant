@@ -223,6 +223,165 @@ def test_apply_locked_hour_labels_restores_mid_hour():
     assert row["hour_labels_locked"] is True
 
 
+def test_preserve_history_timer_and_action_on_rebuild():
+    """Completed-hour Timer Schedule + Action must survive a full plan rebuild."""
+    from src.simulation import preserve_history_timer_schedules_from_plan
+
+    today = "2026-07-18"
+    existing = {
+        "history_rows": [
+            {
+                "plan_date": today,
+                "hour": 18,
+                "timer_schedule": "Dis 18:15-18:45 7.5kW cap16%",
+                "action": "Discharging to Grid and Load",
+                "hour_labels_locked": True,
+            },
+            {
+                "plan_date": today,
+                "hour": 19,
+                "timer_schedule": "Chg 19:00-19:45 5.0kW cap37%",
+                "action": "Charging from Grid",
+                "hour_labels_locked": True,
+            },
+        ],
+        "rows": [],
+    }
+    fresh = {
+        "today_date": today,
+        "plan_from_hour": 20,
+        "history_rows": [
+            {
+                "plan_date": today,
+                "hour": 18,
+                "timer_schedule": "",
+                "action": "Discharging to Load",
+                "grid_export": 3.52,
+            },
+            {
+                "plan_date": today,
+                "hour": 19,
+                "timer_schedule": "",
+                "action": "Idle - Grid Usage for Load",
+                "grid_import": 2.99,
+            },
+        ],
+        "rows": [{"plan_date": today, "hour": 20, "timer_schedule": "", "action": "X"}],
+    }
+    preserve_history_timer_schedules_from_plan(fresh, existing)
+    h18 = fresh["history_rows"][0]
+    h19 = fresh["history_rows"][1]
+    assert h18["timer_schedule"] == "Dis 18:15-18:45 7.5kW cap16%"
+    assert h18["action"] == "Discharging to Grid and Load"
+    assert h18["hour_labels_locked"] is True
+    assert h19["timer_schedule"] == "Chg 19:00-19:45 5.0kW cap37%"
+    assert h19["action"] == "Charging from Grid"
+    assert h19["hour_labels_locked"] is True
+    assert fresh["rows"][0]["timer_schedule"] == ""
+
+
+def test_preserve_skips_empty_wiped_timer():
+    """Empty prior timer must not lock history; fill_missing can recover."""
+    from src.simulation import preserve_history_timer_schedules_from_plan
+
+    today = "2026-07-18"
+    existing = {
+        "history_rows": [
+            {
+                "plan_date": today,
+                "hour": 18,
+                "timer_schedule": "",
+                "action": "Discharging to Grid and Load",
+                "hour_labels_locked": True,
+            },
+        ],
+        "rows": [],
+    }
+    fresh = {
+        "today_date": today,
+        "plan_from_hour": 19,
+        "history_rows": [
+            {
+                "plan_date": today,
+                "hour": 18,
+                "timer_schedule": "",
+                "action": "Discharging to Load",
+            },
+        ],
+        "rows": [],
+    }
+    preserve_history_timer_schedules_from_plan(fresh, existing)
+    h18 = fresh["history_rows"][0]
+    assert h18["timer_schedule"] == ""
+    assert h18["action"] == "Discharging to Grid and Load"
+    assert h18.get("hour_labels_locked") is not True
+
+
+def test_fill_missing_history_timer_from_meters():
+    """Empty history/current timers are reconstructed from meter flows only."""
+    from src.simulation import fill_missing_history_timer_schedules
+    from src.simulation_config import merge_simulation_defaults
+
+    cfg = merge_simulation_defaults({
+        "inverter": {"ac_capacity_kw": 8.0},
+        "battery": {
+            "capacity_kwh": 43.0,
+            "max_charge_power_kw": 5.0,
+            "max_discharge_power_kw": 8.0,
+        },
+    })
+    today = "2026-07-18"
+    result = {
+        "today_date": today,
+        "plan_from_hour": 19,
+        "history_rows": [
+            {
+                "plan_date": today,
+                "hour": 18,
+                "timer_schedule": "",
+                "action": "Discharging to Grid and Load",
+                "production": 1.3,
+                "bat_charge": 0.3,
+                "bat_discharge": 3.5,
+                "grid_import": 0.0,
+                "grid_export": 3.5,
+                "soc": 30.0,
+            },
+        ],
+        "rows": [
+            {
+                "plan_date": today,
+                "hour": 19,
+                "timer_schedule": "",
+                "action": "Charging from Grid",
+                "production": 0.3,
+                "bat_charge": 3.2,
+                "bat_discharge": 0.0,
+                "grid_import": 4.0,
+                "grid_export": 0.0,
+                "soc": 37.0,
+            },
+            {
+                "plan_date": today,
+                "hour": 20,
+                "timer_schedule": "",
+                "action": "Future",
+                "bat_charge": 0.0,
+                "bat_discharge": 0.0,
+                "grid_import": 0.0,
+                "grid_export": 0.0,
+                "soc": 37.0,
+            },
+        ],
+    }
+    fill_missing_history_timer_schedules(result, cfg)
+    assert result["history_rows"][0]["timer_schedule"].startswith("Dis ")
+    assert result["history_rows"][0]["hour_labels_locked"] is True
+    assert result["rows"][0]["timer_schedule"].startswith("Chg ")
+    assert result["rows"][0]["hour_labels_locked"] is True
+    assert result["rows"][1]["timer_schedule"] == ""
+
+
 def test_ea_row_to_smart_view_maps_grid_import():
     view = ea_row_to_smart_view({
         "grid_import": 1.5,

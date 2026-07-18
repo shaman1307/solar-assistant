@@ -21,7 +21,7 @@ from .plan_spill import build_tail_hour_arrays, pv_load_energy_split, tail_balan
 from .simulation_config import (
     plan_min_soc_kwh,
     plan_reserve_min_soc_kwh,
-    plan_timer_charge_power_kw,
+    plan_timer_charge_grid_kw,
     plan_timer_discharge_ac_kw,
     plan_timer_min_hourly_transfer_kwh,
 )
@@ -129,6 +129,7 @@ def hourly_cash_pln(
 
 @dataclass
 class HourControl:
+    # Grid charge energy this step (kWh AC on the meter). DC into battery = AC × eta_grid.
     grid_charge_kw: float
     battery_export_kwh: float
     load_from_grid: bool = False
@@ -140,6 +141,26 @@ class HourPhysics:
     battery_delta: float
     grid_import: float
     grid_export: float
+
+
+def _apply_grid_charge_ac(
+    *,
+    soc: float,
+    battery_delta: float,
+    grid_import: float,
+    ac_charge_kwh: float,
+    battery_cap: float,
+    eta_grid: float,
+    epsilon: float,
+) -> tuple[float, float, float]:
+    """Draw ac_charge_kwh from grid; store AC × eta into battery."""
+    head_room = max(0.0, battery_cap - soc)
+    if ac_charge_kwh <= epsilon or head_room <= epsilon:
+        return soc, battery_delta, grid_import
+    max_ac = head_room / eta_grid if eta_grid > 0 else head_room
+    ac = min(ac_charge_kwh, max_ac)
+    stored = ac * eta_grid if eta_grid > 0 else ac
+    return soc + stored, battery_delta + stored, grid_import + ac
 
 
 def simulate_hour(
@@ -155,10 +176,16 @@ def simulate_hour(
     eta_out: float,
     eta_pv_load: float,
     eta_pv_grid: float,
+    eta_pv_battery: float,
     epsilon: float,
     reserve_soc_kwh: float | None = None,
 ) -> HourPhysics:
-    """One step: PV (DC) vs load (AC); PV→battery is 1:1 (DC/DC)."""
+    """One step: PV (DC) vs load (AC); PV→battery applies eta_pv_battery.
+
+    grid_charge_kw is AC kWh from the meter this step (Chg 6kW × 1h → 6 kWh import).
+    DC stored = AC × eta_grid. Charge is applied before house load when load stays on
+    the battery, so a Chg hour at min SOC nets charge − house on the battery.
+    """
     reserve = min_kwh if reserve_soc_kwh is None else max(min_kwh, reserve_soc_kwh)
     soc = soc_kwh
     grid_import = 0.0
@@ -166,13 +193,45 @@ def simulate_hour(
     battery_delta = 0.0
 
     deficit, pv_surplus = pv_load_energy_split(pv, load, eta_pv_load=eta_pv_load)
-    available = max(0.0, soc - min_kwh)
-    grid_charging = control.grid_charge_kw > epsilon
-    load_on_grid = grid_charging or control.load_from_grid
+    # Load from grid only when explicitly requested. Grid charge does not force
+    # house load onto the meter — load priority stays on the battery (SOC > min).
+    load_on_grid = control.load_from_grid
+    # Charge-before-load when house is on battery: same-hour Chg can supply load.
+    charge_before_load = (
+        control.grid_charge_kw > epsilon and not load_on_grid
+    )
 
+    export_headroom = max(0.0, ac_cap_kw - load)
+
+    head_room = max(0.0, battery_cap - soc)
+    if pv_surplus > epsilon:
+        if head_room > epsilon and eta_pv_battery > 0:
+            taken = min(pv_surplus, head_room / eta_pv_battery)
+            stored = taken * eta_pv_battery
+            soc += stored
+            battery_delta += stored
+            pv_surplus -= taken
+        if pv_surplus > epsilon:
+            pv_exp = min(
+                pv_surplus * eta_pv_grid,
+                max(0.0, export_headroom - grid_export),
+            )
+            grid_export += pv_exp
+
+    if charge_before_load:
+        soc, battery_delta, grid_import = _apply_grid_charge_ac(
+            soc=soc,
+            battery_delta=battery_delta,
+            grid_import=grid_import,
+            ac_charge_kwh=control.grid_charge_kw,
+            battery_cap=battery_cap,
+            eta_grid=eta_grid,
+            epsilon=epsilon,
+        )
+
+    available = max(0.0, soc - min_kwh)
     if deficit > epsilon:
         if load_on_grid:
-            # Timer grid charge: load from grid in parallel; battery charges at set rate.
             grid_import += deficit
         else:
             supplied = min(deficit, available * eta_out)
@@ -183,7 +242,6 @@ def simulate_hour(
             if deficit > supplied + epsilon:
                 grid_import += deficit - supplied
 
-    export_headroom = max(0.0, ac_cap_kw - load)
     batt_export = min(max(0.0, control.battery_export_kwh), export_headroom)
     available_export = max(0.0, soc - reserve)
     if batt_export > epsilon and available_export > epsilon and eta_out > 0:
@@ -192,30 +250,20 @@ def simulate_hour(
         batt_export = export_withdraw * eta_out
         grid_export += batt_export
         battery_delta -= export_withdraw
-        available = max(0.0, soc - min_kwh)
 
-    head_room = max(0.0, battery_cap - soc)
-    if pv_surplus > epsilon:
-        if head_room > epsilon:
-            stored = min(pv_surplus, head_room)
-            soc += stored
-            battery_delta += stored
-            pv_surplus -= stored
-        if pv_surplus > epsilon:
-            pv_exp = min(
-                pv_surplus * eta_pv_grid,
-                max(0.0, export_headroom - grid_export),
-            )
-            grid_export += pv_exp
+    if not charge_before_load:
+        soc, battery_delta, grid_import = _apply_grid_charge_ac(
+            soc=soc,
+            battery_delta=battery_delta,
+            grid_import=grid_import,
+            ac_charge_kwh=control.grid_charge_kw,
+            battery_cap=battery_cap,
+            eta_grid=eta_grid,
+            epsilon=epsilon,
+        )
 
-    head_room = max(0.0, battery_cap - soc)
-    if control.grid_charge_kw > epsilon and head_room > epsilon:
-        stored_grid = min(control.grid_charge_kw, head_room)
-        grid_import += stored_grid / eta_grid if eta_grid > 0 else 0.0
-        soc += stored_grid
-        battery_delta += stored_grid
-
-    soc = max(min_kwh, min(battery_cap, soc))
+    # Cap at full only — never raise SOC to min_kwh (that invents energy).
+    soc = min(battery_cap, max(0.0, soc))
     return HourPhysics(
         soc_end=soc,
         battery_delta=battery_delta,
@@ -242,14 +290,18 @@ def _reserve_soc_kwh_from_step(
     epsilon: float,
     *,
     slots_per_hour: int = 4,
+    global_step_offset: int = 0,
 ) -> float:
-    """Battery kWh that must remain after step (load until PV covers house).
+    """Battery kWh that must remain after step until next-day PV covers house.
 
-    PV coverage is checked per clock hour (not single q15) so one sunny
-    15-min slot does not understate the night reserve.
+    Walks forward across midnight. Same-calendar-day sun never ends the window
+    (evening PV ≥ load must not zero overnight reserve). Stops on the first
+    clock hour *after* the day boundary where PV covers house load.
     """
     need = 0.0
     j = step + 1
+    slots_per_day = 24 * max(1, slots_per_hour)
+    start_day = (global_step_offset + step) // slots_per_day
     while j < len(pv_series):
         deficit, _ = pv_load_energy_split(
             pv_series[j], load_series[j], eta_pv_load=eta_pv_load,
@@ -261,7 +313,11 @@ def _reserve_soc_kwh_from_step(
             h_start = j - slots_per_hour
             pv_h = sum(pv_series[h_start:j])
             load_h = sum(load_series[h_start:j])
-            if pv_h * eta_pv_load >= load_h - epsilon:
+            hour_day = (global_step_offset + j - 1) // slots_per_day
+            if (
+                hour_day > start_day
+                and pv_h * eta_pv_load >= load_h - epsilon
+            ):
                 break
     return need + reserve_floor_kwh
 
@@ -326,7 +382,8 @@ def _control_options(
     battery_cap: float,
     min_kwh: float,
     discharge_ac_cap_kw: float,
-    charge_batt_cap_kw: float,
+    charge_ac_cap_kw: float,
+    eta_grid: float,
     eta_out: float,
     eta_pv_load: float,
     epsilon: float,
@@ -344,7 +401,8 @@ def _control_options(
         )
         and head_room > epsilon
     )
-    charge_rate = min(charge_batt_cap_kw, head_room) if allow_charge else 0.0
+    max_ac = head_room / eta_grid if eta_grid > 0 else head_room
+    charge_rate = min(charge_ac_cap_kw, max_ac) if allow_charge else 0.0
 
     # Flat off-peak: fill battery while forward reserve exceeds SOC (no idle gaps).
     if offpeak and reserve_soc_kwh > soc_kwh + epsilon and charge_rate > epsilon:
@@ -463,17 +521,21 @@ def reserve_soc_per_step(
     end_dt: datetime | None = None,
     today_date=None,
     forecast: dict[str, Any] | None = None,
+    global_step_offset: int = 0,
 ) -> list[float]:
-    """Reserve floor (kWh) after each step — load until PV covers house again."""
+    """Reserve floor (kWh) after each step — through midnight until next-day PV."""
     end = end_dt or datetime.now()
     pv_r, load_r = build_extended_pv_load_for_reserve(
         pv_series, load_series,
         step_scale=step_scale, end_dt=end, today_date=today_date, forecast=forecast,
     )
     eps_step = max(epsilon * step_scale, 0.001)
+    slots_per_hour = max(1, int(round(1.0 / step_scale)) if step_scale > 0 else 1)
     return [
         _reserve_soc_kwh_from_step(
             s, pv_r, load_r, reserve_floor_kwh, eta_out, eta_pv_load, eps_step,
+            slots_per_hour=slots_per_hour,
+            global_step_offset=global_step_offset,
         )
         for s in range(steps)
     ]
@@ -517,16 +579,18 @@ def optimize_horizon(
     min_kwh = plan_min_soc_kwh(cfg)
     reserve_floor_kwh = plan_reserve_min_soc_kwh(cfg)
     discharge_ac_kw = plan_timer_discharge_ac_kw(cfg)
-    charge_dc_kw = plan_timer_charge_power_kw(cfg)
+    # Timer/optimizer charge cap as AC on the meter (DC into bat = AC × eta).
+    charge_ac_kw = plan_timer_charge_grid_kw(cfg)
     min_hourly_transfer = plan_timer_min_hourly_transfer_kwh(cfg)
     epsilon = float(params["epsilon_kwh"])
     eta_grid = float(params["eta_grid_battery"])
     eta_out = float(params["eta_battery_out"])
     eta_pv_load = float(params["eta_pv_load"])
     eta_pv_grid = float(params["eta_pv_grid"])
+    eta_pv_battery = float(params["eta_pv_battery"])
     tariff = g12_tariff_from_cfg(cfg)
     discharge_ac_step = discharge_ac_kw * step_scale
-    charge_dc_step = charge_dc_kw * step_scale
+    charge_ac_step = charge_ac_kw * step_scale
     eps_step = max(epsilon * step_scale, 0.001)
 
     bin_kwh = max(0.5, battery_cap / max(1, int((battery_cap - min_kwh) / 0.5)))
@@ -571,6 +635,8 @@ def optimize_horizon(
         _reserve_soc_kwh_from_step(
             s, pv_for_reserve, load_for_reserve, reserve_floor_kwh,
             eta_out, eta_pv_load, eps_step,
+            slots_per_hour=max(1, int(round(1.0 / step_scale)) if step_scale > 0 else 1),
+            global_step_offset=rce_step_offset,
         )
         for s in range(steps)
     ]
@@ -599,7 +665,8 @@ def optimize_horizon(
                 soc, pv, load,
                 battery_cap=battery_cap, min_kwh=min_kwh,
                 discharge_ac_cap_kw=discharge_ac_step,
-                charge_batt_cap_kw=charge_dc_step,
+                charge_ac_cap_kw=charge_ac_step,
+                eta_grid=eta_grid,
                 eta_out=eta_out,
                 eta_pv_load=eta_pv_load,
                 epsilon=eps_step, buy_p=buy_p, offpeak_buy=offpeak_buy,
@@ -611,7 +678,9 @@ def optimize_horizon(
                     battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=discharge_ac_step,
                     eta_grid=eta_grid, eta_out=eta_out,
                     eta_pv_load=eta_pv_load,
-                    eta_pv_grid=eta_pv_grid, epsilon=eps_step,
+                    eta_pv_grid=eta_pv_grid,
+                    eta_pv_battery=eta_pv_battery,
+                    epsilon=eps_step,
                     reserve_soc_kwh=reserve,
                 )
                 step_cost = hour_grid_cash_pln(
@@ -638,7 +707,8 @@ def optimize_horizon(
             soc_end, tail_pv, tail_load, tail_buy, tail_export_credit,
             battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=discharge_ac_kw,
             eta_out=eta_out, eta_pv_load=eta_pv_load,
-            eta_pv_grid=eta_pv_grid, epsilon=epsilon,
+            eta_pv_grid=eta_pv_grid, eta_pv_battery=eta_pv_battery,
+            epsilon=epsilon,
         )
         return path_cost + tail
 

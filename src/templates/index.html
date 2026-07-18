@@ -2467,8 +2467,8 @@
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
           <div>
-            <label class="text-xs text-gray-500 block mb-1">Horizon (h)</label>
-            <input name="simulation.horizon_hours" type="number" step="1" min="1" max="48" required value="24"
+            <label class="text-xs text-gray-500 block mb-1">Loss PV→battery (%)</label>
+            <input name="simulation.losses_pct.pv_to_battery" type="number" step="0.1" min="0" max="50" required value="7.5"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
           <div>
@@ -3039,7 +3039,10 @@
             <th class="font-medium text-right mh-bg-import-part mh-bg-import-part--first">Energy Import.<br><span class="font-normal">Service Cost</span><br><span class="font-normal">(PLN)</span></th>
             <th class="font-medium text-right mh-bg-import-part">Energy Import.<br><span class="font-normal">Service Fee</span><br><span class="font-normal">(PLN)</span></th>
             <th class="font-medium text-right mh-bg-import-total">Energy Import<br><span class="font-normal">Cost Total (To be paid)</span><br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-import-part">Baseline<br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-import-part" title="Physics baseline (no timer control)
+Charge: PV only
+Discharge to grid: battery overflow only
+House load: battery while SOC &gt; min">Baseline<br><span class="font-normal">(PLN)</span></th>
             <th class="font-medium text-right mh-bg-import-total">Saved<br><span class="font-normal">(PLN)</span></th>
           </tr>
         </thead>
@@ -5332,7 +5335,7 @@ function removePvBlock(btn) {
 function populateForm(cfg) {
   const SIM_DEFAULTS = {
     'simulation.min_soc_pct': 15,
-    'simulation.horizon_hours': 24,
+    'simulation.losses_pct.pv_to_battery': 7.5,
     'simulation.losses_pct.grid_to_battery': 7.5,
     'simulation.losses_pct.battery_to_load_or_grid': 7.5,
     'simulation.losses_pct.pv_to_grid': 7.5,
@@ -7760,26 +7763,21 @@ function historyMonthImportCostTotalTitle(r, isTotal) {
 }
 
 function historyMonthBaselineDisplayValue(r, isTotal) {
-  const energy = Number(r.baseline_energy_cost);
-  const service = Number(r.baseline_service_cost);
-  if (!Number.isFinite(energy) && !Number.isFinite(service)) return null;
-  let total = (Number.isFinite(energy) ? energy : 0) + (Number.isFinite(service) ? service : 0);
-  if (isTotal) {
-    const fee = Number(r.baseline_service_fee);
-    if (Number.isFinite(fee)) total += fee;
-  }
-  if (!isTotal && Math.abs(total) < 0.005) return null;
-  return -total;
+  // Baseline = sim export RCE − sim import tariff (same signed net as energy columns).
+  const v = Number(r.baseline_cost);
+  if (!Number.isFinite(v)) return null;
+  if (!isTotal && Math.abs(v) < 0.005) return null;
+  return v;
 }
 
 function historyMonthBaselineTitle(r) {
-  const energy = Number(r.baseline_energy_cost);
-  const service = Number(r.baseline_service_cost);
-  const fee = Number(r.baseline_service_fee);
-  if (!Number.isFinite(energy) || !Number.isFinite(service)) return 'Passive load-priority bill';
-  let title = `Baseline energy: ${fmt(energy, 2)} zł, service: ${fmt(service, 2)} zł`;
-  if (Number.isFinite(fee)) title += `, fee: ${fmt(fee, 2)} zł`;
-  return title;
+  const exp = Number(r.baseline_export_revenue);
+  const tariff = Number(r.baseline_import_energy_cost);
+  const net = Number(r.baseline_cost);
+  if (!Number.isFinite(exp) || !Number.isFinite(tariff)) {
+    return 'SA rules: export RCE − import tariff';
+  }
+  return `SA baseline: export ${fmt(exp, 2)} zł − tariff ${fmt(tariff, 2)} zł = ${fmt(net, 2)} zł`;
 }
 
 function historyMonthServiceFeeDisplayValue(r, isTotal) {
@@ -7807,16 +7805,20 @@ function historyMonthSavingsDisplayValue(r, isTotal) {
 }
 
 function historyMonthSavingsTitle(r) {
-  const baseline = Number(r.baseline_cost);
-  const baselineFee = Number(r.baseline_service_fee);
-  const energyTotal = Number(r.energy_cost_total);
-  const importTotal = Number(r.import_cost_total);
-  if (Number.isFinite(baseline) && Number.isFinite(energyTotal) && Number.isFinite(importTotal)) {
-    const baselineBill = baseline + (Number.isFinite(baselineFee) ? baselineFee : 0);
-    const actualBill = importTotal - energyTotal;
-    return `Baseline ${fmt(baselineBill, 2)} zł − (import total ${fmt(importTotal, 2)} − energy total ${fmt(energyTotal, 2)} zł) = ${fmt(Number(r.savings_pln), 2)} zł saved`;
+  const actualExp = Number(r.export_revenue);
+  const actualTariff = Number(r.import_energy_cost);
+  const baseExp = Number(r.baseline_export_revenue);
+  const baseTariff = Number(r.baseline_import_energy_cost);
+  const saved = Number(r.savings_pln);
+  if (
+    Number.isFinite(actualExp) && Number.isFinite(actualTariff)
+    && Number.isFinite(baseExp) && Number.isFinite(baseTariff)
+  ) {
+    const actualNet = actualExp - actualTariff;
+    const baseNet = baseExp - baseTariff;
+    return `Saved = (export ${fmt(actualExp, 2)} − tariff ${fmt(actualTariff, 2)} = ${fmt(actualNet, 2)}) − baseline ${fmt(baseNet, 2)} = ${fmt(saved, 2)} zł`;
   }
-  return 'Baseline bill minus actual bill';
+  return 'Actual energy net minus SA baseline energy net';
 }
 
 function makeHistoryMonthRow(r, isTotal) {
@@ -7931,7 +7933,7 @@ function toggleHistoryMonthDays() {
 }
 
 const HISTORY_MONTH_CACHE_KEY = 'sa_history_month_v10';
-const HISTORY_MONTH_BILLING_MODEL = '7';
+const HISTORY_MONTH_BILLING_MODEL = '13';
 
 function historyMonthCacheDay() {
   return DEBUG_TODAY;

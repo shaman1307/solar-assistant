@@ -22,7 +22,11 @@ from ..debug_smart_plan import (
 from ..g12_pricing import get_buy_price
 from ..inverter_sim import simulate_day_from_profile
 from ..plan_simulation import fetch_plan_inputs
-from ..simulation import apply_locked_hour_labels_from_plan, build_energy_arbitrage_plan
+from ..simulation import (
+    apply_locked_hour_labels_from_plan,
+    build_energy_arbitrage_plan,
+    preserve_history_timer_schedules_from_plan,
+)
 from ..simulation_config import merge_simulation_defaults, plan_min_soc_pct
 from ..sqlite_store import read_plan
 from ..app_logging import list_log_dates, parse_log_date, read_log_day
@@ -92,6 +96,7 @@ async def _apply_ea_smart_for_today(
     )
     now = influxdb_mod.now_warsaw()
     apply_locked_hour_labels_from_plan(ea_plan, existing_plan, now)
+    preserve_history_timer_schedules_from_plan(ea_plan, existing_plan)
     merge_ea_plan_into_debug_day(days[0], ea_plan, date_str)
     if len(days) > 1:
         merge_ea_plan_into_debug_day(days[1], ea_plan, next_date)

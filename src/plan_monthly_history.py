@@ -42,6 +42,8 @@ def _empty_month_totals() -> dict[str, Any]:
         "baseline_energy_cost": 0.0,
         "baseline_service_cost": 0.0,
         "baseline_service_fee": 0.0,
+        "baseline_export_revenue": 0.0,
+        "baseline_import_energy_cost": 0.0,
         "baseline_cost": 0.0,
         "savings_pln": 0.0,
     }
@@ -115,15 +117,19 @@ def _attach_month_service_fees(
     export_revenue = float(totals.get("export_revenue") or 0.0)
     import_energy = float(totals.get("import_energy_cost") or 0.0)
     service_cost = float(totals.get("service_cost") or 0.0)
+    # Keep Baseline net aligned with summed sim export/tariff.
+    base_exp = float(totals.get("baseline_export_revenue") or 0.0)
+    base_tariff = float(totals.get("baseline_import_energy_cost") or 0.0)
+    totals["baseline_cost"] = round(base_exp - base_tariff, 4)
     energy_cost_total = month_energy_cost_total(export_revenue, import_energy)
     import_cost_total = month_import_cost_total(service_cost, service_fee)
     totals["energy_cost_total"] = energy_cost_total
     totals["import_cost_total"] = import_cost_total
     totals["savings_pln"] = month_savings_pln(
-        float(totals.get("baseline_cost") or 0.0),
-        baseline_service_fee,
-        energy_cost_total,
-        import_cost_total,
+        export_revenue,
+        import_energy,
+        base_exp,
+        base_tariff,
     )
     return totals
 
@@ -156,6 +162,12 @@ def _summarize_period(rows: list[dict[str, Any]], cfg: dict) -> dict[str, Any]:
         ),
         "baseline_service_cost": round(
             sum(float(r.get("baseline_service_cost") or 0.0) for r in rows), 4,
+        ),
+        "baseline_export_revenue": round(
+            sum(float(r.get("baseline_export_revenue") or 0.0) for r in rows), 4,
+        ),
+        "baseline_import_energy_cost": round(
+            sum(float(r.get("baseline_import_energy_cost") or 0.0) for r in rows), 4,
         ),
         "baseline_cost": round(sum(float(r.get("baseline_cost") or 0.0) for r in rows), 4),
         "savings_pln": round(sum(float(r.get("savings_pln") or 0.0) for r in rows), 4),

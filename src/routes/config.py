@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from .. import forecast as forecast_mod
-from ..cache_registry import invalidate_all_caches
+from ..cache_registry import invalidate_input_caches
 from ..config import load_config, load_runtime_config, save_config
 from ..config_templates import (
     extract_template_payload,
@@ -60,9 +60,9 @@ async def _refresh_after_config_change() -> None:
 
 @router.post("/api/reload-caches")
 async def api_reload_caches() -> dict[str, str]:
-    """Drop live-input caches and delete plan_latest from SQLite."""
-    invalidate_all_caches()
-    log.info("Live-input caches cleared; SQLite plan_latest deleted.")
+    """Drop live-input caches; keep SQLite plan_latest (history timers stay frozen)."""
+    invalidate_input_caches()
+    log.info("Live-input caches cleared; SQLite plan_latest preserved.")
     return {"status": "ok"}
 
 

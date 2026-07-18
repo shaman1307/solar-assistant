@@ -33,6 +33,7 @@ def _natural_hour(
     eta_out: float,
     eta_pv_load: float,
     eta_pv_grid: float,
+    eta_pv_battery: float,
     epsilon: float,
 ) -> tuple[float, float, float]:
     """Battery+PV only. Returns (soc_end, grid_import, grid_export)."""
@@ -54,10 +55,11 @@ def _natural_hour(
     export_headroom = max(0.0, ac_cap_kw - load)
     head_room = max(0.0, battery_cap - soc)
     if pv_surplus > epsilon:
-        if head_room > epsilon:
-            stored = min(pv_surplus, head_room)
+        if head_room > epsilon and eta_pv_battery > 0:
+            taken = min(pv_surplus, head_room / eta_pv_battery)
+            stored = taken * eta_pv_battery
             soc += stored
-            pv_surplus -= stored
+            pv_surplus -= taken
         if pv_surplus > epsilon and export_headroom > epsilon and eta_pv_grid > 0:
             grid_export += min(pv_surplus * eta_pv_grid, export_headroom)
 
@@ -117,6 +119,7 @@ def tail_balance_cost_pln(
     eta_out: float,
     eta_pv_load: float,
     eta_pv_grid: float,
+    eta_pv_battery: float,
     epsilon: float,
 ) -> float:
     """PLN: grid imports + PV spill opportunity cost (buy − export credit) after horizon."""
@@ -129,7 +132,8 @@ def tail_balance_cost_pln(
             soc, pv, load,
             battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=ac_cap_kw,
             eta_out=eta_out, eta_pv_load=eta_pv_load,
-            eta_pv_grid=eta_pv_grid, epsilon=epsilon,
+            eta_pv_grid=eta_pv_grid, eta_pv_battery=eta_pv_battery,
+            epsilon=epsilon,
         )
         cost += grid_import * buy
         if grid_export > epsilon:

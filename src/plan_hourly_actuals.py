@@ -643,6 +643,7 @@ def simulate_blended_current_hour_q15(
     eta_out = float(params["eta_battery_out"])
     eta_pv_load = float(params["eta_pv_load"])
     eta_pv_grid = float(params["eta_pv_grid"])
+    eta_pv_battery = float(params["eta_pv_battery"])
 
     refresh = _refresh_slot_index(now, hour)
     soc_kwh = soc_start_kwh
@@ -697,6 +698,7 @@ def simulate_blended_current_hour_q15(
             eta_out=eta_out,
             eta_pv_load=eta_pv_load,
             eta_pv_grid=eta_pv_grid,
+            eta_pv_battery=eta_pv_battery,
             epsilon=eps_q,
             reserve_soc_kwh=float(reserve) if reserve is not None else None,
         )
@@ -743,6 +745,7 @@ def simulate_q15_slots(
     eta_out = float(params["eta_battery_out"])
     eta_pv_load = float(params["eta_pv_load"])
     eta_pv_grid = float(params["eta_pv_grid"])
+    eta_pv_battery = float(params["eta_pv_battery"])
 
     soc_kwh = soc_start_kwh
     q15: list[dict[str, Any]] = []
@@ -761,6 +764,7 @@ def simulate_q15_slots(
             eta_out=eta_out,
             eta_pv_load=eta_pv_load,
             eta_pv_grid=eta_pv_grid,
+            eta_pv_battery=eta_pv_battery,
             epsilon=eps_q,
             reserve_soc_kwh=float(reserve) if reserve is not None else None,
         )

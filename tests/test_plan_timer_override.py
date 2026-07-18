@@ -106,8 +106,8 @@ def test_replay_charge_timer_soc_matches_kwh():
     assert delta_pct < 8.0, f"expected ~5% SOC, got +{delta_pct:.1f}%"
 
 
-def test_grid_charge_parallel_with_load():
-    """30 min @ 5 kW + 5.5 kWh load => ~2.5 kWh to battery and ~8 kWh grid import."""
+def test_grid_charge_with_load_priority():
+    """30 min @ 5 kW charge; 5.5 kWh house from battery → import ≈ charge/η only."""
     from src.debug_smart_plan import build_smart_plan_hour_row
     from src.plan_timer_override import replay_day_plan_with_timer_overrides
 
@@ -120,6 +120,7 @@ def test_grid_charge_parallel_with_load():
             "losses_pct": {
                 "grid_to_battery": 7.5,
                 "battery_to_load_or_grid": 7.5,
+                "pv_to_battery": 7.5,
                 "pv_to_grid": 7.5,
                 "pv_to_load": 7.5,
             },
@@ -135,12 +136,13 @@ def test_grid_charge_parallel_with_load():
         },
     }
     date_str = "2026-07-07"
-    start_soc = 43.0 * 0.16
+    # Start high enough that 5.5 kWh load can come from battery during the hour.
+    start_soc = 20.0
     load_q = [0.0] * 96
     for q in range(4):
         load_q[5 * 4 + q] = 5.5 / 4.0
     pv_q = [0.0] * 96
-    pv_q[5 * 4] = 0.03  # tiny PV in hour
+    pv_q[5 * 4] = 0.03
     timer = "Chg 05:30-06:00 5kW cap45%"
     out = replay_day_plan_with_timer_overrides(
         {"q15_by_hour": {4: [{"soc_end": start_soc, "quarter": 3}]}, "q15_plan_rows": []},
@@ -165,5 +167,10 @@ def test_grid_charge_parallel_with_load():
         display_load=5.5,
         manual_timer_schedule=timer,
     )
-    assert 2.0 < row["bat_charge"] < 3.0, row["bat_charge"]
-    assert 7.5 < row["grid_import"] < 8.5, row["grid_import"]
+    # 30 min * 5 kW = 2.5 kWh AC on the meter (house not on meter).
+    assert 2.3 < row["grid_import"] < 2.7, row["grid_import"]
+    assert float(row["grid_import"]) < 4.0
+    slots = out["q15_by_hour"][5]
+    soc_end = float(slots[-1]["soc_end"])
+    assert soc_end < start_soc
+    assert soc_end > 15.0

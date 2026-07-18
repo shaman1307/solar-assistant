@@ -180,6 +180,7 @@ def _simulate_q15_controls(
     eta_out: float,
     eta_pv_load: float,
     eta_pv_grid: float,
+    eta_pv_battery: float,
 ) -> tuple[dict[int, list[dict[str, Any]]], list[dict[str, Any]], float]:
     """Replay optimizer controls into q15 slots."""
     q15_by_hour: dict[int, list[dict[str, Any]]] = {h: [] for h in range(24)}
@@ -204,6 +205,7 @@ def _simulate_q15_controls(
             eta_out=eta_out,
             eta_pv_load=eta_pv_load,
             eta_pv_grid=eta_pv_grid,
+            eta_pv_battery=eta_pv_battery,
             epsilon=eps_q,
             reserve_soc_kwh=reserves[step],
         )
@@ -279,6 +281,7 @@ def run_day_smart_q15_plan(
     eta_out = float(params["eta_battery_out"])
     eta_pv_load = float(params["eta_pv_load"])
     eta_pv_grid = float(params["eta_pv_grid"])
+    eta_pv_battery = float(params["eta_pv_battery"])
 
     if sum(pv_hourly) + sum(load_hourly) <= epsilon:
         return None
@@ -348,6 +351,7 @@ def run_day_smart_q15_plan(
         reserve_floor_kwh=plan_reserve_min_soc_kwh(cfg),
         eta_out=eta_out, eta_pv_load=eta_pv_load, epsilon=epsilon,
         step_scale=STEP_SCALE, end_dt=end_dt, today_date=today_date, forecast=forecast,
+        global_step_offset=start_step,
     )
 
     q15_by_hour, q15_plan_rows, soc = _simulate_q15_controls(
@@ -369,6 +373,7 @@ def run_day_smart_q15_plan(
         eta_out=eta_out,
         eta_pv_load=eta_pv_load,
         eta_pv_grid=eta_pv_grid,
+        eta_pv_battery=eta_pv_battery,
     )
 
     return {
@@ -430,62 +435,74 @@ def build_history_hour_timer_schedule(
     battery_cap: float,
     min_soc_pct: float,
 ) -> str:
-    """Timer Schedule for a completed hour: Influx SOC at hour start + optimizer reserve.
+    """Timer Schedule label for a completed hour from actual meter flows only.
 
-    PV/load use the forecast profile (as at plan time), not merged actuals for later hours.
-    Timer lines reflect actual meter flows — grid-to-load without battery charge gets no Chg slot.
+    Does **not** re-run the live optimizer (that would rewrite the past when
+    reserve/rules change). Timing is reconstructed from hourly energy totals.
     """
-    from .plan_hourly_actuals import hour_start_soc_kwh
+    del date_str, pv_hourly, load_hourly, tomorrow_pv, tomorrow_load
+    del today_hourly, rce_quarters, battery_cap, min_soc_pct
+
     from .timer_plan import ACTION_CHARGE_GRID, ACTION_DISCHARGE_GRID, classify_action
+    from .simulation_config import (
+        plan_min_soc_pct,
+        plan_timer_charge_power_kw,
+        plan_timer_discharge_power_kw,
+    )
 
     params = get_simulation_params(cfg)
     epsilon = float(params["epsilon_kwh"])
+    bat_charge = float(row.get("bat_charge") or 0)
+    bat_discharge = float(row.get("bat_discharge") or 0)
+    grid_import = float(row.get("grid_import") or 0)
+    grid_export = float(row.get("grid_export") or 0)
+    production = float(row.get("production") or 0)
     actual_action = classify_action(
-        bat_charge=float(row.get("bat_charge") or 0),
-        bat_discharge=float(row.get("bat_discharge") or 0),
-        grid_import=float(row.get("grid_import") or 0),
-        grid_export=float(row.get("grid_export") or 0),
-        production=float(row.get("production") or 0),
+        bat_charge=bat_charge,
+        bat_discharge=bat_discharge,
+        grid_import=grid_import,
+        grid_export=grid_export,
+        production=production,
         epsilon=epsilon,
     )
     row["action"] = actual_action
 
+    min_soc = int(round(plan_min_soc_pct(cfg)))
+    hour_start = hour * 60
+
     if actual_action == ACTION_CHARGE_GRID:
-        if float(row.get("bat_charge") or 0) <= epsilon:
+        if bat_charge <= epsilon:
             return ""
-    elif actual_action == ACTION_DISCHARGE_GRID:
-        if float(row.get("grid_export") or 0) <= epsilon:
+        pwr = plan_timer_charge_power_kw(cfg)
+        minutes = 45
+        if pwr > 0:
+            minutes = int(round(max(30.0, min(60.0, (bat_charge / pwr) * 60.0))))
+            minutes = max(30, min(60, (minutes // 15) * 15))
+        cap = min(100, max(min_soc, int(round(float(row.get("soc") or min_soc)))))
+        return (
+            f"Chg {hour:02d}:00-{hour:02d}:{minutes:02d} {pwr}kW cap{cap}%"
+            if minutes < 60
+            else f"Chg {hour:02d}:00-{hour + 1:02d}:00 {pwr}kW cap{cap}%"
+        )
+
+    if actual_action == ACTION_DISCHARGE_GRID:
+        if grid_export <= epsilon:
             return ""
-    else:
-        return ""
+        pwr = plan_timer_discharge_power_kw(cfg)
+        minutes = 45
+        if pwr > 0:
+            minutes = int(round(max(30.0, min(60.0, (grid_export / pwr) * 60.0))))
+            minutes = max(30, min(60, (minutes // 15) * 15))
+        to_hh = hour
+        to_mm = minutes
+        if minutes >= 60:
+            to_hh = hour + 1
+            to_mm = 0
+        return (
+            f"Dis {hour:02d}:00-{to_hh:02d}:{to_mm:02d} {pwr}kW cap{min_soc}%"
+        )
 
-    start_soc = hour_start_soc_kwh(today_hourly, hour, battery_cap, min_soc_pct)
-    if start_soc is None:
-        return ""
-
-    plan = run_day_smart_q15_plan(
-        date_str=date_str,
-        pv_hourly=pv_hourly,
-        load_hourly=load_hourly,
-        tomorrow_pv=tomorrow_pv,
-        tomorrow_load=tomorrow_load,
-        cfg=cfg,
-        rce_quarters=rce_quarters,
-        initial_soc_kwh=start_soc,
-        from_hour=hour,
-    )
-    if not plan:
-        return ""
-    slots = (plan.get("q15_by_hour") or {}).get(hour) or []
-    return build_hour_timer_schedule(
-        hour,
-        slots,
-        cfg,
-        epsilon=epsilon,
-        action=actual_action,
-        grid_export=float(row.get("grid_export") or 0),
-        bat_charge=float(row.get("bat_charge") or 0),
-    )
+    return ""
 
 
 def run_today_smart_q15_plan(

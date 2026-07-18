@@ -15,18 +15,19 @@ def test_import_cost_total_is_service_plus_fee():
     assert month_import_cost_total(40.4667, 66.2924) == 106.7591
 
 
-def test_savings_from_baseline_and_totals():
-    baseline_cost = 500.0
-    baseline_fee = 60.0
-    energy_total = 400.5306
-    import_total = 106.7591
-    saved = month_savings_pln(baseline_cost, baseline_fee, energy_total, import_total)
-    # actual = 106.7591 - 400.5306 = -293.7715; baseline = 560; saved = 853.7715
-    assert saved == round(560.0 - (import_total - energy_total), 4)
+def test_savings_is_actual_energy_net_minus_baseline_energy_net():
+    # Actual: export 203.92 − tariff 57.37 = 146.55
+    # Baseline: export 250 − tariff 80 = 170
+    # Saved = 146.55 − 170 = −23.45
+    saved = month_savings_pln(203.92, 57.37, 250.0, 80.0)
+    assert saved == round((203.92 - 57.37) - (250.0 - 80.0), 4)
 
 
-def test_signed_display_sums_to_net_credit():
-    energy_total = month_energy_cost_total(502.4514, 101.9208)
-    import_total = month_import_cost_total(40.4667, 66.2924)
-    display_sum = energy_total + (-import_total)
-    assert round(display_sum, 4) == 293.7715
+def test_july_style_savings_matches_user_energy_only():
+    actual_export, actual_tariff = 203.916, 57.3681
+    # baseline net ≈ 131.22 would mean saved ≈ 146.55 − 131.22
+    baseline_export, baseline_tariff = 250.0, 118.777  # net 131.223
+    saved = month_savings_pln(actual_export, actual_tariff, baseline_export, baseline_tariff)
+    actual_net = actual_export - actual_tariff
+    baseline_net = baseline_export - baseline_tariff
+    assert saved == round(actual_net - baseline_net, 4)
