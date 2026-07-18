@@ -370,10 +370,12 @@ def _hour_timer_segment(
     *,
     epsilon: float = 0.001,
     hour_action: str | None = None,
+    not_before_min: int | None = None,
 ) -> str | None:
-    """One SA timer line for this clock hour from q15 energy (>=30 min).
+    """One SA timer line for this clock hour from q15 energy (>= min_block).
 
     Power is timer DC (battery) rating — inverter applies losses on AC side.
+    *not_before_min* (minute-of-day): never start before this (no retroactive slots).
     """
     total_kwh, active_q = _hour_q15_timer_energy(
         slots, target_action, epsilon, hour_action=hour_action,
@@ -384,16 +386,25 @@ def _hour_timer_segment(
     min_block = plan_timer_min_block_minutes(cfg)
     min_soc = int(plan_min_soc_pct(cfg))
     hour_start = hour * 60
+    hour_end = hour_start + 60
+    floor_min = hour_start if not_before_min is None else max(hour_start, int(not_before_min))
+
+    # Drop quarters that already ended before the floor (past wall-clock).
+    active_q = [
+        qi for qi in active_q
+        if hour_start + (qi + 1) * 15 > floor_min
+    ]
+    if not active_q:
+        return None
 
     first_q = min(active_q)
     last_q = max(active_q)
     natural_from = hour_start + first_q * 15
     to_min = hour_start + (last_q + 1) * 15
-    from_min = natural_from
+    from_min = max(natural_from, floor_min)
+    # Extend toward min_block only into the *future* within this hour — never into the past.
     if to_min - from_min < min_block:
-        from_min = max(to_min - min_block, hour_start)
-    if to_min - from_min < min_block:
-        to_min = min(hour_start + 60, from_min + min_block)
+        to_min = min(hour_end, from_min + min_block)
     if to_min - from_min < min_block:
         return None
 
@@ -463,8 +474,12 @@ def build_hour_timer_schedule(
     grid_export: float | None = None,
     bat_charge: float | None = None,
     epsilon: float = 0.001,
+    not_before_min: int | None = None,
 ) -> str:
-    """Per-hour SA timer — only when *action* (row label) warrants grid charge/discharge."""
+    """Per-hour SA timer — only when *action* (row label) warrants grid charge/discharge.
+
+    *not_before_min*: do not emit segments that start in the past (minute-of-day).
+    """
     totals = _hour_slot_totals(slots)
     act = normalize_action(
         action if action is not None else classify_action(**totals, epsilon=epsilon)
@@ -476,7 +491,7 @@ def build_hour_timer_schedule(
             return ""
         seg = _hour_timer_segment(
             hour, slots, ACTION_CHARGE_GRID, cfg,
-            epsilon=epsilon, hour_action=act,
+            epsilon=epsilon, hour_action=act, not_before_min=not_before_min,
         )
         return seg or _fallback_charge_grid_timer(hour, slots, cfg, epsilon=epsilon)
     if act == ACTION_DISCHARGE_GRID and g_exp > 0:
@@ -485,7 +500,7 @@ def build_hour_timer_schedule(
             return ""
         seg = _hour_timer_segment(
             hour, slots, ACTION_DISCHARGE_GRID, cfg,
-            epsilon=epsilon, hour_action=act,
+            epsilon=epsilon, hour_action=act, not_before_min=not_before_min,
         )
         return seg or ""
     return ""
@@ -902,12 +917,22 @@ def clip_timer_schedule_not_before(
     *,
     cfg: dict | None = None,
 ) -> str:
-    """Trim timer segments so none start before *earliest_from_min* (no retroactive slots)."""
-    min_block = plan_timer_min_block_minutes(cfg or {})
-    if not str(timer_txt or "").strip():
+    """Trim timer segments so none start before *earliest_from_min* (no retroactive slots).
+
+    Fully past segments (end <= earliest) are dropped. A still-running segment is
+    truncated at *earliest_from_min*; remaining duration may be shorter than
+    min_block (in-progress discharge must not vanish mid-window).
+    Unparseable text is left unchanged.
+    """
+    del cfg  # reserved for callers; min_block does not apply to clip remainders
+    raw = str(timer_txt or "").strip()
+    if not raw:
         return ""
+    segments = parse_timer_schedule_segments(raw)
+    if not segments:
+        return raw
     parts: list[str] = []
-    for seg in parse_timer_schedule_segments(timer_txt):
+    for seg in segments:
         from_min = _hhmm_to_minute_of_day(seg["from"])
         to_min = _hhmm_to_minute_of_day(seg["to"])
         if from_min is None or to_min is None:
@@ -915,7 +940,7 @@ def clip_timer_schedule_not_before(
         if to_min <= earliest_from_min:
             continue
         clip_from = max(from_min, earliest_from_min)
-        if to_min - clip_from < min_block:
+        if clip_from >= to_min:
             continue
         prefix = "Chg" if seg["kind"] == "chg" else "Dis"
         parts.append(

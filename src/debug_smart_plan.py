@@ -615,6 +615,7 @@ def build_smart_plan_hour_row(
     display_pv: float | None = None,
     display_load: float | None = None,
     manual_timer_schedule: str | None = None,
+    not_before_min: int | None = None,
 ) -> dict[str, Any]:
     """Hourly PROD row from smart q15 slots (same action/timer logic as debug)."""
     from .plan_cost import hour_grid_cash_pln
@@ -679,6 +680,7 @@ def build_smart_plan_hour_row(
             if manual_timer_schedule is not None
             else build_hour_timer_schedule(
                 hour, slots, cfg, epsilon=epsilon, action=action, grid_export=grid_export,
+                not_before_min=not_before_min,
             )
         ),
         "timer_schedule_manual": manual_timer_schedule is not None,

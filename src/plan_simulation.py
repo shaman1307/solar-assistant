@@ -319,7 +319,7 @@ async def build_plan_simulation(
             cfg=cfg,
             rules=rules,
         )
-        apply_locked_hour_labels_from_plan(result, existing, now)
+        apply_locked_hour_labels_from_plan(result, existing, now, cfg=cfg)
         preserve_history_timer_schedules_from_plan(result, existing)
         fill_missing_history_timer_schedules(result, cfg)
         result["plan_soc_q15"] = extract_plan_soc_q15(result)
@@ -351,7 +351,7 @@ async def hourly_plan_refresh(cfg: dict) -> dict[str, Any]:
 
         if plan_needs_full_rebuild(existing, now):
             result = fresh
-            apply_locked_hour_labels_from_plan(result, existing, now)
+            apply_locked_hour_labels_from_plan(result, existing, now, cfg=cfg)
             preserve_history_timer_schedules_from_plan(result, existing)
             fill_missing_history_timer_schedules(result, cfg)
         else:

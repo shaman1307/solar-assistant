@@ -42,7 +42,15 @@ from .plan_timer_override import (
     get_timer_overrides_for_date,
 )
 from .simulation_config import get_simulation_params, plan_min_soc_pct
-from .timer_plan import derive_timer_schedule_q15, sa_discharge_timer_for_hour
+from .timer_plan import (
+    ACTION_DISCHARGE_GRID,
+    classify_action,
+    clip_timer_schedule_not_before,
+    derive_timer_schedule_q15,
+    normalize_action,
+    quarter_start_minute,
+    sa_discharge_timer_for_hour,
+)
 
 Q15_PER_HOUR = 4
 STEP_SCALE = 1.0 / Q15_PER_HOUR
@@ -170,13 +178,38 @@ def apply_locked_hour_labels_from_plan(
     result: dict[str, Any],
     existing: dict[str, Any] | None,
     now: datetime,
+    cfg: dict | None = None,
 ) -> None:
-    """After any rebuild: if SQLite had locked timer/action for current hour — keep it.
+    """After any rebuild: keep locked timer/action for current hour; never past slots.
 
-    At :00 (hour boundary) we instead lock from the fresh optimizer output.
+    At :00 lock the fresh optimizer labels. Mid-hour keep locked labels from SQLite,
+    then always clip Timer Schedule so segments do not start before the current
+    quarter (no retroactive Dis/Chg after the window has passed).
     """
+    from .timer_plan import clip_timer_schedule_not_before, quarter_start_minute
+
     today_str = now.strftime("%Y-%m-%d")
     hour = now.hour
+    earliest = quarter_start_minute(now)
+
+    def _clip_current(row: dict[str, Any]) -> None:
+        if row.get("timer_schedule_manual"):
+            return
+        clipped = clip_timer_schedule_not_before(
+            str(row.get("timer_schedule") or ""),
+            earliest,
+            cfg=cfg,
+        )
+        row["timer_schedule"] = clipped
+        # Past-only Dis window → clear misleading "to Grid" action when export is gone.
+        if not clipped and normalize_action(str(row.get("action") or "")) == ACTION_DISCHARGE_GRID:
+            row["action"] = classify_action(
+                bat_charge=float(row.get("bat_charge") or 0),
+                bat_discharge=float(row.get("bat_discharge") or 0),
+                grid_import=float(row.get("grid_import") or 0),
+                grid_export=float(row.get("grid_export") or 0),
+                production=float(row.get("production") or 0),
+            )
 
     if now.minute == 0:
         for row in result.get("rows") or []:
@@ -185,31 +218,43 @@ def apply_locked_hour_labels_from_plan(
             if str(row.get("plan_date") or "") == today_str and int(row.get("hour", -1)) == hour:
                 if not row.get("timer_schedule_manual"):
                     row["hour_labels_locked"] = True
+                _clip_current(row)
                 break
         return
 
-    if not existing:
-        return
-    existing_row = next(
-        (
-            r for r in (existing.get("rows") or [])
-            if r.get("start") != "TOTAL"
-            and str(r.get("plan_date") or "") == today_str
-            and int(r.get("hour", -1)) == hour
-        ),
-        None,
-    )
-    if existing_row is None or not existing_row.get("hour_labels_locked"):
-        return
+    existing_row = None
+    if existing:
+        existing_row = next(
+            (
+                r for r in (existing.get("rows") or [])
+                if r.get("start") != "TOTAL"
+                and str(r.get("plan_date") or "") == today_str
+                and int(r.get("hour", -1)) == hour
+            ),
+            None,
+        )
+
     for row in result.get("rows") or []:
         if row.get("start") == "TOTAL":
             continue
-        if str(row.get("plan_date") or "") == today_str and int(row.get("hour", -1)) == hour:
+        if str(row.get("plan_date") or "") != today_str or int(row.get("hour", -1)) != hour:
+            continue
+        if (
+            existing_row is not None
+            and existing_row.get("hour_labels_locked")
+            and not row.get("timer_schedule_manual")
+        ):
+            row["timer_schedule"] = existing_row.get("timer_schedule", "")
+            row["action"] = existing_row.get("action", "")
+            row["hour_labels_locked"] = True
+        _clip_current(row)
+        # Mid-hour: do not keep a fresh past-only Dis that clip just removed.
+        if not str(row.get("timer_schedule") or "").strip():
             if not row.get("timer_schedule_manual"):
-                row["timer_schedule"] = existing_row.get("timer_schedule", "")
-                row["action"] = existing_row.get("action", "")
-                row["hour_labels_locked"] = True
-            break
+                # Stay unlocked only if we never had a lock; otherwise keep lock with empty.
+                if existing_row is not None and existing_row.get("hour_labels_locked"):
+                    row["hour_labels_locked"] = True
+        break
 
 
 def _history_timer_lookup_key(row: dict[str, Any]) -> tuple[str, int] | None:
@@ -272,6 +317,29 @@ def preserve_history_timer_schedules_from_plan(
                 row["hour_labels_locked"] = True
         if src.get("timer_schedule_manual"):
             row["timer_schedule_manual"] = True
+        # Drop phantom Dis labels when meters show no meaningful grid export.
+        from .timer_plan import (
+            ACTION_DISCHARGE_GRID,
+            GRID_EXPORT_ACTION_MIN_KWH,
+            classify_action,
+            normalize_action,
+        )
+        timer_now = str(row.get("timer_schedule") or "")
+        if (
+            "Dis " in timer_now
+            and "grid_export" in row
+            and float(row.get("grid_export") or 0) < GRID_EXPORT_ACTION_MIN_KWH
+            and not row.get("timer_schedule_manual")
+        ):
+            row["timer_schedule"] = ""
+            if normalize_action(str(row.get("action") or "")) == ACTION_DISCHARGE_GRID:
+                row["action"] = classify_action(
+                    bat_charge=float(row.get("bat_charge") or 0),
+                    bat_discharge=float(row.get("bat_discharge") or 0),
+                    grid_import=float(row.get("grid_import") or 0),
+                    grid_export=float(row.get("grid_export") or 0),
+                    production=float(row.get("production") or 0),
+                )
 
     for row in result.get("history_rows") or []:
         key = _history_timer_lookup_key(row)
@@ -583,6 +651,9 @@ def build_energy_arbitrage_plan(
                 display_load=disp_load,
                 manual_timer_schedule=(
                     today_timer_ov[h] if h in today_timer_ov else None
+                ),
+                not_before_min=(
+                    quarter_start_minute(now) if h == plan_from_hour else None
                 ),
             )
             if h == plan_from_hour:

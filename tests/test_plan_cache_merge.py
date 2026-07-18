@@ -91,6 +91,7 @@ def test_merge_keeps_locked_timer_on_current_hour():
     }
     merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
     cur = merged["rows"][0]
+    # Unparseable legacy text (no kW/cap) is left unchanged by clip.
     assert cur["timer_schedule"] == "Dis 08:00-08:45"
     assert cur["action"] == "Discharging to Grid"
 

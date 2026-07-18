@@ -95,7 +95,7 @@ async def _apply_ea_smart_for_today(
         rce_prices=rce_prices,
     )
     now = influxdb_mod.now_warsaw()
-    apply_locked_hour_labels_from_plan(ea_plan, existing_plan, now)
+    apply_locked_hour_labels_from_plan(ea_plan, existing_plan, now, cfg=cfg)
     preserve_history_timer_schedules_from_plan(ea_plan, existing_plan)
     merge_ea_plan_into_debug_day(days[0], ea_plan, date_str)
     if len(days) > 1:

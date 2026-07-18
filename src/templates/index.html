@@ -8251,7 +8251,9 @@ function simEnergyRoundedCents(n) {
 }
 
 function simEnergyIsNegligible(n) {
-  return simEnergyRoundedCents(n) === 0;
+  // Hourly noise: ±0.01 PLN (e.g. 0.01 kWh import) must show as dash, not "-0.01".
+  // Only |rounded| === 0 used to dash; 0.005…0.01 rounded to ±0.01 and leaked through.
+  return Math.abs(simEnergyRoundedCents(n)) <= 0.01;
 }
 
 function simEnergyDisplayValue(r, isTotal) {

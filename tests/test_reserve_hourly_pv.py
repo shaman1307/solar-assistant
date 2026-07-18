@@ -276,3 +276,68 @@ def test_weekday_grid_charge_target_includes_morning_peak():
         target + 0.1, buy_p=OFF, offpeak_buy=OFF, charge_target_soc_kwh=target,
         head_room_kwh=30.0, charge_ac_cap_kw=1.5, eta_grid=0.925, epsilon=0.01,
     ) == 0.0
+
+
+def test_dark_weekend_day_never_covers_walk_sums_horizon():
+    """If no hour has PV ≥ load, walk does not break early; charge target stays floor."""
+    # 12 dark hours, tiny PV never covers 0.5 load/hour.
+    hours = 12
+    pv = [0.05] * (hours * 4)
+    load = [0.5] * (hours * 4)
+    buy = [OFF] * len(pv)
+    floor = 1.5
+    reserve = _reserve_soc_kwh_from_step(
+        3, pv, load,
+        reserve_floor_kwh=floor,
+        eta_out=1.0,
+        eta_pv_load=1.0,
+        epsilon=0.01,
+        buy_series=buy,
+        offpeak_buy=OFF,
+        global_step_offset=0,
+    )
+    # From after hour 0: hours 1..11 always deficit → 11 × 0.5 (q15 sum per hour = 2.0)
+    # each hour load 2.0, pv 0.2 → deficit 1.8 per hour × 11
+    assert reserve == pytest.approx(floor + 11 * 1.8)
+    target = _grid_charge_target_soc_kwh_from_step(
+        3, pv, load, buy, floor, 1.0, 1.0, 0.01, offpeak_buy=OFF,
+        global_step_offset=0,
+    )
+    assert target == pytest.approx(floor)
+
+
+def test_morning_cover_bound_evening_only_block_uses_start():
+    """Truncated series showing only evening peak → bound is block start, not end."""
+    # Hours 0–14 missing/offpeak, 15–21 peak (as if series started in evening).
+    hour_buys = [OFF] * 15 + [PEAK] * 7 + [OFF] * 2
+    assert morning_cover_bound_from_hour_buys(
+        hour_buys, offpeak_buy=OFF, epsilon=0.01,
+    ) == 15
+
+
+def test_evening_only_bound_does_not_stop_on_evening_pv_cover():
+    """With evening-only peak visible, same-day evening PV cover must not end walk."""
+    # Start hour 18: sun covers, then night, tomorrow morning covers.
+    pv = (
+        [0.5] * 4  # hour 18 covers
+        + [0.0] * 20  # 19–23
+        + [0.0] * 4  # tomorrow 00
+        + [0.5] * 4  # tomorrow 01 covers
+    )
+    load = [0.2] * len(pv)
+    day0 = [OFF] * 15 + [PEAK] * 7 + [OFF] * 2
+    day1 = _weekend_day_buys()
+    buy = _q15_buys(day0[18:] + day1[:2])
+    floor = 1.5
+    reserve = _reserve_soc_kwh_from_step(
+        3, pv, load,
+        reserve_floor_kwh=floor,
+        eta_out=1.0,
+        eta_pv_load=1.0,
+        epsilon=0.01,
+        buy_series=buy,
+        offpeak_buy=OFF,
+        global_step_offset=18 * 4,
+    )
+    # Must walk through night: 19–23 + tomorrow 00 = 24 slots × 0.2
+    assert reserve == pytest.approx(floor + 24 * 0.2)

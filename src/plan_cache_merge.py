@@ -19,6 +19,13 @@ from .plan_hourly_actuals import (
     refresh_row_grid_cash,
 )
 from .simulation_config import plan_min_soc_kwh, plan_min_soc_pct
+from .timer_plan import (
+    ACTION_DISCHARGE_GRID,
+    classify_action,
+    clip_timer_schedule_not_before,
+    normalize_action,
+    quarter_start_minute,
+)
 
 log = logging.getLogger(__name__)
 
@@ -310,6 +317,24 @@ def merge_incremental_plan(
                 cfg=cfg,
                 battery_cap=battery_cap,
             )
+            # Never keep Dis/Chg segments that already ended (mid-hour refresh).
+            if not row.get("timer_schedule_manual"):
+                earliest = quarter_start_minute(now)
+                clipped = clip_timer_schedule_not_before(
+                    str(row.get("timer_schedule") or ""), earliest, cfg=cfg,
+                )
+                row["timer_schedule"] = clipped
+                if (
+                    not clipped
+                    and normalize_action(str(row.get("action") or "")) == ACTION_DISCHARGE_GRID
+                ):
+                    row["action"] = classify_action(
+                        bat_charge=float(row.get("bat_charge") or 0),
+                        bat_discharge=float(row.get("bat_discharge") or 0),
+                        grid_import=float(row.get("grid_import") or 0),
+                        grid_export=float(row.get("grid_export") or 0),
+                        production=float(row.get("production") or 0),
+                    )
             out_rows.append(row)
             continue
 
