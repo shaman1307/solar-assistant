@@ -13,7 +13,6 @@ from typing import Any
 from .g12_pricing import get_buy_price
 from .plan_cost import compute_plan_totals
 from .debug_smart_plan import (
-    build_history_hour_timer_schedule,
     build_smart_plan_hour_row,
     collect_q15_schedule_rows,
     merge_today_hourly_profile,
@@ -255,176 +254,6 @@ def apply_locked_hour_labels_from_plan(
                 if existing_row is not None and existing_row.get("hour_labels_locked"):
                     row["hour_labels_locked"] = True
         break
-
-
-def _history_timer_lookup_key(row: dict[str, Any]) -> tuple[str, int] | None:
-    if row.get("start") == "TOTAL":
-        return None
-    try:
-        hour = int(row.get("hour", -1))
-    except (TypeError, ValueError):
-        return None
-    if hour < 0:
-        return None
-    plan_date = str(row.get("plan_date") or "")
-    if not plan_date:
-        return None
-    return plan_date, hour
-
-
-def preserve_history_timer_schedules_from_plan(
-    result: dict[str, Any],
-    existing: dict[str, Any] | None,
-) -> None:
-    """Freeze Timer Schedule + Action for completed hours across plan rebuilds.
-
-    Past hours are immutable: always copy timer_schedule and action from the
-    previous SQLite plan (history_rows and past rows). Never leave a fresh
-    re-derive in place when a prior label exists.
-    """
-    if not existing:
-        return
-
-    preserved: dict[tuple[str, int], dict[str, Any]] = {}
-    for src in (existing.get("history_rows") or []) + (existing.get("rows") or []):
-        key = _history_timer_lookup_key(src)
-        if key is None:
-            continue
-        prev = preserved.get(key)
-        src_timer = str(src.get("timer_schedule") or "").strip()
-        prev_timer = str((prev or {}).get("timer_schedule") or "").strip()
-        # Prefer history_rows order first; keep non-empty timer when upgrading.
-        if prev is None or (src_timer and not prev_timer):
-            preserved[key] = src
-
-    if not preserved:
-        return
-
-    plan_from = int(result.get("plan_from_hour") or 0)
-    today_str = str(result.get("today_date") or "")
-
-    def _apply(row: dict[str, Any], src: dict[str, Any]) -> None:
-        if row.get("timer_schedule_manual"):
-            return
-        src_timer = str(src.get("timer_schedule") or "").strip()
-        # Never freeze an empty wipe over a fresh row — fill_missing can recover.
-        if src_timer:
-            row["timer_schedule"] = src_timer
-            row["hour_labels_locked"] = True
-        if src.get("action") is not None and str(src.get("action") or "") != "":
-            row["action"] = src.get("action")
-            if src_timer:
-                row["hour_labels_locked"] = True
-        if src.get("timer_schedule_manual"):
-            row["timer_schedule_manual"] = True
-        # Drop phantom Dis labels when meters show no meaningful grid export.
-        from .timer_plan import (
-            ACTION_DISCHARGE_GRID,
-            GRID_EXPORT_ACTION_MIN_KWH,
-            classify_action,
-            normalize_action,
-        )
-        timer_now = str(row.get("timer_schedule") or "")
-        if (
-            "Dis " in timer_now
-            and "grid_export" in row
-            and float(row.get("grid_export") or 0) < GRID_EXPORT_ACTION_MIN_KWH
-            and not row.get("timer_schedule_manual")
-        ):
-            row["timer_schedule"] = ""
-            if normalize_action(str(row.get("action") or "")) == ACTION_DISCHARGE_GRID:
-                row["action"] = classify_action(
-                    bat_charge=float(row.get("bat_charge") or 0),
-                    bat_discharge=float(row.get("bat_discharge") or 0),
-                    grid_import=float(row.get("grid_import") or 0),
-                    grid_export=float(row.get("grid_export") or 0),
-                    production=float(row.get("production") or 0),
-                )
-
-    for row in result.get("history_rows") or []:
-        key = _history_timer_lookup_key(row)
-        if key is None:
-            continue
-        src = preserved.get(key)
-        if src is None:
-            continue
-        _apply(row, src)
-
-    for row in result.get("rows") or []:
-        key = _history_timer_lookup_key(row)
-        if key is None:
-            continue
-        plan_date, hour = key
-        # Freeze only completed hours (today before plan_from, or earlier days).
-        # Tomorrow's forecast hours must keep the freshly optimized timer.
-        if not today_str:
-            continue
-        if plan_date > today_str:
-            continue
-        if plan_date == today_str and hour >= plan_from:
-            continue
-        src = preserved.get(key)
-        if src is None:
-            continue
-        _apply(row, src)
-
-
-def fill_missing_history_timer_schedules(
-    result: dict[str, Any],
-    cfg: dict,
-) -> None:
-    """One-time Timer Schedule for history hours that have meters but empty timer.
-
-    Used after a wipe/rebuild: never overwrites a non-empty timer_schedule.
-    Labels come from actual grid/battery flows only (no live optimizer).
-    Also recovers the current hour when its timer was wiped but meters remain.
-    """
-    today_str = str(result.get("today_date") or "")
-    plan_from = int(result.get("plan_from_hour") or 0)
-    battery_cap = float(cfg["battery"]["capacity_kwh"])
-    min_soc_pct = plan_min_soc_pct(cfg)
-
-    def _fill_row(row: dict[str, Any]) -> None:
-        if row.get("timer_schedule_manual"):
-            return
-        if str(row.get("timer_schedule") or "").strip():
-            row["hour_labels_locked"] = True
-            return
-        hour = row.get("hour")
-        if hour is None:
-            return
-        timer = build_history_hour_timer_schedule(
-            int(hour),
-            row,
-            date_str=today_str or str(row.get("plan_date") or ""),
-            pv_hourly=[],
-            load_hourly=[],
-            tomorrow_pv=[],
-            tomorrow_load=[],
-            today_hourly=None,
-            cfg=cfg,
-            rce_quarters=None,
-            battery_cap=battery_cap,
-            min_soc_pct=min_soc_pct,
-        )
-        if timer:
-            row["timer_schedule"] = timer
-            row["hour_labels_locked"] = True
-
-    for row in result.get("history_rows") or []:
-        _fill_row(row)
-
-    for row in result.get("rows") or []:
-        hour = row.get("hour")
-        if hour is None:
-            continue
-        plan_date = str(row.get("plan_date") or today_str)
-        # Future hours keep the live optimizer timer (do not invent from meters).
-        if today_str and plan_date == today_str and int(hour) > plan_from:
-            continue
-        if today_str and plan_date > today_str:
-            continue
-        _fill_row(row)
 
 
 def build_energy_arbitrage_plan(
@@ -782,9 +611,8 @@ def build_energy_arbitrage_plan(
             cfg,
             params,
         )
-        # Do NOT re-derive timer_schedule/action here. Completed-hour labels are
-        # restored from SQLite via preserve_history_timer_schedules_from_plan
-        # after the rebuild (history must not be rewritten by a fresh optimizer).
+        # Seed only for empty/new-day SQLite. Same-day history is attached later
+        # via attach_immutable_history and never overwritten on rebuild.
 
     rows = all_rows
     today_plan_rows = [r for r in all_rows if r.get("plan_date") == today_str]

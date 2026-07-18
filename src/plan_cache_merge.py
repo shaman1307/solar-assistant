@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from .influxdb import now_warsaw
+from .plan_cost import compute_plan_totals
 from .plan_hourly_actuals import (
     Q15_PER_HOUR,
     _actual_q15_battery_grid,
@@ -357,3 +358,72 @@ def plan_needs_full_rebuild(cached: dict[str, Any] | None, now: datetime | None 
         return True
     now = now or now_warsaw()
     return cached.get("today_date") != now.strftime("%Y-%m-%d")
+
+
+def attach_immutable_history(
+    result: dict[str, Any],
+    existing: dict[str, Any] | None,
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Keep past hours from SQLite; full rebuild may only refresh current+future.
+
+    Same calendar day: *history_rows* are copied from *existing* and never replaced
+    by a fresh Influx rebuild. Hours still sitting in *existing.rows* that are now
+    before the current clock hour are promoted into history (append-only).
+
+    New day / empty SQLite: keep *result.history_rows* as a one-shot seed (meters
+    with empty timers from the fresh sim). No preserve/fill of Timer Schedule.
+    """
+    now = now or now_warsaw()
+    today_str = now.strftime("%Y-%m-%d")
+    current_hour = now.hour
+
+    if existing is not None and str(existing.get("today_date") or "") == today_str:
+        history = copy.deepcopy(existing.get("history_rows") or [])
+        for row in existing.get("rows") or []:
+            if row.get("start") == "TOTAL":
+                continue
+            plan_date = str(row.get("plan_date") or "")
+            try:
+                hour = int(row.get("hour", -1))
+            except (TypeError, ValueError):
+                continue
+            if plan_date != today_str or hour < 0 or hour >= current_hour:
+                continue
+            if _history_has(history, today_str, hour):
+                continue
+            hist_copy = copy.deepcopy(row)
+            hist_copy["history_hour"] = True
+            history.append(hist_copy)
+    else:
+        history = copy.deepcopy(result.get("history_rows") or [])
+
+    history.sort(
+        key=lambda r: (str(r.get("plan_date") or ""), int(r.get("hour", -1))),
+    )
+
+    live_rows: list[dict[str, Any]] = []
+    for row in result.get("rows") or []:
+        if row.get("start") == "TOTAL":
+            continue
+        plan_date = str(row.get("plan_date") or "")
+        try:
+            hour = int(row.get("hour", -1))
+        except (TypeError, ValueError):
+            continue
+        if plan_date == today_str and hour < current_hour:
+            continue
+        live_rows.append(row)
+
+    result["history_rows"] = history
+    result["rows"] = live_rows
+    result["has_history_rows"] = bool(history)
+    result["today_date"] = today_str
+    result["plan_from_hour"] = current_hour
+
+    today_plan = [
+        r for r in live_rows
+        if str(r.get("plan_date") or "") == today_str
+    ]
+    result["totals"] = compute_plan_totals(history + today_plan)

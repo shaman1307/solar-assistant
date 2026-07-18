@@ -223,12 +223,13 @@ def test_apply_locked_hour_labels_restores_mid_hour():
     assert row["hour_labels_locked"] is True
 
 
-def test_preserve_history_timer_and_action_on_rebuild():
-    """Completed-hour Timer Schedule + Action must survive a full plan rebuild."""
-    from src.simulation import preserve_history_timer_schedules_from_plan
+def test_attach_immutable_history_keeps_sqlite_past():
+    """Full rebuild must keep SQLite history_rows; discard fresh Influx rebuild."""
+    from src.plan_cache_merge import attach_immutable_history
 
     today = "2026-07-18"
     existing = {
+        "today_date": today,
         "history_rows": [
             {
                 "plan_date": today,
@@ -236,6 +237,7 @@ def test_preserve_history_timer_and_action_on_rebuild():
                 "timer_schedule": "Dis 18:15-18:45 7.5kW cap16%",
                 "action": "Discharging to Grid and Load",
                 "hour_labels_locked": True,
+                "grid_export": 3.0,
             },
             {
                 "plan_date": today,
@@ -243,6 +245,7 @@ def test_preserve_history_timer_and_action_on_rebuild():
                 "timer_schedule": "Chg 19:00-19:45 5.0kW cap37%",
                 "action": "Charging from Grid",
                 "hour_labels_locked": True,
+                "grid_import": 2.5,
             },
         ],
         "rows": [],
@@ -256,162 +259,110 @@ def test_preserve_history_timer_and_action_on_rebuild():
                 "hour": 18,
                 "timer_schedule": "",
                 "action": "Discharging to Load",
-                "grid_export": 3.52,
+                "grid_export": 9.99,
             },
             {
                 "plan_date": today,
                 "hour": 19,
                 "timer_schedule": "",
                 "action": "Idle - Grid Usage for Load",
-                "grid_import": 2.99,
+                "grid_import": 9.99,
             },
         ],
-        "rows": [{"plan_date": today, "hour": 20, "timer_schedule": "", "action": "X"}],
+        "rows": [
+            {"plan_date": today, "hour": 20, "timer_schedule": "Dis 20:00-20:30 8kW cap16%", "action": "X"},
+            {"plan_date": today, "hour": 18, "timer_schedule": "SHOULD_DROP", "action": "past"},
+        ],
     }
-    preserve_history_timer_schedules_from_plan(fresh, existing)
+    now = datetime(2026, 7, 18, 20, 10, tzinfo=WARSAW)
+    attach_immutable_history(fresh, existing, now=now)
+    assert len(fresh["history_rows"]) == 2
     h18 = fresh["history_rows"][0]
     h19 = fresh["history_rows"][1]
     assert h18["timer_schedule"] == "Dis 18:15-18:45 7.5kW cap16%"
     assert h18["action"] == "Discharging to Grid and Load"
-    assert h18["hour_labels_locked"] is True
+    assert h18["grid_export"] == 3.0
     assert h19["timer_schedule"] == "Chg 19:00-19:45 5.0kW cap37%"
-    assert h19["action"] == "Charging from Grid"
-    assert h19["hour_labels_locked"] is True
-    assert fresh["rows"][0]["timer_schedule"] == ""
+    assert [r["hour"] for r in fresh["rows"]] == [20]
+    assert fresh["rows"][0]["timer_schedule"] == "Dis 20:00-20:30 8kW cap16%"
 
 
-def test_preserve_does_not_freeze_tomorrow_forecast_timers():
-    """Tomorrow plan hours must stay open for re-optimize."""
-    from src.simulation import preserve_history_timer_schedules_from_plan
-
-    today = "2026-07-18"
-    tomorrow = "2026-07-19"
-    existing = {
-        "history_rows": [],
-        "rows": [
-            {
-                "plan_date": tomorrow,
-                "hour": 0,
-                "timer_schedule": "Chg 00:00-01:00 5.0kW cap47%",
-                "action": "Charging from Grid",
-                "hour_labels_locked": True,
-            },
-        ],
-    }
-    fresh = {
-        "today_date": today,
-        "plan_from_hour": 21,
-        "history_rows": [],
-        "rows": [
-            {
-                "plan_date": tomorrow,
-                "hour": 0,
-                "timer_schedule": "Chg 00:00-00:30 6.0kW cap26%",
-                "action": "Charging from Grid",
-            },
-        ],
-    }
-    preserve_history_timer_schedules_from_plan(fresh, existing)
-    assert fresh["rows"][0]["timer_schedule"] == "Chg 00:00-00:30 6.0kW cap26%"
-    """Empty prior timer must not lock history; fill_missing can recover."""
-    from src.simulation import preserve_history_timer_schedules_from_plan
+def test_attach_immutable_history_promotes_past_rows():
+    """Hours still in existing.rows but now before current hour → history append."""
+    from src.plan_cache_merge import attach_immutable_history
 
     today = "2026-07-18"
     existing = {
-        "history_rows": [
-            {
-                "plan_date": today,
-                "hour": 18,
-                "timer_schedule": "",
-                "action": "Discharging to Grid and Load",
-                "hour_labels_locked": True,
-            },
-        ],
-        "rows": [],
-    }
-    fresh = {
         "today_date": today,
-        "plan_from_hour": 19,
         "history_rows": [
             {
                 "plan_date": today,
-                "hour": 18,
-                "timer_schedule": "",
-                "action": "Discharging to Load",
-            },
-        ],
-        "rows": [],
-    }
-    preserve_history_timer_schedules_from_plan(fresh, existing)
-    h18 = fresh["history_rows"][0]
-    assert h18["timer_schedule"] == ""
-    assert h18["action"] == "Discharging to Grid and Load"
-    assert h18.get("hour_labels_locked") is not True
-
-
-def test_fill_missing_history_timer_from_meters():
-    """Empty history/current timers are reconstructed from meter flows only."""
-    from src.simulation import fill_missing_history_timer_schedules
-    from src.simulation_config import merge_simulation_defaults
-
-    cfg = merge_simulation_defaults({
-        "inverter": {"ac_capacity_kw": 8.0},
-        "battery": {
-            "capacity_kwh": 43.0,
-            "max_charge_power_kw": 5.0,
-            "max_discharge_power_kw": 8.0,
-        },
-    })
-    today = "2026-07-18"
-    result = {
-        "today_date": today,
-        "plan_from_hour": 19,
-        "history_rows": [
-            {
-                "plan_date": today,
-                "hour": 18,
-                "timer_schedule": "",
-                "action": "Discharging to Grid and Load",
-                "production": 1.3,
-                "bat_charge": 0.3,
-                "bat_discharge": 3.5,
-                "grid_import": 0.0,
-                "grid_export": 3.5,
-                "soc": 30.0,
+                "hour": 17,
+                "timer_schedule": "Dis 17:00-17:30 8kW cap16%",
+                "action": "Discharging to Grid",
             },
         ],
         "rows": [
+            {
+                "plan_date": today,
+                "hour": 18,
+                "timer_schedule": "Dis 18:00-18:45 8kW cap16%",
+                "action": "Discharging to Grid",
+                "hour_labels_locked": True,
+            },
             {
                 "plan_date": today,
                 "hour": 19,
-                "timer_schedule": "",
+                "timer_schedule": "Chg 19:00-20:00 5kW cap40%",
                 "action": "Charging from Grid",
-                "production": 0.3,
-                "bat_charge": 3.2,
-                "bat_discharge": 0.0,
-                "grid_import": 4.0,
-                "grid_export": 0.0,
-                "soc": 37.0,
-            },
-            {
-                "plan_date": today,
-                "hour": 20,
-                "timer_schedule": "",
-                "action": "Future",
-                "bat_charge": 0.0,
-                "bat_discharge": 0.0,
-                "grid_import": 0.0,
-                "grid_export": 0.0,
-                "soc": 37.0,
             },
         ],
     }
-    fill_missing_history_timer_schedules(result, cfg)
-    assert result["history_rows"][0]["timer_schedule"].startswith("Dis ")
-    assert result["history_rows"][0]["hour_labels_locked"] is True
-    assert result["rows"][0]["timer_schedule"].startswith("Chg ")
-    assert result["rows"][0]["hour_labels_locked"] is True
-    assert result["rows"][1]["timer_schedule"] == ""
+    fresh = {
+        "today_date": today,
+        "history_rows": [{"plan_date": today, "hour": 17, "timer_schedule": "", "action": "X"}],
+        "rows": [
+            {"plan_date": today, "hour": 19, "timer_schedule": "fresh19", "action": "Y"},
+            {"plan_date": "2026-07-19", "hour": 0, "timer_schedule": "tomorrow", "action": "Z"},
+        ],
+    }
+    now = datetime(2026, 7, 18, 19, 5, tzinfo=WARSAW)
+    attach_immutable_history(fresh, existing, now=now)
+    hours = [(r["hour"], r["timer_schedule"]) for r in fresh["history_rows"]]
+    assert hours == [
+        (17, "Dis 17:00-17:30 8kW cap16%"),
+        (18, "Dis 18:00-18:45 8kW cap16%"),
+    ]
+    assert [(r["plan_date"], r["hour"]) for r in fresh["rows"]] == [
+        (today, 19),
+        ("2026-07-19", 0),
+    ]
+    assert fresh["rows"][0]["timer_schedule"] == "fresh19"
+
+
+def test_attach_immutable_history_seeds_on_empty_sqlite():
+    """First run / new day keeps fresh history seed (no inventing timers)."""
+    from src.plan_cache_merge import attach_immutable_history
+
+    today = "2026-07-18"
+    fresh = {
+        "today_date": today,
+        "history_rows": [
+            {
+                "plan_date": today,
+                "hour": 10,
+                "timer_schedule": "",
+                "action": "Idle",
+                "grid_import": 0.5,
+            },
+        ],
+        "rows": [{"plan_date": today, "hour": 14, "timer_schedule": "live", "action": "A"}],
+    }
+    now = datetime(2026, 7, 18, 14, 0, tzinfo=WARSAW)
+    attach_immutable_history(fresh, None, now=now)
+    assert len(fresh["history_rows"]) == 1
+    assert fresh["history_rows"][0]["timer_schedule"] == ""
+    assert fresh["history_rows"][0]["grid_import"] == 0.5
 
 
 def test_ea_row_to_smart_view_maps_grid_import():

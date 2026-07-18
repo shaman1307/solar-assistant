@@ -23,6 +23,19 @@ def _warsaw_now(*, hour: int = 14, minute: int = 0) -> datetime:
     return datetime(2026, 7, 3, hour, minute, 0)
 
 
+def _cfg() -> dict:
+    """Minimal config for build_plan_simulation."""
+    return {
+        "battery": {
+            "capacity_kwh": 43.0,
+            "max_charge_power_kw": 6.0,
+            "max_discharge_power_kw": 8.0,
+        },
+        "simulation": {"min_soc_pct": 16},
+        "timer_schedule": {"min_block_minutes": 30},
+    }
+
+
 def _fresh_plan_entry(now: datetime) -> dict:
     return {
         "today_date": now.strftime("%Y-%m-%d"),
@@ -91,7 +104,7 @@ def test_build_plan_sqlite_hit_skips_fetch(monkeypatch):
         sim_result={"rows": [], "today_date": now.strftime("%Y-%m-%d"), "plan_from_hour": now.hour},
     )
 
-    result = asyncio.run(ps.build_plan_simulation({}))
+    result = asyncio.run(ps.build_plan_simulation(_cfg()))
 
     fetch.assert_not_called()
     assert result["computed_at"] == "2026-07-03 12:00:00"
@@ -115,7 +128,7 @@ def test_build_plan_stale_hour_triggers_rebuild(monkeypatch):
     )
     _patch_build_deps(monkeypatch, now=now, fetch=fetch, sim_result=sim)
 
-    result = asyncio.run(ps.build_plan_simulation({}))
+    result = asyncio.run(ps.build_plan_simulation(_cfg()))
 
     fetch.assert_awaited_once()
     assert result["rows"][0].get("rebuilt") is True
@@ -123,7 +136,7 @@ def test_build_plan_stale_hour_triggers_rebuild(monkeypatch):
 
 
 def test_force_refresh_mid_hour_preserves_locked_timer(monkeypatch):
-    """force_refresh at :28 must NOT overwrite locked timer_schedule for current hour."""
+    """force_refresh at :28 keeps locked labels, but clips past quarters (22:00→22:15)."""
     now = _warsaw_now(hour=22, minute=28)
     locked_plan = _fresh_plan_entry(now.replace(minute=0, second=0, microsecond=0))
     locked_plan["plan_from_hour"] = 22
@@ -157,14 +170,14 @@ def test_force_refresh_mid_hour_preserves_locked_timer(monkeypatch):
     _patch_build_deps(monkeypatch, now=now, fetch=fetch, sim_result=sim)
 
     result = asyncio.run(
-        ps.build_plan_simulation({}, force_refresh=True),
+        ps.build_plan_simulation(_cfg(), force_refresh=True),
     )
 
     cur = next(r for r in result["rows"] if r["hour"] == 22)
-    assert cur["timer_schedule"] == "Dis 22:00-22:45 8.0kW cap16%"
+    # Locked Dis kept (not Idle/22:00-22:30 from fresh), past start clipped to current quarter.
+    assert cur["timer_schedule"] == "Dis 22:15-22:45 8kW cap16%"
     assert cur["action"] == "Discharging to Grid and Load"
     assert cur["hour_labels_locked"] is True
-
 
 def test_invalidate_all_caches_clears_sqlite_plan(monkeypatch):
     from src.cache_registry import invalidate_all_caches

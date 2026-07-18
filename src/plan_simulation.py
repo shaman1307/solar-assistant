@@ -18,11 +18,13 @@ from . import influxdb as influxdb_mod
 from . import rce as rce_mod
 from . import sa_client
 from .influxdb import now_warsaw
-from .plan_cache_merge import merge_incremental_plan, plan_needs_full_rebuild
+from .plan_cache_merge import (
+    attach_immutable_history,
+    merge_incremental_plan,
+    plan_needs_full_rebuild,
+)
 from .simulation import (
     apply_locked_hour_labels_from_plan,
-    fill_missing_history_timer_schedules,
-    preserve_history_timer_schedules_from_plan,
     run_simulation,
 )
 from .simulation_config import merge_simulation_defaults, plan_min_soc_pct
@@ -320,8 +322,7 @@ async def build_plan_simulation(
             rules=rules,
         )
         apply_locked_hour_labels_from_plan(result, existing, now, cfg=cfg)
-        preserve_history_timer_schedules_from_plan(result, existing)
-        fill_missing_history_timer_schedules(result, cfg)
+        attach_immutable_history(result, existing, now=now)
         result["plan_soc_q15"] = extract_plan_soc_q15(result)
         if store_cache:
             write_plan(result)
@@ -352,8 +353,7 @@ async def hourly_plan_refresh(cfg: dict) -> dict[str, Any]:
         if plan_needs_full_rebuild(existing, now):
             result = fresh
             apply_locked_hour_labels_from_plan(result, existing, now, cfg=cfg)
-            preserve_history_timer_schedules_from_plan(result, existing)
-            fill_missing_history_timer_schedules(result, cfg)
+            attach_immutable_history(result, existing, now=now)
         else:
             result = merge_incremental_plan(
                 existing or {},
@@ -363,7 +363,6 @@ async def hourly_plan_refresh(cfg: dict) -> dict[str, Any]:
                 cfg=cfg,
                 rules=rules,
             )
-            fill_missing_history_timer_schedules(result, cfg)
 
         result["plan_soc_q15"] = extract_plan_soc_q15(result)
         result["next_hour"] = (now.hour + 1) % 24
