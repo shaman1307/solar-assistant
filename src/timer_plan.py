@@ -403,6 +403,8 @@ def _hour_timer_segment(
     to_min = hour_start + (last_q + 1) * 15
     from_min = max(natural_from, floor_min)
     # Extend toward min_block only into the *future* within this hour — never into the past.
+    # For a leftover last-hour export (one full quarter of energy), padding to 30 min
+    # correctly yields a lower timer kW (e.g. Dis 23:00-23:30 4kW) instead of dropping it.
     if to_min - from_min < min_block:
         to_min = min(hour_end, from_min + min_block)
     if to_min - from_min < min_block:

@@ -149,6 +149,9 @@ def test_later_richer_hour_keeps_soc_over_earlier_cheaper():
     exp19 = sum(c.battery_export_kwh for c in controls[4:])
     assert exp19 > 1.0
     assert exp19 >= exp18
+
+
+def test_avg_below_floor_no_export():
     cfg = _cfg()
     cfg["grid"]["grid_export_threshold_pln_kwh"] = 0.62
     params = get_simulation_params(cfg)
@@ -175,6 +178,121 @@ def test_later_richer_hour_keeps_soc_over_earlier_cheaper():
         rce_step_offset=offset,
     )
     assert all(c.battery_export_kwh == 0.0 for c in controls)
+
+
+def test_rank_order_middle_hour_gets_leftover_after_richer():
+    """Rank 1=21, rank 2=19, rank 3=20: hour 20 is planned after 21 and 19 claims."""
+    cfg = _cfg(min_hourly_transfer_kwh=0.5)
+    params = get_simulation_params(cfg)
+    offset = 19 * 4
+    steps = 12  # hours 19,20,21
+    rce = [None] * offset + [0.70] * 4 + [0.60] * 4 + [1.0] * 4
+    end = datetime(2026, 7, 18, 22, 0)
+    controls = optimize_horizon(
+        steps=steps,
+        pv_series=[0.0] * steps,
+        load_series=[0.1] * steps,
+        buy_prices=[0.5] * steps,
+        rce_series=rce,
+        initial_soc_kwh=16.0,
+        cfg=cfg,
+        params=params,
+        end_dt=end,
+        today_date=end.date(),
+        rce_map={},
+        forecast={
+            "today": {"pv": [0.0] * 24, "load": [0.1] * 24, "pv_total": 0.0, "load_total": 2.4},
+            "tomorrow": {"pv": [4.0] * 24, "load": [0.1] * 24, "pv_total": 96.0, "load_total": 2.4},
+        },
+        step_scale=0.25,
+        rce_step_offset=offset,
+    )
+    exp19 = sum(c.battery_export_kwh for c in controls[0:4])
+    exp20 = sum(c.battery_export_kwh for c in controls[4:8])
+    exp21 = sum(c.battery_export_kwh for c in controls[8:12])
+    assert exp21 > 1.0
+    assert exp21 >= exp19
+    assert exp21 >= exp20
+    assert exp19 + exp20 + exp21 > 2.0
+
+
+def test_floor_ignores_load_only_quarters_outside_export_span():
+    """Bat Discharge floor is measured only inside the Dis span.
+
+    Repro of hour 23: ~0.5 kWh export in q0 plus ~1.1 kWh load-only discharge
+    in q1–q3 must NOT count as meeting min_hourly_transfer — otherwise the plan
+    shows Feed-in/+PLN without a Dis timer.
+    """
+    from src.plan_optimizer import _plan_hour_export_claim
+
+    claim = _plan_hour_export_claim(
+        hour=23,
+        role="last",
+        soc0=8.0,  # ~18.6% of 43 — only a thin slice above min+reserve
+        hold_soc_kwh=0.0,
+        pv_q=[0.0, 0.0, 0.0, 0.0],
+        load_q=[0.25, 0.25, 0.25, 0.25],
+        reserve_q=[6.9, 6.9, 6.9, 6.9],  # overnight reserve ≈ 16%
+        base_charge_q=[0.0, 0.0, 0.0, 0.0],
+        battery_cap=43.0,
+        min_kwh=6.88,
+        discharge_ac_step=1.85,
+        eta_grid=0.925,
+        eta_out=0.925,
+        eta_pv_load=0.925,
+        eta_pv_grid=0.925,
+        eta_pv_battery=0.925,
+        eps_step=0.01,
+        min_hourly_kwh=2.0,
+    )
+    assert claim is None
+
+
+def test_plan_rows_never_show_orphan_export_without_dis_timer():
+    """Battery feed-in above the hourly floor requires a Dis timer_schedule."""
+    from src.debug_smart_plan import run_day_smart_q15_plan, timer_schedule_by_hour
+    from src.grid_config import merge_grid_defaults
+    from src.simulation_config import merge_simulation_defaults
+    from tests.test_discharge_power_invariants import (
+        DATE, LOAD_TODAY, PV_TODAY, RCE_Q,
+    )
+
+    cfg = {
+        "inverter": {"ac_capacity_kw": 8.0},
+        "battery": {
+            "capacity_kwh": 43.0,
+            "max_charge_power_kw": 6.0,
+            "max_discharge_power_kw": 8.0,
+        },
+        "simulation": {"min_soc_pct": 16},
+        "timer_schedule": {"min_block_minutes": 30, "min_hourly_transfer_kwh": 2.0},
+        "grid": {},
+    }
+    merge_grid_defaults(cfg)
+    cfg = merge_simulation_defaults(cfg)
+    res = run_day_smart_q15_plan(
+        date_str=DATE,
+        pv_hourly=PV_TODAY,
+        load_hourly=LOAD_TODAY,
+        tomorrow_pv=PV_TODAY,
+        tomorrow_load=LOAD_TODAY,
+        cfg=cfg,
+        rce_quarters=list(RCE_Q),
+        initial_soc_kwh=0.85 * 43.0,
+        from_hour=0,
+    )
+    assert res is not None
+    timers = timer_schedule_by_hour(res["q15_by_hour"], cfg, res["epsilon"])
+    eps = float(res["epsilon"])
+    for h, slots in res["q15_by_hour"].items():
+        exp = sum(float(s.get("battery_export_kwh") or 0) for s in slots)
+        if exp <= eps:
+            continue
+        txt = timers.get(h) or ""
+        assert txt.startswith("Dis"), (
+            f"hour {h}: battery export {exp:.3f} kWh but timer={txt!r} "
+            f"(orphan feed-in without Dis — the 23:00 +0.38 PLN case)"
+        )
 
 
 def test_middle_hour_is_full_four_quarters():

@@ -185,3 +185,55 @@ def test_replay_clears_stale_timer_when_reserve_blocks_export():
     assert rows[0]["timer_schedule"] == ""
     assert rows[0]["action"] == "Discharging to Load"
     assert rows[0]["export_planned"] is False
+
+
+def test_replay_keeps_partial_last_hour_tail_at_inferred_power():
+    """Leftover SOC for one export quarter → Dis 23:00-23:30 ~4kW, not dropped."""
+    date = "2026-07-19"
+    rows = [
+        {
+            "hour": 23,
+            "plan_date": date,
+            "production": 0.0,
+            "consumption": 0.98,
+            "soc": 30.0,
+            "buy_price": 0.62,
+            "g12_zone": "offpeak",
+            "rce_price": 0.78,
+            "grid_import": 0.0,
+            "grid_export": 3.2,
+            "timer_schedule": "Dis 23:00-23:30 8.0kW cap16%",
+            "action": "Discharging to Grid and Load",
+        },
+    ]
+    opt_slots = [
+        {
+            "quarter": q,
+            "pv": 0.0,
+            "load": 0.245,
+            "grid_charge_kw": 0.0,
+            "ctrl_battery_export_kwh": 1.6 if q < 2 else 0.0,
+            "reserve_kwh": 1.6,
+        }
+        for q in range(4)
+    ]
+    load_q15 = [0.0] * 96
+    for q in range(4):
+        load_q15[23 * 4 + q] = 0.245
+    cfg = _minimal_cfg()
+    cfg["timer_schedule"] = {"min_block_minutes": 30, "min_hourly_transfer_kwh": 2.0}
+    cfg["simulation"]["min_soc_pct"] = 16
+    replay_forward_soc_on_rows(
+        rows,
+        anchor_soc_kwh=2.7,
+        q15_plan_by_date={date: {23: opt_slots}},
+        pv_q15_by_date={date: [0.0] * 96},
+        load_q15_by_date={date: load_q15},
+        cfg=cfg,
+    )
+    timer = str(rows[0].get("timer_schedule") or "")
+    assert timer.startswith("Dis"), f"expected last-hour Dis tail, got {timer!r}"
+    assert "23:00-23:30" in timer
+    # Inferred from leftover energy over min_block — below max, not zeroed.
+    assert "8.0kW" not in timer and "8kW" not in timer
+    assert float(rows[0].get("grid_export") or 0) > 0.5

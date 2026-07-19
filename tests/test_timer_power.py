@@ -38,6 +38,72 @@ def _discharge_slot(grid_export_kwh: float = 1.5) -> dict:
     }
 
 
+def test_leftover_quarter_extends_to_min_block_at_half_power():
+    """One full-power quarter of leftover energy → Dis 30 min at ~half kW."""
+    cfg = {
+        "inverter": {"ac_capacity_kw": 8.0},
+        "battery": {
+            "capacity_kwh": 43.0,
+            "max_charge_power_kw": 6.0,
+            "max_discharge_power_kw": 8.0,
+        },
+        "simulation": {
+            "min_soc_pct": 16,
+            "losses_pct": {
+                "grid_to_battery": 7.5,
+                "battery_to_load_or_grid": 7.5,
+                "pv_to_grid": 7.5,
+                "pv_to_load": 7.5,
+            },
+        },
+        "timer_schedule": {"min_block_minutes": 30},
+    }
+    slots = [
+        {
+            "action": ACTION_DISCHARGE_GRID,
+            "battery_delta": -2.0,
+            "grid_export": 1.6,
+            "battery_export_kwh": 1.6,
+            "grid_import": 0.0,
+            "pv": 0.0,
+            "load": 0.25,
+        },
+        {
+            "action": "Discharging to Load",
+            "battery_delta": -0.27,
+            "grid_export": 0.0,
+            "battery_export_kwh": 0.0,
+            "grid_import": 0.0,
+            "pv": 0.0,
+            "load": 0.25,
+        },
+        {
+            "action": "Discharging to Load",
+            "battery_delta": -0.27,
+            "grid_export": 0.0,
+            "battery_export_kwh": 0.0,
+            "grid_import": 0.0,
+            "pv": 0.0,
+            "load": 0.25,
+        },
+        {
+            "action": "Discharging to Load",
+            "battery_delta": -0.27,
+            "grid_export": 0.0,
+            "battery_export_kwh": 0.0,
+            "grid_import": 0.0,
+            "pv": 0.0,
+            "load": 0.25,
+        },
+    ]
+    txt = build_hour_timer_schedule(
+        23, slots, cfg, action=ACTION_DISCHARGE_GRID, grid_export=1.6,
+    )
+    assert "23:00-23:30" in txt
+    assert "4.0kW" in txt or "4kW" in txt
+    assert "8.0kW" not in txt
+
+
 def test_hour_timer_discharge_uses_discharge_cap():
     slots = [_discharge_slot(1.5) for _ in range(4)]
     txt = build_hour_timer_schedule(

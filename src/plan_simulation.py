@@ -310,6 +310,13 @@ async def build_plan_simulation(
             return result
 
         existing = read_plan()
+        log.info(
+            "Plan full rebuild (%s) — window %s/%s vs now %s",
+            "forced" if force_refresh else "window mismatch",
+            (existing or {}).get("today_date"),
+            (existing or {}).get("plan_from_hour"),
+            now.strftime("%Y-%m-%d %H:%M"),
+        )
         sim, forecast, metrics, rules, rce_prices = await _run_fresh_simulation(
             cfg, invalidate_inputs=invalidate_inputs or force_refresh,
         )

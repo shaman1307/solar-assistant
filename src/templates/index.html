@@ -6867,18 +6867,24 @@ function renderAccrualsChart(d) {
 // ---------------------------------------------------------------------------
 let rceData = null;
 
+// Fetch ~25s after the boundary so the Pi scheduler (:00/:15/:30/:45) has
+// already merged the plan; the UI then just reads SQLite without forcing
+// a duplicate rebuild (forced rebuilds raced the :00 merge and lost hours).
+const QUARTER_FETCH_DELAY_MS = 25_000;
+
 function msUntilNextQuarterBoundary() {
   const now = new Date();
   const elapsedInQuarter = (now.getMinutes() % 15) * 60_000
     + now.getSeconds() * 1000
     + now.getMilliseconds();
-  const wait = QUARTER_REFRESH_MS - elapsedInQuarter;
+  let wait = QUARTER_REFRESH_MS - elapsedInQuarter + QUARTER_FETCH_DELAY_MS;
+  if (wait > QUARTER_REFRESH_MS) wait -= QUARTER_REFRESH_MS;
   return wait > 0 ? wait : QUARTER_REFRESH_MS;
 }
 
 function scheduleQuarterRefresh() {
   const tick = () => {
-    refreshQuarterCycle().catch((e) => console.warn('quarter refresh', e));
+    refreshQuarterCycle({ force: false }).catch((e) => console.warn('quarter refresh', e));
     setTimeout(tick, msUntilNextQuarterBoundary());
   };
   setTimeout(tick, msUntilNextQuarterBoundary());
@@ -6886,7 +6892,7 @@ function scheduleQuarterRefresh() {
 
 /** Forecast + EA simulation, then RCE/G12 from simulation (every :00/:15/:30/:45 and Refresh). */
 async function refreshQuarterCycle(options = {}) {
-  const { silent = false, syncSliders = false } = options;
+  const { silent = false, syncSliders = false, force = true } = options;
   if (silent === false && currentTab === 'simulation') {
     const bodyTotal = document.getElementById('sim-body-total');
     if (bodyTotal && (!simData?.rows?.length || simData.cache_miss)) {
@@ -6895,7 +6901,7 @@ async function refreshQuarterCycle(options = {}) {
     }
   }
   await loadForecast(true, { syncSliders });
-  await preloadSimulation(true);
+  await preloadSimulation(force);
   if (currentTab === 'simulation' && simData) {
     renderSimulationBundle(simData);
   }

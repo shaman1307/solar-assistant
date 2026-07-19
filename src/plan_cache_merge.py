@@ -217,6 +217,59 @@ def _history_has(history: list[dict], plan_date: str, hour: int) -> bool:
     return _find_row(history, plan_date, hour) is not None
 
 
+def _as_history_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Copy a plan row for history: blended-live SOC marker applies only to the
+    in-progress hour, so it must not survive promotion."""
+    hist = copy.deepcopy(row)
+    hist["history_hour"] = True
+    hist.pop("soc_blended", None)
+    return hist
+
+
+def _strip_blended_flags(history: list[dict]) -> None:
+    """Self-heal rows promoted by older code with the live-SOC flag still set."""
+    for row in history:
+        row.pop("soc_blended", None)
+
+
+def _sort_history(history: list[dict]) -> None:
+    history.sort(
+        key=lambda r: (str(r.get("plan_date") or ""), int(r.get("hour", -1))),
+    )
+
+
+def _backfill_history_from_meters(
+    history: list[dict],
+    meter_rows: list[dict] | None,
+    *,
+    today_str: str,
+    current_hour: int,
+) -> int:
+    """Append meters-based rows for past hours absent from history (append-only).
+
+    Existing history entries are never touched — this only heals holes left by
+    a missed :00 promote (restart/race at the hour boundary).
+    """
+    added = 0
+    for row in meter_rows or []:
+        plan_date = str(row.get("plan_date") or "")
+        try:
+            hour = int(row.get("hour", -1))
+        except (TypeError, ValueError):
+            continue
+        if plan_date != today_str or hour < 0 or hour >= current_hour:
+            continue
+        if _history_has(history, plan_date, hour):
+            continue
+        history.append(_as_history_row(row))
+        added += 1
+    if added:
+        log.warning(
+            "History backfill — %d missing past hour(s) restored from meters", added,
+        )
+    return added
+
+
 def merge_incremental_plan(
     existing: dict[str, Any],
     fresh: dict[str, Any],
@@ -231,6 +284,19 @@ def merge_incremental_plan(
     now = now or now_warsaw()
     today_str = now.strftime("%Y-%m-%d")
     current_hour = now.hour
+    # Fresh sim may start one hour later than `now` if the hour flipped while
+    # it was computed — treat that later hour as current so nothing is dropped.
+    try:
+        fresh_from_hour = int(fresh.get("plan_from_hour"))
+    except (TypeError, ValueError):
+        fresh_from_hour = current_hour
+    if fresh_from_hour > current_hour:
+        log.warning(
+            "Fresh sim crossed hour boundary during merge (%02d -> %02d)",
+            current_hour,
+            fresh_from_hour,
+        )
+        current_hour = fresh_from_hour
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     today_hourly = (metrics or {}).get("today_hourly")
     series_10min = (metrics or {}).get("series_10min")
@@ -238,6 +304,11 @@ def merge_incremental_plan(
     merged = copy.deepcopy(fresh)
     merged["history_rows"] = copy.deepcopy(existing.get("history_rows") or [])
     history = merged["history_rows"]
+    _strip_blended_flags(history)
+    history_hours_in = sorted(
+        int(r.get("hour", -1)) for r in history
+        if str(r.get("plan_date") or "") == today_str
+    )
     fresh_by_key = {
         _row_key(r): r for r in (fresh.get("rows") or []) if r.get("start") != "TOTAL"
     }
@@ -253,7 +324,7 @@ def merge_incremental_plan(
         prev_key = (today_str, prev_hour)
         prev_row = existing_by_key.get(prev_key) or _find_row(history, today_str, prev_hour)
         if prev_row is not None:
-            prev_copy = copy.deepcopy(prev_row)
+            prev_copy = _as_history_row(prev_row)
             _apply_actual_quarter_if_needed(
                 prev_copy,
                 prev_hour,
@@ -263,7 +334,6 @@ def merge_incremental_plan(
                 cfg=cfg,
                 battery_cap=battery_cap,
             )
-            prev_copy["history_hour"] = True
             if not _history_has(history, today_str, prev_hour):
                 history.append(prev_copy)
             else:
@@ -272,19 +342,36 @@ def merge_incremental_plan(
                         history[i] = prev_copy
                         break
 
+    # Any older completed hour still sitting in existing.rows (missed :00 tick
+    # after a restart/delayed refresh) — promote as-is, never drop.
+    for key, row in existing_by_key.items():
+        plan_date, hour = key
+        if plan_date != today_str or hour >= current_hour:
+            continue
+        if _history_has(history, plan_date, hour):
+            continue
+        history.append(_as_history_row(row))
+        log.warning(
+            "History promote (late) — hour %02d was not moved at :00, recovered from rows",
+            hour,
+        )
+
+    # Holes left by older code/restarts: heal from the fresh sim's meter rows.
+    _backfill_history_from_meters(
+        history,
+        fresh.get("history_rows"),
+        today_str=today_str,
+        current_hour=current_hour,
+    )
+    _sort_history(history)
+
     out_rows: list[dict[str, Any]] = []
     for key, fresh_row in sorted(fresh_by_key.items(), key=lambda x: (x[0][0], x[0][1])):
         plan_date, hour = key
         if plan_date < today_str:
             continue
         if plan_date == today_str and hour < current_hour:
-            if not _history_has(history, plan_date, hour):
-                old = existing_by_key.get(key)
-                if old is not None:
-                    hist_copy = copy.deepcopy(old)
-                    hist_copy["history_hour"] = True
-                    history.append(hist_copy)
-            continue
+            continue  # past hours already promoted/backfilled above
 
         existing_row = existing_by_key.get(key)
         if existing_row is None:
@@ -349,6 +436,13 @@ def merge_incremental_plan(
     merged["computed_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
     merged["today_date"] = today_str
     merged["plan_from_hour"] = current_hour
+
+    history_hours_out = sorted(
+        int(r.get("hour", -1)) for r in history
+        if str(r.get("plan_date") or "") == today_str
+    )
+    if history_hours_out != history_hours_in:
+        log.info("Plan history hours %s -> %s", history_hours_in, history_hours_out)
     return merged
 
 
@@ -378,9 +472,24 @@ def attach_immutable_history(
     now = now or now_warsaw()
     today_str = now.strftime("%Y-%m-%d")
     current_hour = now.hour
+    # The fresh sim may have crossed an hour boundary while it was computed
+    # (rows already start at now.hour+1). Use the later boundary so the hour
+    # in between is promoted to history instead of silently dropped.
+    try:
+        sim_from_hour = int(result.get("plan_from_hour"))
+    except (TypeError, ValueError):
+        sim_from_hour = current_hour
+    if sim_from_hour > current_hour:
+        log.warning(
+            "Sim crossed hour boundary during rebuild (%02d -> %02d) — promoting the gap",
+            current_hour,
+            sim_from_hour,
+        )
+        current_hour = sim_from_hour
 
     if existing is not None and str(existing.get("today_date") or "") == today_str:
         history = copy.deepcopy(existing.get("history_rows") or [])
+        _strip_blended_flags(history)
         for row in existing.get("rows") or []:
             if row.get("start") == "TOTAL":
                 continue
@@ -393,15 +502,27 @@ def attach_immutable_history(
                 continue
             if _history_has(history, today_str, hour):
                 continue
-            hist_copy = copy.deepcopy(row)
-            hist_copy["history_hour"] = True
-            history.append(hist_copy)
+            history.append(_as_history_row(row))
+        # Heal holes (hours lost to earlier restarts/races) from fresh meter rows.
+        _backfill_history_from_meters(
+            history,
+            result.get("history_rows"),
+            today_str=today_str,
+            current_hour=current_hour,
+        )
+        log.info(
+            "Full rebuild — history attached from SQLite (%d rows)", len(history),
+        )
     else:
         history = copy.deepcopy(result.get("history_rows") or [])
+        _strip_blended_flags(history)
+        log.info(
+            "Full rebuild — history seeded from meters (%d rows, existing=%s)",
+            len(history),
+            "none" if existing is None else str(existing.get("today_date")),
+        )
 
-    history.sort(
-        key=lambda r: (str(r.get("plan_date") or ""), int(r.get("hour", -1))),
-    )
+    _sort_history(history)
 
     live_rows: list[dict[str, Any]] = []
     for row in result.get("rows") or []:

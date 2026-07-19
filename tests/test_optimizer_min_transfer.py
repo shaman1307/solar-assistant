@@ -53,7 +53,7 @@ def _rce_peak_afternoon() -> list[float]:
 
 
 def test_correct_zeros_sub_threshold_hour_export():
-    """Hour with export sum 0.9 kWh must be cleared when floor is 2.0."""
+    """Any export below the hourly floor is cleared — including 1–2q orphans."""
     controls = [
         HourControl(0.0, 0.0),
         HourControl(0.0, 0.45),
@@ -63,6 +63,24 @@ def test_correct_zeros_sub_threshold_hour_export():
     out = _correct_min_hourly_transfer_controls(
         controls,
         rce_step_offset=16 * 4,
+        step_scale=0.25,
+        min_hourly_kwh=2.0,
+        epsilon=0.05,
+    )
+    assert all(c.battery_export_kwh == 0.0 for c in out)
+
+
+def test_correct_zeros_single_quarter_orphan_export():
+    """Pi bug: 0.5 kWh feed-in in q0 without a Dis timer must be wiped."""
+    controls = [
+        HourControl(0.0, 0.5),
+        HourControl(0.0, 0.0),
+        HourControl(0.0, 0.0),
+        HourControl(0.0, 0.0),
+    ]
+    out = _correct_min_hourly_transfer_controls(
+        controls,
+        rce_step_offset=23 * 4,
         step_scale=0.25,
         min_hourly_kwh=2.0,
         epsilon=0.05,

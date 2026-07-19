@@ -9,6 +9,7 @@ from src.plan_cache_merge import (
     _apply_actual_quarter_if_needed,
     _ensure_q15_length,
     _merge_current_hour_q15,
+    attach_immutable_history,
     last_completed_quarter_tick,
     merge_incremental_plan,
     plan_needs_full_rebuild,
@@ -142,6 +143,195 @@ def test_merge_preserves_history_rows():
     }
     merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
     assert merged["history_rows"][0]["timer_schedule"] == "Dis 07:00-07:45"
+
+
+def _hist_hours(plan: dict) -> list[int]:
+    return sorted(int(r["hour"]) for r in plan["history_rows"])
+
+
+def test_merge_promotes_stale_past_rows_mid_hour():
+    """Hour left in rows after a missed :00 tick is promoted at :15, not dropped."""
+    now = datetime(2026, 7, 7, 8, 15, tzinfo=ZoneInfo("Europe/Warsaw"))
+    existing = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 7,
+        "history_rows": [],
+        # restart happened at 08:0x — hour 7 was never moved to history
+        "rows": [_row(7, timer="Dis 07:00-07:45", locked=True), _row(8)],
+    }
+    fresh = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 8,
+        "delta_kwh": 0.0,
+        "history_rows": [],
+        "rows": [_row(8), _row(9)],
+    }
+    merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
+    assert _hist_hours(merged) == [7]
+    hist7 = merged["history_rows"][0]
+    assert hist7["timer_schedule"] == "Dis 07:00-07:45"
+    assert hist7["history_hour"] is True
+    assert sorted(r["hour"] for r in merged["rows"]) == [8, 9]
+
+
+def test_merge_backfills_history_holes_from_meters():
+    """Hours lost earlier (not in existing.rows nor history) come back from fresh meters."""
+    now = datetime(2026, 7, 7, 8, 15, tzinfo=ZoneInfo("Europe/Warsaw"))
+    hist5 = _row(5, action="Discharging to Load")
+    hist5["history_hour"] = True
+    existing = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 8,
+        "history_rows": [hist5],  # hours 6 and 7 were lost
+        "rows": [_row(8)],
+    }
+    meters6 = _row(6, action="Charging from PV")
+    meters7 = _row(7, action="Charging from PV")
+    fresh = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 8,
+        "delta_kwh": 0.0,
+        "history_rows": [_row(5, timer="CHANGED"), meters6, meters7],
+        "rows": [_row(8), _row(9)],
+    }
+    merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
+    assert _hist_hours(merged) == [5, 6, 7]
+    by_hour = {int(r["hour"]): r for r in merged["history_rows"]}
+    # existing history stays immutable, holes healed from meters
+    assert by_hour[5]["timer_schedule"] == ""
+    assert by_hour[6]["action"] == "Charging from PV"
+    assert by_hour[6]["history_hour"] is True
+
+
+def test_attach_promotes_hour_straddled_by_slow_rebuild():
+    """Forced rebuild entered at 12:59:5x, sim finished after 13:00 (rows from 13).
+
+    The hour-12 row must be promoted to history, not silently dropped
+    (this is how hours were lost on the Pi).
+    """
+    now = datetime(2026, 7, 7, 12, 59, 55, tzinfo=ZoneInfo("Europe/Warsaw"))
+    existing = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 12,
+        "history_rows": [],
+        "rows": [_row(12, timer="Dis 12:00-12:45", locked=True), _row(13)],
+    }
+    result = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 13,  # sim crossed into the next hour
+        "history_rows": [],
+        "rows": [_row(13), _row(14)],
+    }
+    attach_immutable_history(result, existing, now=now)
+    assert [int(r["hour"]) for r in result["history_rows"]] == [12]
+    assert result["history_rows"][0]["timer_schedule"] == "Dis 12:00-12:45"
+    assert sorted(r["hour"] for r in result["rows"]) == [13, 14]
+
+
+def test_merge_promotes_hour_straddled_by_slow_sim():
+    """Scheduler tick at 13:59:5x whose fresh sim starts at 14 must not drop hour 13."""
+    now = datetime(2026, 7, 7, 13, 59, 58, tzinfo=ZoneInfo("Europe/Warsaw"))
+    existing = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 13,
+        "history_rows": [],
+        "rows": [_row(13, timer="Dis 13:00-13:45", locked=True), _row(14)],
+    }
+    fresh = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 14,
+        "delta_kwh": 0.0,
+        "history_rows": [],
+        "rows": [_row(14), _row(15)],
+    }
+    merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
+    assert _hist_hours(merged) == [13]
+    assert merged["history_rows"][0]["timer_schedule"] == "Dis 13:00-13:45"
+    assert sorted(r["hour"] for r in merged["rows"]) == [14, 15]
+
+
+def test_promoted_history_rows_drop_blended_soc_flag():
+    """soc_blended (violet live SOC in UI) belongs only to the in-progress hour.
+
+    A row promoted to history must lose it, otherwise two rows are
+    highlighted at once (the old hour in history + the new current hour).
+    """
+    now = datetime(2026, 7, 7, 9, 0, 1, tzinfo=ZoneInfo("Europe/Warsaw"))
+    prev = _row(8, timer="Dis 08:00-08:45", locked=True)
+    prev["soc_blended"] = True  # was the current hour a minute ago
+    existing = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 8,
+        "history_rows": [],
+        "rows": [prev, _row(9)],
+    }
+    fresh = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 9,
+        "delta_kwh": 0.0,
+        "history_rows": [],
+        "rows": [_row(9), _row(10)],
+    }
+    merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
+    hist8 = next(r for r in merged["history_rows"] if int(r["hour"]) == 8)
+    assert "soc_blended" not in hist8
+
+
+def test_stale_blended_flags_in_stored_history_are_healed():
+    """Rows already written with soc_blended by older code lose it on next merge."""
+    now = datetime(2026, 7, 7, 9, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
+    bad = _row(7)
+    bad["history_hour"] = True
+    bad["soc_blended"] = True  # legacy promotion kept the live flag
+    existing = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 9,
+        "history_rows": [bad],
+        "rows": [_row(9)],
+    }
+    fresh = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 9,
+        "delta_kwh": 0.0,
+        "history_rows": [],
+        "rows": [_row(9), _row(10)],
+    }
+    merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
+    assert all("soc_blended" not in r for r in merged["history_rows"])
+
+    result = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 9,
+        "history_rows": [],
+        "rows": [_row(9), _row(10)],
+    }
+    attach_immutable_history(result, existing, now=now)
+    assert all("soc_blended" not in r for r in result["history_rows"])
+
+
+def test_attach_immutable_history_backfills_holes():
+    """Full rebuild heals history holes from the fresh sim's meter rows."""
+    now = datetime(2026, 7, 7, 8, 20, tzinfo=ZoneInfo("Europe/Warsaw"))
+    hist5 = _row(5, timer="Dis 05:00-05:45", locked=True)
+    hist5["history_hour"] = True
+    existing = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 8,
+        "history_rows": [hist5],  # hours 6 and 7 lost earlier
+        "rows": [_row(7, action="Charging from PV"), _row(8)],
+    }
+    result = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 8,
+        "history_rows": [_row(5, timer="METERS"), _row(6, action="Charging from PV")],
+        "rows": [_row(8), _row(9)],
+    }
+    attach_immutable_history(result, existing, now=now)
+    by_hour = {int(r["hour"]): r for r in result["history_rows"]}
+    assert sorted(by_hour) == [5, 6, 7]
+    assert by_hour[5]["timer_schedule"] == "Dis 05:00-05:45"  # SQLite wins
+    assert by_hour[7]["action"] == "Charging from PV"  # promoted from rows
+    assert by_hour[6]["history_hour"] is True  # backfilled from meters
 
 
 # ---------------------------------------------------------------------------
