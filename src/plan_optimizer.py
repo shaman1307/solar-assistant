@@ -190,7 +190,11 @@ def battery_export_step_allowed(
     step_scale: float = 0.25,
     epsilon: float = 0.0,
 ) -> bool:
-    """Battery export only when two consecutive q15 slots in the hour are above G12 offpeak."""
+    """Legacy q15 neighbour gate (kept for unit tests / docs).
+
+    Live export assignment uses ranked hourly average RCE instead
+    (see assign_ranked_battery_export).
+    """
     if not _rce_at_or_above(rce_series, step, floor, epsilon=epsilon):
         return False
     slots_per_hour = slots_per_hour_from_scale(step_scale)
@@ -204,6 +208,430 @@ def battery_export_step_allowed(
     if slots_per_hour == 1 and _rce_at_or_above(rce_series, step - 1, floor, epsilon=epsilon):
         return True
     return False
+
+
+def hourly_avg_rce(
+    rce_series: list[float | None],
+    hour: int,
+    *,
+    slots_per_hour: int = 4,
+) -> float | None:
+    """Mean RCE over the clock hour (None if no priced quarters)."""
+    start = int(hour) * int(slots_per_hour)
+    vals: list[float] = []
+    for i in range(int(slots_per_hour)):
+        idx = start + i
+        if 0 <= idx < len(rce_series) and rce_series[idx] is not None:
+            vals.append(float(rce_series[idx]))
+    if not vals:
+        return None
+    return sum(vals) / len(vals)
+
+
+def rank_hours_by_avg_rce(
+    hours: list[int],
+    rce_series: list[float | None],
+    floor: float,
+    *,
+    slots_per_hour: int = 4,
+    epsilon: float = 0.0,
+) -> list[int]:
+    """Hours with avg RCE ≥ floor, richest first (rank 1 = first element)."""
+    scored: list[tuple[float, int]] = []
+    for h in hours:
+        avg = hourly_avg_rce(rce_series, h, slots_per_hour=slots_per_hour)
+        if avg is not None and avg + epsilon >= floor:
+            scored.append((avg, int(h)))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    return [h for _, h in scored]
+
+
+def export_window_roles(selected_hours: set[int] | list[int]) -> dict[int, str]:
+    """Classify each selected hour as single|first|middle|last in its run."""
+    hours = sorted({int(h) for h in selected_hours})
+    roles: dict[int, str] = {}
+    if not hours:
+        return roles
+    run = [hours[0]]
+    for h in hours[1:]:
+        if h == run[-1] + 1:
+            run.append(h)
+        else:
+            _assign_export_run_roles(run, roles)
+            run = [h]
+    _assign_export_run_roles(run, roles)
+    return roles
+
+
+def _assign_export_run_roles(run: list[int], roles: dict[int, str]) -> None:
+    if len(run) == 1:
+        roles[run[0]] = "single"
+        return
+    roles[run[0]] = "first"
+    for h in run[1:-1]:
+        roles[h] = "middle"
+    roles[run[-1]] = "last"
+
+
+def export_span_candidates(role: str) -> list[tuple[int, int]]:
+    """Allowed (start_q, end_q_exclusive) spans for a window role, longest first.
+
+    Quarters: 0=:00-:15 … 3=:45-:00. end_exclusive=4 means end at next :00.
+    """
+    if role == "middle":
+        return [(0, 4)]
+    if role == "first":
+        # Start :00/:15/:30; must end at next :00.
+        return [(0, 4), (1, 4), (2, 4)]
+    if role == "last":
+        # Start :00 only; end :00 / :45 / :30.
+        return [(0, 4), (0, 3), (0, 2)]
+    # single-hour window: start :00/:15/:30, end :30/:45/:00
+    cands: list[tuple[int, int, int]] = []
+    for start in (0, 1, 2):
+        for end in (2, 3, 4):
+            if end > start:
+                cands.append((start, end, end - start))
+    cands.sort(key=lambda t: (-t[2], t[0], t[1]))
+    return [(s, e) for s, e, _ in cands]
+
+
+def _hour_steps_in_horizon(
+    *,
+    hour: int,
+    steps: int,
+    rce_step_offset: int,
+    slots_per_hour: int,
+) -> list[int]:
+    out: list[int] = []
+    for step in range(steps):
+        global_step = rce_step_offset + step
+        if global_step // slots_per_hour == hour:
+            out.append(step)
+    return out
+
+
+def _simulate_export_selection(
+    base_controls: list[HourControl],
+    selected: set[int],
+    spans: dict[int, tuple[int, int]],
+    *,
+    steps: int,
+    pv_series: list[float],
+    load_series: list[float],
+    rce_step_offset: int,
+    step_scale: float,
+    initial_soc_kwh: float,
+    battery_cap: float,
+    min_kwh: float,
+    discharge_ac_step: float,
+    eta_grid: float,
+    eta_out: float,
+    eta_pv_load: float,
+    eta_pv_grid: float,
+    eta_pv_battery: float,
+    eps_step: float,
+    reserves: list[float],
+    min_hourly_kwh: float,
+    hour_avg_rce: dict[int, float] | None = None,
+) -> tuple[list[HourControl], dict[int, float]]:
+    """Chrono replay: max-power export on selected quarters; return controls + export/hour.
+
+    Higher avg-RCE hours keep SOC priority: earlier cheaper hours leave headroom for
+    later richer hours still ahead in the horizon.
+    """
+    slots = slots_per_hour_from_scale(step_scale)
+    avgs = hour_avg_rce or {}
+    out: list[HourControl] = []
+    export_by_hour: dict[int, float] = {h: 0.0 for h in selected}
+    soc = initial_soc_kwh
+
+    def _future_higher_export_soc_need(from_hour: int) -> float:
+        """SOC kWh to keep for later selected hours with strictly higher avg RCE."""
+        need_ac = 0.0
+        cur_avg = avgs.get(from_hour, 0.0)
+        for hh in selected:
+            if hh <= from_hour:
+                continue
+            if avgs.get(hh, 0.0) + eps_step < cur_avg:
+                continue
+            span = spans.get(hh)
+            if not span:
+                continue
+            q_count = max(0, span[1] - span[0])
+            need_ac += discharge_ac_step * q_count
+        if eta_out <= 0:
+            return 0.0
+        return need_ac / eta_out
+
+    for step in range(steps):
+        base = base_controls[step] if step < len(base_controls) else HourControl(0.0, 0.0)
+        global_step = rce_step_offset + step
+        hour = global_step // slots
+        q = global_step % slots
+        export = 0.0
+        span = spans.get(hour)
+        if (
+            span is not None
+            and hour in selected
+            and span[0] <= q < span[1]
+            and base.grid_charge_kw <= eps_step
+        ):
+            hold = _future_higher_export_soc_need(hour)
+            effective_reserve = max(float(reserves[step]), min_kwh) + hold
+            export = _max_battery_export_kwh(
+                soc, pv_series[step], load_series[step],
+                min_kwh=min_kwh,
+                ac_cap_kw=discharge_ac_step,
+                eta_out=eta_out,
+                eta_pv_load=eta_pv_load,
+                reserve_soc_kwh=effective_reserve,
+                epsilon=eps_step,
+            )
+            export = min(export, discharge_ac_step)
+        ctrl = HourControl(base.grid_charge_kw, export, base.load_from_grid)
+        phys = simulate_hour(
+            soc, pv_series[step], load_series[step], ctrl,
+            battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=discharge_ac_step,
+            eta_grid=eta_grid, eta_out=eta_out,
+            eta_pv_load=eta_pv_load, eta_pv_grid=eta_pv_grid,
+            eta_pv_battery=eta_pv_battery, epsilon=eps_step,
+            reserve_soc_kwh=reserves[step],
+        )
+        delivered = min(ctrl.battery_export_kwh, phys.grid_export)
+        if hour in export_by_hour:
+            export_by_hour[hour] += delivered
+        out.append(HourControl(base.grid_charge_kw, delivered, base.load_from_grid))
+        soc = phys.soc_end
+
+    # Drop hours that could not deliver the configured hourly floor.
+    if min_hourly_kwh > eps_step:
+        weak = {h for h, e in export_by_hour.items() if e + eps_step < min_hourly_kwh}
+        if weak:
+            for step in range(steps):
+                global_step = rce_step_offset + step
+                hour = global_step // slots
+                if hour in weak and out[step].battery_export_kwh > eps_step:
+                    c = out[step]
+                    out[step] = HourControl(c.grid_charge_kw, 0.0, c.load_from_grid)
+            for h in weak:
+                export_by_hour[h] = 0.0
+    return out, export_by_hour
+
+
+def _pick_spans_for_selection(
+    selected: set[int],
+    *,
+    roles: dict[int, str],
+    base_controls: list[HourControl],
+    steps: int,
+    pv_series: list[float],
+    load_series: list[float],
+    rce_step_offset: int,
+    step_scale: float,
+    initial_soc_kwh: float,
+    battery_cap: float,
+    min_kwh: float,
+    discharge_ac_step: float,
+    eta_grid: float,
+    eta_out: float,
+    eta_pv_load: float,
+    eta_pv_grid: float,
+    eta_pv_battery: float,
+    eps_step: float,
+    reserves: list[float],
+    min_hourly_kwh: float,
+    hour_avg_rce: dict[int, float],
+) -> dict[int, tuple[int, int]]:
+    """Longest legal span per hour that still yields ≥ min_hourly when possible."""
+    spans: dict[int, tuple[int, int]] = {}
+    for h in sorted(selected):
+        role = roles.get(h, "single")
+        chosen: tuple[int, int] | None = None
+        for cand in export_span_candidates(role):
+            trial = dict(spans)
+            trial[h] = cand
+            _, by_hour = _simulate_export_selection(
+                base_controls, selected, trial,
+                steps=steps, pv_series=pv_series, load_series=load_series,
+                rce_step_offset=rce_step_offset, step_scale=step_scale,
+                initial_soc_kwh=initial_soc_kwh, battery_cap=battery_cap,
+                min_kwh=min_kwh, discharge_ac_step=discharge_ac_step,
+                eta_grid=eta_grid, eta_out=eta_out, eta_pv_load=eta_pv_load,
+                eta_pv_grid=eta_pv_grid, eta_pv_battery=eta_pv_battery,
+                eps_step=eps_step, reserves=reserves, min_hourly_kwh=0.0,
+                hour_avg_rce=hour_avg_rce,
+            )
+            got = by_hour.get(h, 0.0)
+            if got > eps_step and (min_hourly_kwh <= eps_step or got + eps_step >= min_hourly_kwh):
+                chosen = cand
+                break
+            if chosen is None and got > eps_step:
+                chosen = cand
+        if chosen is None:
+            chosen = export_span_candidates(role)[0]
+        spans[h] = chosen
+    return spans
+
+
+def assign_ranked_battery_export(
+    base_controls: list[HourControl],
+    *,
+    steps: int,
+    pv_series: list[float],
+    load_series: list[float],
+    rce_series: list[float | None],
+    rce_step_offset: int,
+    step_scale: float,
+    initial_soc_kwh: float,
+    battery_cap: float,
+    min_kwh: float,
+    discharge_ac_step: float,
+    eta_grid: float,
+    eta_out: float,
+    eta_pv_load: float,
+    eta_pv_grid: float,
+    eta_pv_battery: float,
+    eps_step: float,
+    reserves: list[float],
+    export_floor: float,
+    min_hourly_kwh: float,
+) -> list[HourControl]:
+    """Fill export by hourly avg-RCE rank at max power; shape quarters by window role.
+
+    DP *base_controls* keep charge/idle; this overlays battery→grid export only.
+    """
+    if steps <= 0:
+        return list(base_controls)
+    slots = slots_per_hour_from_scale(step_scale)
+    hours = sorted({
+        (rce_step_offset + i) // slots for i in range(steps)
+    })
+    hour_avg = {
+        h: avg for h in hours
+        if (avg := hourly_avg_rce(rce_series, h, slots_per_hour=slots)) is not None
+    }
+    ranked = rank_hours_by_avg_rce(
+        hours, rce_series, export_floor,
+        slots_per_hour=slots, epsilon=eps_step,
+    )
+
+    selected: set[int] = set()
+    for h in ranked:
+        trial = selected | {h}
+        roles = export_window_roles(trial)
+        # Tentative full-length spans for feasibility.
+        trial_spans = {
+            hh: export_span_candidates(roles[hh])[0] for hh in trial
+        }
+        _, by_hour = _simulate_export_selection(
+            base_controls, trial, trial_spans,
+            steps=steps, pv_series=pv_series, load_series=load_series,
+            rce_step_offset=rce_step_offset, step_scale=step_scale,
+            initial_soc_kwh=initial_soc_kwh, battery_cap=battery_cap,
+            min_kwh=min_kwh, discharge_ac_step=discharge_ac_step,
+            eta_grid=eta_grid, eta_out=eta_out, eta_pv_load=eta_pv_load,
+            eta_pv_grid=eta_pv_grid, eta_pv_battery=eta_pv_battery,
+            eps_step=eps_step, reserves=reserves, min_hourly_kwh=0.0,
+            hour_avg_rce=hour_avg,
+        )
+        if by_hour.get(h, 0.0) > eps_step:
+            if min_hourly_kwh > eps_step and by_hour.get(h, 0.0) + eps_step < min_hourly_kwh:
+                # Try shorter legal spans before rejecting the hour.
+                ok = False
+                for cand in export_span_candidates(roles[h]):
+                    trial_spans[h] = cand
+                    _, by2 = _simulate_export_selection(
+                        base_controls, trial, trial_spans,
+                        steps=steps, pv_series=pv_series, load_series=load_series,
+                        rce_step_offset=rce_step_offset, step_scale=step_scale,
+                        initial_soc_kwh=initial_soc_kwh, battery_cap=battery_cap,
+                        min_kwh=min_kwh, discharge_ac_step=discharge_ac_step,
+                        eta_grid=eta_grid, eta_out=eta_out, eta_pv_load=eta_pv_load,
+                        eta_pv_grid=eta_pv_grid, eta_pv_battery=eta_pv_battery,
+                        eps_step=eps_step, reserves=reserves, min_hourly_kwh=0.0,
+                        hour_avg_rce=hour_avg,
+                    )
+                    if by2.get(h, 0.0) + eps_step >= min_hourly_kwh:
+                        ok = True
+                        break
+                if not ok:
+                    continue
+            selected = trial
+
+    if not selected:
+        return [
+            HourControl(c.grid_charge_kw, 0.0, c.load_from_grid) for c in base_controls
+        ]
+
+    roles = export_window_roles(selected)
+    spans = _pick_spans_for_selection(
+        selected, roles=roles, base_controls=base_controls,
+        steps=steps, pv_series=pv_series, load_series=load_series,
+        rce_step_offset=rce_step_offset, step_scale=step_scale,
+        initial_soc_kwh=initial_soc_kwh, battery_cap=battery_cap,
+        min_kwh=min_kwh, discharge_ac_step=discharge_ac_step,
+        eta_grid=eta_grid, eta_out=eta_out, eta_pv_load=eta_pv_load,
+        eta_pv_grid=eta_pv_grid, eta_pv_battery=eta_pv_battery,
+        eps_step=eps_step, reserves=reserves, min_hourly_kwh=min_hourly_kwh,
+        hour_avg_rce=hour_avg,
+    )
+    controls, export_by_hour = _simulate_export_selection(
+        base_controls, selected, spans,
+        steps=steps, pv_series=pv_series, load_series=load_series,
+        rce_step_offset=rce_step_offset, step_scale=step_scale,
+        initial_soc_kwh=initial_soc_kwh, battery_cap=battery_cap,
+        min_kwh=min_kwh, discharge_ac_step=discharge_ac_step,
+        eta_grid=eta_grid, eta_out=eta_out, eta_pv_load=eta_pv_load,
+        eta_pv_grid=eta_pv_grid, eta_pv_battery=eta_pv_battery,
+        eps_step=eps_step, reserves=reserves, min_hourly_kwh=min_hourly_kwh,
+        hour_avg_rce=hour_avg,
+    )
+
+    # Middle hours must be a full :00–:00 block; drop partial deliveries.
+    middle_hours = {h for h, role in roles.items() if role == "middle"}
+    if middle_hours:
+        bad_middle: set[int] = set()
+        for h in middle_hours:
+            idxs = _hour_steps_in_horizon(
+                hour=h, steps=steps, rce_step_offset=rce_step_offset,
+                slots_per_hour=slots,
+            )
+            if len(idxs) < slots:
+                continue
+            if any(controls[i].battery_export_kwh <= eps_step for i in idxs):
+                bad_middle.add(h)
+        if bad_middle:
+            selected -= bad_middle
+            if not selected:
+                return [
+                    HourControl(c.grid_charge_kw, 0.0, c.load_from_grid)
+                    for c in base_controls
+                ]
+            roles = export_window_roles(selected)
+            spans = _pick_spans_for_selection(
+                selected, roles=roles, base_controls=base_controls,
+                steps=steps, pv_series=pv_series, load_series=load_series,
+                rce_step_offset=rce_step_offset, step_scale=step_scale,
+                initial_soc_kwh=initial_soc_kwh, battery_cap=battery_cap,
+                min_kwh=min_kwh, discharge_ac_step=discharge_ac_step,
+                eta_grid=eta_grid, eta_out=eta_out, eta_pv_load=eta_pv_load,
+                eta_pv_grid=eta_pv_grid, eta_pv_battery=eta_pv_battery,
+                eps_step=eps_step, reserves=reserves, min_hourly_kwh=min_hourly_kwh,
+                hour_avg_rce=hour_avg,
+            )
+            controls, _ = _simulate_export_selection(
+                base_controls, selected, spans,
+                steps=steps, pv_series=pv_series, load_series=load_series,
+                rce_step_offset=rce_step_offset, step_scale=step_scale,
+                initial_soc_kwh=initial_soc_kwh, battery_cap=battery_cap,
+                min_kwh=min_kwh, discharge_ac_step=discharge_ac_step,
+                eta_grid=eta_grid, eta_out=eta_out, eta_pv_load=eta_pv_load,
+                eta_pv_grid=eta_pv_grid, eta_pv_battery=eta_pv_battery,
+                eps_step=eps_step, reserves=reserves, min_hourly_kwh=min_hourly_kwh,
+                hour_avg_rce=hour_avg,
+            )
+    return controls
 
 
 def optimization_battery_export_value(
@@ -944,10 +1372,8 @@ def optimize_horizon(
         buy_p = buy_prices[step]
         rce_idx = rce_step_offset + step
         rce = rce_series[rce_idx] if rce_idx < len(rce_series) else None
-        allow_battery_export = battery_export_step_allowed(
-            rce_idx, rce_series, export_floor,
-            step_scale=step_scale, epsilon=eps_step,
-        )
+        # Charge/idle only in DP; battery export is assigned by hourly RCE rank after.
+        allow_battery_export = False
         # Same peak/offpeak split as charge_target (two discrete G12 buy rates).
         g12_zone = "peak" if buy_p > offpeak_buy + eps_step else "offpeak"
 
@@ -1019,6 +1445,29 @@ def optimize_horizon(
         controls.append(ctrl)
         b = soc_bin
     controls.reverse()
+
+    controls = assign_ranked_battery_export(
+        controls,
+        steps=steps,
+        pv_series=pv_series,
+        load_series=load_series,
+        rce_series=rce_series,
+        rce_step_offset=rce_step_offset,
+        step_scale=step_scale,
+        initial_soc_kwh=initial_soc_kwh,
+        battery_cap=battery_cap,
+        min_kwh=min_kwh,
+        discharge_ac_step=discharge_ac_step,
+        eta_grid=eta_grid,
+        eta_out=eta_out,
+        eta_pv_load=eta_pv_load,
+        eta_pv_grid=eta_pv_grid,
+        eta_pv_battery=eta_pv_battery,
+        eps_step=eps_step,
+        reserves=reserves,
+        export_floor=export_floor,
+        min_hourly_kwh=min_hourly_transfer,
+    )
     # Sub-pass per clock hour: sum battery↔grid flows across 15-min slots; zero if below floor.
     return _correct_min_hourly_transfer_controls(
         controls,

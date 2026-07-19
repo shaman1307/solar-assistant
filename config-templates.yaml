@@ -48,7 +48,6 @@ templates:
       night_charge_end: "06:00"
       rce_peak_start: "17:00"
       rce_peak_end: "23:00"
-      rce_export_top_hours: 3
       g12:
         tariff_name: "Energa G12"
         tariff_preset: "G12"

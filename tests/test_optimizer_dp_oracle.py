@@ -261,10 +261,7 @@ def _brute_best_cost(
         buy_p = buy_prices[step]
         rce_idx = rce_step_offset + step
         rce = rce_series[rce_idx] if rce_idx < len(rce_series) else None
-        allow = battery_export_step_allowed(
-            rce_idx, rce_series, export_floor,
-            step_scale=step_scale, epsilon=eps_step,
-        )
+        allow = False  # Match optimize_horizon: export is ranked post-pass, not in DP.
         g12_zone = "peak" if buy_p > offpeak + eps_step else "offpeak"
         for ctrl in _control_options(
             soc, pv, load,
@@ -331,7 +328,7 @@ def _run_dp(
 
 
 def test_dp_matches_brute_force_on_short_horizon():
-    """optimize_horizon path cost equals full enumeration of the same action set."""
+    """Charge-only DP path cost equals full enumeration (export is a post-pass)."""
     cfg = _cfg()
     params = get_simulation_params(cfg)
     end = datetime(2026, 7, 16, 10, 0)
@@ -339,8 +336,8 @@ def test_dp_matches_brute_force_on_short_horizon():
     pv = [0.0] * steps
     load = [0.4] * steps
     buy = [0.5] * steps
-    # Pad so hourly pair-rule can allow export from step 0 via offset.
-    rce = [0.9, 0.9, 0.9, 0.9, 0.9]
+    # Below export floor so ranked export does not change the charge path.
+    rce = [0.4, 0.4, 0.4, 0.4, 0.4]
     offset = 1
     forecast = _empty_forecast()
 
@@ -348,6 +345,7 @@ def test_dp_matches_brute_force_on_short_horizon():
         steps=steps, pv=pv, load=load, buy=buy, rce=rce, soc0=12.0,
         cfg=cfg, end_dt=end, step_scale=1.0, rce_step_offset=offset,
     )
+    assert all(c.battery_export_kwh == 0.0 for c in controls)
     dp_cost, _ = _path_cost_and_socs(
         controls, pv_series=pv, load_series=load, buy_prices=buy, rce_series=rce,
         initial_soc_kwh=12.0, cfg=cfg, params=params, end_dt=end,
@@ -487,11 +485,13 @@ def test_dp_invariants_soc_bounds_and_export_rule():
     for s in socs:
         assert min_kwh - 1e-6 <= s <= cap + 1e-6
     export_floor = float(cfg["grid"]["grid_export_threshold_pln_kwh"])
+    from src.plan_optimizer import hourly_avg_rce, slots_per_hour_from_scale
+    slots = slots_per_hour_from_scale(1.0)
     for i, c in enumerate(controls):
         if c.battery_export_kwh > 1e-6:
-            assert battery_export_step_allowed(
-                offset + i, rce, export_floor, step_scale=1.0, epsilon=0.01,
-            )
+            hour = (offset + i) // slots
+            avg = hourly_avg_rce(rce, hour, slots_per_hour=slots)
+            assert avg is not None and avg + 1e-9 >= export_floor
 
 
 def test_dp_invariants_no_grid_charge_on_peak_buy():
@@ -514,12 +514,12 @@ def test_dp_invariants_no_grid_charge_on_peak_buy():
     assert all(c.grid_charge_kw == 0.0 for c in controls)
 
 
-def test_q15_export_only_where_rce_pair_allows():
-    """Hour RCE [0.50, 0.70, 0.70, 0.50] at threshold 0.62 → export only mid pair."""
+def test_q15_export_requires_hourly_avg_above_floor():
+    """Hour avg RCE below threshold → no ranked export (even if mid q15 are high)."""
     cfg = _cfg()
     cfg["grid"]["grid_export_threshold_pln_kwh"] = 0.62
     end = datetime(2026, 7, 16, 18, 0)
-    rce = [None] * (18 * 4) + [0.50, 0.70, 0.70, 0.50]
+    rce = [None] * (18 * 4) + [0.50, 0.70, 0.70, 0.50]  # avg 0.60
     steps = 4
     offset = 18 * 4
     controls = _run_dp(
@@ -534,6 +534,4 @@ def test_q15_export_only_where_rce_pair_allows():
         step_scale=0.25,
         rce_step_offset=offset,
     )
-    assert controls[0].battery_export_kwh == 0.0
-    assert controls[3].battery_export_kwh == 0.0
-    assert controls[1].battery_export_kwh + controls[2].battery_export_kwh > 0.05
+    assert all(c.battery_export_kwh == 0.0 for c in controls)
