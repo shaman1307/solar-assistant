@@ -16,6 +16,7 @@ from .plan_hourly_actuals import build_completed_history_rows
 from .simulation_config import get_simulation_params
 
 
+from .grid_config import BILLING_MODEL_VERSION
 from .plan_cost import (
     month_energy_cost_total,
     month_import_cost_total,
@@ -268,6 +269,7 @@ async def build_month_history(month: str, cfg: dict) -> dict[str, Any]:
 
     return {
         "month": month,
+        "billing_model_version": BILLING_MODEL_VERSION,
         "rows": rows,
         "totals": totals,
         "g12_tariff_name": cfg.get("grid", {}).get("g12", {}).get("tariff_name", "G12"),

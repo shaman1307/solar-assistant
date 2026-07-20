@@ -512,19 +512,52 @@ async def _write_metrics(cfg: dict, writes: list[tuple[str, str]], *, lock_wait_
         _release_sa_lock()
 
 
+# SRNE via SolarAssistant rejects these timer topics (API 422 Unknown register).
+# Writing them aborts the whole batch before grid_charge_switch is applied.
+_SRNE_UNSUPPORTED_TIMER_TOPICS = frozenset({
+    f"{_INVERTER_PREFIX}/charge_using_grid_slot_{n}" for n in range(1, _SLOT_COUNT + 1)
+} | {
+    f"{_INVERTER_PREFIX}/charge_using_generator_slot_{n}" for n in range(1, _SLOT_COUNT + 1)
+})
+
+
+def work_mode_battery_modes_paired(
+    work_mode: str | None,
+    battery_discharge_mode: str | None,
+) -> bool:
+    """True when work mode and battery discharge mode form a known SRNE pair."""
+    wm = str(work_mode or "").strip()
+    bdm = _normalize_battery_discharge_mode_for_sa(str(battery_discharge_mode or ""))
+    if not wm or not bdm:
+        return False
+    return WORK_MODE_BATTERY_DISCHARGE_PAIR.get(wm) == bdm
+
+
 def _build_schedule_writes(
     schedule: dict[str, Any],
     *,
     charge_slot_nums: tuple[int, ...] | None = None,
     discharge_slot_nums: tuple[int, ...] | None = None,
+    settings: dict[str, str] | None = None,
 ) -> list[tuple[str, str]]:
-    """Build SA metric writes for timer schedule (skip read-only SRNE topics)."""
+    """Build SA metric writes for timer schedule (skip unsupported SRNE topics)."""
     if charge_slot_nums is None:
         charge_slot_nums = (1, 2, 3)
     if discharge_slot_nums is None:
         discharge_slot_nums = (1, 2, 3)
     p = _INVERTER_PREFIX
     writes: list[tuple[str, str]] = []
+    # Enable grid-charge permission first so a later slot failure cannot skip it.
+    if settings and 1 in charge_slot_nums:
+        if schedule.get("timed_charge_enabled"):
+            pwr = float((schedule.get("charge_slots") or [{}])[0].get("power_kw", 0))
+            writes.append((settings["grid_charge_switch"], _grid_charge_switch(True)))
+            if pwr > 0:
+                writes.append(
+                    (settings["charge_current_limit"], str(int((pwr * 1000) / 48.0))),
+                )
+        elif any(int(s.get("slot", 0)) == 1 for s in schedule.get("charge_slots") or []):
+            writes.append((settings["grid_charge_switch"], _grid_charge_switch(False)))
     if schedule.get("timed_charge_enabled") is not None:
         writes.append((f"{p}/timed_charge", _sa_switch(bool(schedule["timed_charge_enabled"]))))
     if schedule.get("timed_discharge_enabled") is not None:
@@ -543,8 +576,6 @@ def _build_schedule_writes(
             (f"{p}/charge_battery_capacity_slot_{n}", str(cap)),
             (f"{p}/charge_battery_voltage_slot_{n}", str(_float(slot.get("voltage_v"), 57.6))),
             (f"{p}/charge_power_slot_{n}", str(pwr_w)),
-            (f"{p}/charge_using_grid_slot_{n}", _slot_bool(slot.get("grid", True))),
-            (f"{p}/charge_using_generator_slot_{n}", _slot_bool(slot.get("generator", False))),
         ])
     for slot in schedule.get("discharge_slots", []):
         n = int(slot["slot"])
@@ -561,7 +592,7 @@ def _build_schedule_writes(
             (f"{p}/discharge_battery_voltage_slot_{n}", str(_float(slot.get("voltage_v"), 42.0))),
             (f"{p}/discharge_power_slot_{n}", str(pwr_w)),
         ])
-    return writes
+    return [(t, v) for t, v in writes if t not in _SRNE_UNSUPPORTED_TIMER_TOPICS]
 
 
 async def set_grid_charging(cfg: dict, *, enabled: bool, power_kw: float = 0.0) -> bool:
@@ -817,14 +848,8 @@ async def set_timer_schedule(cfg: dict, schedule: dict[str, Any]) -> bool:
         schedule,
         charge_slot_nums=charge_nums,
         discharge_slot_nums=discharge_nums,
+        settings=settings,
     )
-    if 1 in charge_nums and schedule.get("timed_charge_enabled"):
-        pwr = float((schedule.get("charge_slots") or [{}])[0].get("power_kw", 0))
-        writes.append((settings["grid_charge_switch"], _grid_charge_switch(True)))
-        if pwr > 0:
-            writes.append((settings["charge_current_limit"], str(int((pwr * 1000) / 48.0))))
-    elif 1 in charge_nums:
-        writes.append((settings["grid_charge_switch"], _grid_charge_switch(False)))
     try:
         await _write_metrics(cfg, writes, lock_wait_s=90.0)
         log.info("Timer schedule saved to SA (charge=%s discharge=%s).", charge_nums, discharge_nums)

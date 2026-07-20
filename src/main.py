@@ -21,6 +21,7 @@ from . import forecast as forecast_mod
 from .app_logging import setup_app_file_logging
 from .plan_simulation import build_plan_simulation
 from .routes import register_routes
+from .plan_monthly_refresh import maybe_run_daily_month_history
 from .scheduler import create_scheduler
 
 logging.basicConfig(
@@ -37,6 +38,14 @@ async def lifespan(app: FastAPI):
     ensure_month_history_billing_model()
     scheduler = create_scheduler(cfg)
     scheduler.start()
+
+    async def _deferred_month_history() -> None:
+        try:
+            await maybe_run_daily_month_history(cfg)
+        except Exception:
+            log.exception("Startup month_history refresh failed")
+
+    asyncio.create_task(_deferred_month_history())
 
     async def _deferred_startup_plan() -> None:
         # After deploy/restart: wait for beam.smp + SA to recover before any REST reads.

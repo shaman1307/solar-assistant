@@ -621,6 +621,65 @@ def sum_deposit_current(deposits: dict[str, dict[str, float]] | None = None) -> 
     return round(sum(float(r["current"]) for r in rows.values()), 4)
 
 
+def read_meta(key: str) -> str | None:
+    with _lock:
+        conn = _connect()
+        row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return str(row["value"]) if row else None
+
+
+def write_meta(key: str, value: str) -> None:
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            """
+            INSERT INTO meta(key, value) VALUES(?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
+        conn.commit()
+
+
+def read_cached_deposit_total() -> dict[str, Any] | None:
+    """Last cascade result stored in meta (not a naive sum of month rows)."""
+    total_s = read_meta("deposit_total")
+    if total_s is None:
+        return None
+    try:
+        total = float(total_s)
+    except (TypeError, ValueError):
+        return None
+    return {
+        "deposit_total": round(total, 4),
+        "as_of_month": read_meta("deposit_total_as_of_month"),
+        "updated_at": read_meta("deposit_total_updated_at"),
+    }
+
+
+def write_cached_deposit_total(total: float, as_of_month: str) -> None:
+    write_meta("deposit_total", f"{round(float(total), 4):.4f}")
+    write_meta("deposit_total_as_of_month", as_of_month)
+    write_meta("deposit_total_updated_at", _now_iso())
+
+
+def read_month_history_daily_date() -> str | None:
+    return read_meta("month_history_daily_date")
+
+
+def write_month_history_daily_date(date_str: str) -> None:
+    write_meta("month_history_daily_date", date_str)
+
+
+def list_month_history_months() -> list[str]:
+    with _lock:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT month FROM month_history ORDER BY month",
+        ).fetchall()
+    return [str(r["month"]) for r in rows]
+
+
 def _template_now_iso() -> str:
     return now_warsaw().strftime("%Y-%m-%d %H:%M:%S")
 

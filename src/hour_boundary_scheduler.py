@@ -4,6 +4,7 @@ Hour boundary SA sync — :00, :15/:30/:45 Europe/Warsaw.
 Writes to SA from the current hour's Energy arbitrage Timer Schedule cell
 (e.g. Dis 19:30-20:00 6.51kW cap16%), not merged multi-hour proposed_schedule.
 Work mode: On-grid at :00 when Timer Schedule (not charge-grid) or SOC is 100%;
+for charge-grid hours ensure Limit home + paired battery mode before timer write;
 Limit home load at :00/:15/:30/:45 when timer empty or discharge ended.
 """
 
@@ -130,7 +131,7 @@ async def _clear_timed_power_flags(cfg: dict) -> dict[str, Any]:
 
 
 async def run_hour_boundary_start() -> dict[str, Any]:
-    """:00 — On-grid first, then timer sync; Limit home at :00 only if On-grid did not apply."""
+    """:00 — work mode first (On-grid or charge Limit-home repair), then timer sync."""
     global _last_hour_boundary_sync
 
     now = now_warsaw()
@@ -166,10 +167,15 @@ async def run_hour_boundary_start() -> dict[str, Any]:
         status["work_mode"] = await run_work_mode_hour_start()
         status["timer_sync"] = await _sync_timer_from_hour_row(cfg, rows, hour)
 
-        if on_grid_job_applied(status["work_mode"]):
+        # Charge-grid prepare already set Limit home; do not run Limit-home again
+        # (and never clear timed_charge while a charge window is active).
+        charge_prepared = bool((status["work_mode"] or {}).get("charge_grid_prepare"))
+        if on_grid_job_applied(status["work_mode"]) or charge_prepared:
             status["work_mode_limit"] = {
                 "skipped": True,
-                "skip_reason": "on_grid_applied",
+                "skip_reason": (
+                    "charge_grid_prepare" if charge_prepared else "on_grid_applied"
+                ),
                 "ok": True,
             }
         else:

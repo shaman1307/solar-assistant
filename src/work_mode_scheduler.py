@@ -2,6 +2,8 @@
 Work mode scheduler — SRNE grid export requires On-grid during timed discharge hours.
 
 At :00 Europe/Warsaw: On-grid when Timer Schedule present (except charge-grid) or SOC is 100%.
+Charge-grid hours: Limit power to home load + paired UPS/home battery (repair desync),
+then SA timer write enables grid charge.
 At :00/:15/:30/:45: Limit power to home load when the current hour has no Timer
 Schedule, or a planned discharge has ended.
 """
@@ -22,6 +24,7 @@ from .timer_plan import (
     normalize_action,
     plan_row_grid_export_kwh,
     sa_discharge_slot_active_at,
+    timer_charge_active_at,
     timer_discharge_active_at,
     timer_discharge_end_due,
 )
@@ -196,6 +199,21 @@ async def run_work_mode_hour_start() -> dict[str, Any]:
 
         has_timer = hour_has_timer_schedule(rows, hour)
         charge_grid = normalize_action(row.get("action") or "") == ACTION_CHARGE_GRID
+        # Timed grid charge needs Limit home + UPS/home battery pair (not On-grid
+        # export pair). Repair desync before SA timer write.
+        if charge_grid:
+            status["work_mode_target"] = sa_client.WORK_MODE_LIMIT_HOME_LOAD
+            status["on_grid_trigger_this_slot"] = False
+            status["charge_grid_prepare"] = True
+            await _set_work_mode_if_needed(
+                cfg,
+                target_mode=sa_client.WORK_MODE_LIMIT_HOME_LOAD,
+                status=status,
+                timer_txt=timer_txt,
+            )
+            _last_work_mode_sync = status
+            return status
+
         timer_on_grid = has_timer and not charge_grid
         on_grid_trigger = timer_on_grid or soc_full
         status["on_grid_trigger_this_slot"] = on_grid_trigger
@@ -241,6 +259,8 @@ def limit_home_due_for_timer(
     """Whether Limit home applies for the current hour's Timer Schedule cell."""
     timer_txt = str(timer_txt or "").strip()
     if timer_txt:
+        if timer_charge_active_at(timer_txt, now):
+            return False, None
         if timer_discharge_active_at(timer_txt, now):
             return False, None
         return timer_discharge_end_due(timer_txt, now, plan_hour=plan_hour)

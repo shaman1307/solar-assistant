@@ -23,6 +23,7 @@ from .hour_boundary_scheduler import (
     run_hour_boundary_limit_home,
     run_hour_boundary_start,
 )
+from .plan_monthly_refresh import maybe_run_daily_month_history
 from .plan_simulation import fetch_plan_inputs, hourly_plan_refresh
 from .simulation import compute_balance_delta
 
@@ -54,6 +55,18 @@ async def _refresh_stored_plan(cfg: dict) -> dict[str, Any]:
     """Recompute Energy arbitrage plan and persist to SQLite plan_latest."""
     log.info("Plan refresh — recompute simulation, RCE, forecast, buy tariff …")
     return await hourly_plan_refresh(cfg)
+
+
+async def run_daily_month_history() -> dict[str, Any]:
+    """00:05 — refresh open month in SQLite and cached deposit total."""
+    cfg = load_config()
+    try:
+        await maybe_run_daily_month_history(cfg)
+        log.info("Daily month_history refresh OK")
+        return {"ok": True}
+    except Exception as exc:
+        log.exception("Daily month_history refresh failed")
+        return {"ok": False, "error": str(exc)}
 
 
 async def run_nightly_forecast_cache() -> dict[str, Any]:
@@ -170,6 +183,13 @@ def create_scheduler(cfg: dict) -> AsyncIOScheduler:
     del cfg
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
+        run_daily_month_history,
+        trigger=CronTrigger(hour=0, minute=5, timezone="Europe/Warsaw"),
+        id="daily_month_history",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+    scheduler.add_job(
         run_nightly_forecast_cache,
         trigger=CronTrigger(hour=23, minute=59, timezone="Europe/Warsaw"),
         id="nightly_forecast_cache",
@@ -185,7 +205,7 @@ def create_scheduler(cfg: dict) -> AsyncIOScheduler:
         misfire_grace_time=120,
     )
     log.info(
-        "Scheduler: forecast cache + balance Δ at 23:59; plan refresh + SA sync at "
+        "Scheduler: month_history at 00:05; forecast cache + balance Δ at 23:59; plan refresh + SA sync at "
         ":00/:15/:30/:45 — Europe/Warsaw.",
     )
     return scheduler

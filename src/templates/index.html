@@ -3006,10 +3006,13 @@
     <div class="sim-history-head-row">
       <div class="min-w-0">
         <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider truncate">Monthly history</h2>
-        <p class="mt-1">
+        <p class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
           <label class="ov-total-label text-sm font-semibold text-gray-500">
             Energy Deposit Total: <span id="history-deposit-total" class="tabular-nums font-semibold text-green-600">— PLN</span>
           </label>
+          <button type="button" id="history-rebuild-btn" onclick="rebuildHistoryFromSqlite()"
+            class="text-xs font-medium text-slate-600 hover:text-slate-900 underline decoration-dotted underline-offset-2"
+            title="Full rebuild from Energy Arbitrage actuals (after SQLite edits)">Recalculate</button>
         </p>
       </div>
       <label class="flex items-center gap-1.5 whitespace-nowrap text-xs text-gray-500 shrink-0" lang="pl-PL">
@@ -7878,10 +7881,9 @@ function updateHistoryDepositTotal(value) {
   depEl.textContent = Number.isFinite(dep) ? fmt(dep, 2) + ' PLN' : '— PLN';
 }
 
-async function refreshHistoryDepositTotal() {
-  const openMonth = DEBUG_TODAY.slice(0, 7);
+async function loadHistoryDepositTotal() {
   try {
-    const res = await fetch('api/history-month?month=' + encodeURIComponent(openMonth));
+    const res = await fetch('api/history-deposit-total');
     const data = await res.json();
     updateHistoryDepositTotal(data?.deposit_total);
   } catch (_) {
@@ -7895,8 +7897,6 @@ function renderHistoryMonthTable(data) {
   const toggleEl = document.getElementById('history-month-toggle');
   const btn = document.getElementById('history-month-btn');
   if (!bodyDays || !bodyTotal) return;
-
-  updateHistoryDepositTotal(data?.deposit_total);
 
   bodyDays.innerHTML = '';
   bodyTotal.innerHTML = '';
@@ -7938,7 +7938,7 @@ function toggleHistoryMonthDays() {
   btn.textContent = hidden ? label + ' ▼' : 'Hide daily breakdown ▲';
 }
 
-const HISTORY_MONTH_CACHE_KEY = 'sa_history_month_v10';
+const HISTORY_MONTH_CACHE_KEY = 'sa_history_month_v11';
 const HISTORY_MONTH_BILLING_MODEL = '13';
 
 function historyMonthCacheDay() {
@@ -7993,13 +7993,39 @@ async function fetchHistoryMonthCached(month) {
   const cached = getCachedHistoryMonth(month);
   if (cached) return cached;
   const res = await fetch(
-    'api/history-month?month=' + encodeURIComponent(month) + '&refresh=1',
+    'api/history-month?month=' + encodeURIComponent(month),
   );
   const data = await res.json();
   if (!data.error && data.billing_model_version === HISTORY_MONTH_BILLING_MODEL) {
     setCachedHistoryMonth(month, data);
   }
   return data;
+}
+
+async function rebuildHistoryFromSqlite() {
+  const btn = document.getElementById('history-rebuild-btn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Recalculating…';
+  }
+  try {
+    const res = await fetch('api/history-rebuild', { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) {
+      alert(data.error || 'Rebuild failed');
+      return;
+    }
+    try { localStorage.removeItem(HISTORY_MONTH_CACHE_KEY); } catch (_) {}
+    updateHistoryDepositTotal(data.deposit_total);
+    await loadHistoryMonth();
+  } catch (_) {
+    alert('Rebuild failed');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Recalculate';
+    }
+  }
 }
 
 function findHistoryMonthDayRow(data, dateStr) {
@@ -8011,6 +8037,7 @@ function initHistoryMonth() {
   if (!picker) return;
   const currentMonth = DEBUG_TODAY.slice(0, 7);
   if (!picker.value) picker.value = currentMonth;
+  void loadHistoryDepositTotal();
   loadHistoryMonth();
 }
 
@@ -8033,7 +8060,6 @@ async function loadHistoryMonth() {
   const cached = getCachedHistoryMonth(month);
   if (cached) {
     renderHistoryMonthTable(cached);
-    void refreshHistoryDepositTotal();
     return;
   }
   bodyTotal.innerHTML = '<tr><td colspan="13" class="px-3 py-6 text-center text-gray-600">Loading…</td></tr>';

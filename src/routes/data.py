@@ -13,15 +13,21 @@ from .. import rce as rce_mod
 from .. import sa_client
 from ..config import load_config, save_config
 from ..influxdb import now_warsaw
-from ..plan_deposits import DEPOSIT_START_MONTH, open_month_id, run_deposit_cascade
+from ..plan_deposits import open_month_id, run_deposit_cascade
 from ..plan_monthly_history import build_month_history
+from ..plan_monthly_refresh import (
+    ensure_deposit_total_current,
+    maybe_run_daily_month_history,
+    rebuild_all_month_history,
+)
 from ..sqlite_store import (
     delete_plan,
     load_month_history,
+    read_cached_deposit_total,
     read_plan,
     read_plan_buy_tariff,
     read_plan_rce,
-    sum_deposit_current,
+    save_month_history,
 )
 from ..plan_simulation import (
     build_buy_tariff_payload,
@@ -44,18 +50,29 @@ _SA_DAILY_ENERGY_KEYS = (
 )
 
 
-async def _live_deposit_total(cfg: dict[str, Any]) -> float:
-    """Sum of deposit_current after replay through the open calendar month."""
-    open_month = open_month_id()
-    if open_month < DEPOSIT_START_MONTH:
-        return sum_deposit_current()
-    payload = load_month_history(open_month)
-    if payload is None:
-        payload = await build_month_history(open_month, cfg)
-    if payload.get("error"):
-        return sum_deposit_current()
-    _, total = run_deposit_cascade(open_month, payload)
-    return total
+def _deposit_total_payload() -> dict[str, Any]:
+    cached = read_cached_deposit_total()
+    if cached is None:
+        return {"deposit_total": None, "as_of_month": None, "updated_at": None}
+    return dict(cached)
+
+
+@router.get("/api/history-deposit-total")
+async def api_history_deposit_total() -> dict[str, Any]:
+    """Cached deposit pool total — updated daily or via rebuild, not on month pick."""
+    cfg = load_config()
+    await maybe_run_daily_month_history(cfg)
+    total = await ensure_deposit_total_current(cfg)
+    out = _deposit_total_payload()
+    out["deposit_total"] = total
+    return out
+
+
+@router.post("/api/history-rebuild")
+async def api_history_rebuild() -> dict[str, Any]:
+    """Full month_history rebuild from Influx + deposit cascade (after manual SQLite edits)."""
+    cfg = load_config()
+    return await rebuild_all_month_history(cfg)
 
 
 @router.get("/api/metrics")
@@ -125,20 +142,33 @@ async def api_buy_tariff() -> dict[str, Any]:
 
 @router.get("/api/history-month")
 async def api_history_month(month: str, refresh: bool = False) -> dict[str, Any]:
-    """Daily Influx history totals for a calendar month (YYYY-MM). Loaded on demand."""
-    cfg = load_config()
-    if not refresh:
+    """Daily history totals for a calendar month (YYYY-MM). SQLite-backed; no cascade on read."""
+    if refresh:
+        cfg = load_config()
+        built = await build_month_history(month, cfg)
+        if built.get("error"):
+            return built
+        save_month_history(month, built)
+        open_month = open_month_id()
+        open_payload = load_month_history(open_month)
+        if open_payload is None:
+            open_payload = await build_month_history(open_month, cfg)
+        if not open_payload.get("error"):
+            run_deposit_cascade(open_month, open_payload)
         cached = load_month_history(month)
-        if cached is not None:
-            cached.pop("_cached_at", None)
-            result, _deposit_total = run_deposit_cascade(month, cached)
-            result["deposit_total"] = await _live_deposit_total(cfg)
-            return result
-    result = await build_month_history(month, cfg)
-    if not result.get("error"):
-        result, _deposit_total = run_deposit_cascade(month, result)
-        result["deposit_total"] = await _live_deposit_total(cfg)
-    return result
+        return cached if cached is not None else built
+
+    cached = load_month_history(month)
+    if cached is not None:
+        cached.pop("_cached_at", None)
+        return cached
+
+    cfg = load_config()
+    built = await build_month_history(month, cfg)
+    if built.get("error"):
+        return built
+    save_month_history(month, built)
+    return built
 
 
 @router.get("/api/simulation")

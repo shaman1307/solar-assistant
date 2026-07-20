@@ -43,6 +43,7 @@ $files = @(
     "src\plan_spill.py",
     "src\plan_hourly_actuals.py",
     "src\plan_monthly_history.py",
+    "src\plan_monthly_refresh.py",
     "src\plan_baseline.py",
     "src\json_store.py",
     "src\plan_cost.py",

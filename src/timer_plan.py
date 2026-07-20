@@ -1016,6 +1016,23 @@ def timer_discharge_active_at(timer_txt: str, now: datetime) -> bool:
     return False
 
 
+def timer_charge_active_at(timer_txt: str, now: datetime) -> bool:
+    """True when *now* is inside a grid-charge segment (start <= now < end)."""
+    if not timer_txt or not str(timer_txt).strip():
+        return False
+    now_min = now.hour * 60 + now.minute
+    for seg in parse_timer_schedule_segments(timer_txt):
+        if seg.get("kind") != "chg":
+            continue
+        start_min = _hhmm_to_minute_of_day(seg["from"])
+        end_min = _hhmm_to_minute_of_day(seg["to"])
+        if start_min is None or end_min is None:
+            continue
+        if start_min <= now_min < end_min:
+            return True
+    return False
+
+
 def timer_covers_quarter(timer_txt: str, hour: int, quarter: int) -> bool:
     """True when any discharge segment overlaps a 15-min slot in *hour*."""
     if not str(timer_txt or "").strip():
