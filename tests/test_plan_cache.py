@@ -33,6 +33,16 @@ def _cfg() -> dict:
         },
         "simulation": {"min_soc_pct": 16},
         "timer_schedule": {"min_block_minutes": 30},
+        "grid": {
+            "g12": {
+                "tariff_name": "G12",
+                "peak_price_pln_kwh": 1.0,
+                "offpeak_price_pln_kwh": 0.5,
+                "peak_energy_only_pln_kwh": 0.8,
+                "offpeak_energy_only_pln_kwh": 0.4,
+                "peak_hours": [[7, 13], [16, 22]],
+            },
+        },
     }
 
 
@@ -90,7 +100,13 @@ def _patch_build_deps(monkeypatch, *, now: datetime, fetch: AsyncMock, sim_resul
     monkeypatch.setattr(ps, "run_simulation", lambda *a, **k: sim_result)
     monkeypatch.setattr(ps, "build_hourly_schedule", lambda *a, **k: {})
     monkeypatch.setattr(ps, "build_buy_tariff_payload", lambda *a, **k: {"rows": []})
-    monkeypatch.setattr(ps, "extract_plan_soc_q15", lambda sim: {"today": [None] * 96, "tomorrow": [None] * 96})
+    monkeypatch.setattr(ps, "extract_actual_soc_q15", lambda sim, now=None: {"today": [None] * 96, "tomorrow": [None] * 96})
+    monkeypatch.setattr(
+        ps,
+        "compose_plan_soc_q15",
+        lambda existing, fresh, **kw: (fresh or {}).get("plan_soc_q15")
+        or {"today": [None] * 96, "tomorrow": [None] * 96},
+    )
 
 
 def test_build_plan_sqlite_hit_skips_fetch(monkeypatch):
@@ -122,6 +138,7 @@ def test_build_plan_stale_hour_triggers_rebuild(monkeypatch):
         "delta_kwh": 1.0,
         "today_date": now.strftime("%Y-%m-%d"),
         "plan_from_hour": now.hour,
+        "plan_soc_q15": {"today": [None] * 96, "tomorrow": [None] * 96},
     }
     fetch = AsyncMock(
         return_value=({"meta": {}}, {}, {}, {"current_price_pln_kwh": 0.5}),
@@ -131,12 +148,14 @@ def test_build_plan_stale_hour_triggers_rebuild(monkeypatch):
     result = asyncio.run(ps.build_plan_simulation(_cfg()))
 
     fetch.assert_awaited_once()
-    assert result["rows"][0].get("rebuilt") is True
-    assert read_plan()["rows"][0].get("rebuilt") is True
+    # Same calendar day uses incremental merge — current hour keeps SQLite row;
+    # plan window advances to the new hour.
+    assert result["plan_from_hour"] == 14
+    assert read_plan()["plan_from_hour"] == 14
 
 
-def test_force_refresh_mid_hour_preserves_locked_timer(monkeypatch):
-    """force_refresh at :28 keeps locked labels, but clips past quarters (22:00→22:15)."""
+def test_hourly_refresh_mid_hour_preserves_locked_timer(monkeypatch):
+    """hourly_plan_refresh at :28 keeps the full locked Dis window (no mid-hour clip)."""
     now = _warsaw_now(hour=22, minute=28)
     locked_plan = _fresh_plan_entry(now.replace(minute=0, second=0, microsecond=0))
     locked_plan["plan_from_hour"] = 22
@@ -147,6 +166,12 @@ def test_force_refresh_mid_hour_preserves_locked_timer(monkeypatch):
         "timer_schedule": "Dis 22:00-22:45 8.0kW cap16%",
         "action": "Discharging to Grid and Load",
         "hour_labels_locked": True,
+        "q15": [
+            {"quarter": q, "production": 0.0, "consumption": 0.1, "soc": 50.0,
+             "battery": 0.0, "grid_import": 0.0, "grid_export": 0.0,
+             "from_actual": q < 1}
+            for q in range(4)
+        ],
     }]
     write_plan(locked_plan)
 
@@ -158,6 +183,12 @@ def test_force_refresh_mid_hour_preserves_locked_timer(monkeypatch):
             "timer_schedule": "Dis 22:00-22:30 8.0kW cap16%",
             "action": "Idle",
             "hour_labels_locked": False,
+            "q15": [
+                {"quarter": q, "production": 9.0, "consumption": 0.1, "soc": 10.0,
+                 "battery": 0.0, "grid_import": 0.0, "grid_export": 0.0,
+                 "from_actual": False}
+                for q in range(4)
+            ],
         }],
         "history_rows": [],
         "delta_kwh": 0.0,
@@ -169,22 +200,23 @@ def test_force_refresh_mid_hour_preserves_locked_timer(monkeypatch):
     )
     _patch_build_deps(monkeypatch, now=now, fetch=fetch, sim_result=sim)
 
-    result = asyncio.run(
-        ps.build_plan_simulation(_cfg(), force_refresh=True),
-    )
+    result = asyncio.run(ps.hourly_plan_refresh(_cfg()))
 
     cur = next(r for r in result["rows"] if r["hour"] == 22)
-    # Locked Dis kept (not Idle/22:00-22:30 from fresh), past start clipped to current quarter.
-    assert cur["timer_schedule"] == "Dis 22:15-22:45 8kW cap16%"
+    # Locked Dis kept verbatim (not Idle / not clipped / not fresh optimizer text).
+    assert cur["timer_schedule"] == "Dis 22:00-22:45 8.0kW cap16%"
     assert cur["action"] == "Discharging to Grid and Load"
     assert cur["hour_labels_locked"] is True
+    assert cur["q15"][0]["from_actual"] is True
+    assert cur["q15"][0]["production"] == 0.0
+    assert cur["q15"][1]["from_actual"] is False
 
-def test_invalidate_all_caches_clears_sqlite_plan(monkeypatch):
+def test_invalidate_all_caches_keeps_sqlite_plan(monkeypatch):
     from src.cache_registry import invalidate_all_caches
 
     write_plan(_fresh_plan_entry(_warsaw_now()))
     invalidate_all_caches()
-    assert read_plan() is None
+    assert read_plan() is not None
 
 
 def test_invalidate_input_caches_keeps_sqlite_plan(monkeypatch):

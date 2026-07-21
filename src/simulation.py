@@ -7,6 +7,7 @@ programming (see plan_optimizer.py).
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -42,11 +43,7 @@ from .plan_timer_override import (
 )
 from .simulation_config import get_simulation_params, plan_min_soc_pct
 from .timer_plan import (
-    ACTION_DISCHARGE_GRID,
-    classify_action,
-    clip_timer_schedule_not_before,
     derive_timer_schedule_q15,
-    normalize_action,
     quarter_start_minute,
     sa_discharge_timer_for_hour,
 )
@@ -119,6 +116,83 @@ def _hourly_soc_kwh(
     return (pct / 100.0) * battery_cap
 
 
+def _plan_row_end_soc_kwh(row: dict[str, Any], battery_cap: float) -> float | None:
+    """End-of-hour SOC (kWh) from a plan row's last q15 slot or hour soc %."""
+    if battery_cap <= 0:
+        return None
+    q15 = row.get("q15") or []
+    if q15:
+        try:
+            last_soc_pct = float(q15[-1].get("soc") or 0)
+            return (last_soc_pct / 100.0) * battery_cap
+        except (TypeError, ValueError):
+            pass
+    soc_pct = row.get("soc")
+    if soc_pct is not None:
+        try:
+            return (float(soc_pct) / 100.0) * battery_cap
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _smart_plan_hour_end_soc_kwh(
+    plan: dict[str, Any] | None,
+    hour: int,
+    battery_cap: float,
+) -> float | None:
+    """Forecast end-of-hour SOC (kWh) from optimizer q15 slots for *hour*."""
+    if battery_cap <= 0 or plan is None:
+        return None
+    slots = (plan.get("q15_by_hour") or {}).get(hour) or []
+    if not slots:
+        return None
+    last = slots[-1]
+    raw = last.get("soc_pct")
+    if raw is None:
+        raw = last.get("soc")
+    if raw is None:
+        return None
+    try:
+        return (float(raw) / 100.0) * battery_cap
+    except (TypeError, ValueError):
+        return None
+
+
+def _committed_current_hour_row(
+    today_str: str,
+    plan_from_hour: int,
+) -> dict[str, Any] | None:
+    """SQLite current-hour row with a non-empty Timer Schedule (must not be rewritten).
+
+    When H01 was planned as future Chg and the clock hits 01:00, that row is already
+    the committed current hour — optimizer must keep it and seed later hours from
+    its end-of-hour SOC.
+    """
+    try:
+        from .sqlite_store import read_plan
+        stored = read_plan()
+    except Exception:
+        return None
+    if not stored:
+        return None
+    for row in stored.get("rows") or []:
+        if row.get("start") == "TOTAL":
+            continue
+        if str(row.get("plan_date") or "") != today_str:
+            continue
+        try:
+            hour = int(row.get("hour", -1))
+        except (TypeError, ValueError):
+            continue
+        if hour != plan_from_hour:
+            continue
+        if str(row.get("timer_schedule") or "").strip():
+            return row
+        return None
+    return None
+
+
 def _locked_current_hour_end_soc_kwh(
     plan_from_hour: int,
     today_str: str,
@@ -141,13 +215,7 @@ def _locked_current_hour_end_soc_kwh(
                 and row.get("hour_labels_locked")
                 and row.get("start") != "TOTAL"
             ):
-                q15 = row.get("q15") or []
-                if q15:
-                    last_soc_pct = float(q15[-1].get("soc") or 0)
-                    return (last_soc_pct / 100.0) * battery_cap
-                soc_pct = row.get("soc")
-                if soc_pct is not None:
-                    return (float(soc_pct) / 100.0) * battery_cap
+                return _plan_row_end_soc_kwh(row, battery_cap)
     except Exception:
         pass
     return None
@@ -161,15 +229,20 @@ def _plan_start_soc_kwh(
     day_start_soc: float,
     live_soc_kwh: float,
 ) -> float:
-    """SOC at the start of plan_from_hour (end of the last completed hour)."""
+    """SOC at the start of plan_from_hour (end of the last completed hour).
+
+    At hour 0 always use live SOC. ``day_start_soc`` from ``_initial_soc_kwh``
+    falls back to 50% of capacity when today's hour-0 Influx SOC is still
+    missing (typical just after midnight) and must not seed the blended row.
+    """
+    del day_start_soc  # unused at hour 0; kept for call-site compatibility
     if plan_from_hour > 0 and today_hourly:
         anchor = _hourly_soc_kwh(
             today_hourly, plan_from_hour - 1, battery_cap, min_soc_pct,
         )
         if anchor is not None:
             return anchor
-    if plan_from_hour == 0:
-        return day_start_soc
+    # Hour 0, or no prior-hour Influx anchor: live meter is the source of truth.
     return live_soc_kwh
 
 
@@ -179,47 +252,17 @@ def apply_locked_hour_labels_from_plan(
     now: datetime,
     cfg: dict | None = None,
 ) -> None:
-    """After any rebuild: keep locked timer/action for current hour; never past slots.
+    """After any rebuild: keep locked timer/action for current hour from SQLite.
 
-    At :00 lock the fresh optimizer labels. Mid-hour keep locked labels from SQLite,
-    then always clip Timer Schedule so segments do not start before the current
-    quarter (no retroactive Dis/Chg after the window has passed).
+    At :00: if SQLite already has a non-empty Timer for this hour (planned while
+    it was still future), keep that timer/action and the row energy/SOC — do not
+    adopt a fresh empty Chg wipe from front-load. Otherwise lock fresh labels.
+    Mid-hour: keep locked labels from SQLite.
+    Once locked, timer_schedule and action are never clipped or rewritten.
     """
-    from .timer_plan import clip_timer_schedule_not_before, quarter_start_minute
-
+    del cfg
     today_str = now.strftime("%Y-%m-%d")
     hour = now.hour
-    earliest = quarter_start_minute(now)
-
-    def _clip_current(row: dict[str, Any]) -> None:
-        if row.get("timer_schedule_manual"):
-            return
-        clipped = clip_timer_schedule_not_before(
-            str(row.get("timer_schedule") or ""),
-            earliest,
-            cfg=cfg,
-        )
-        row["timer_schedule"] = clipped
-        # Past-only Dis window → clear misleading "to Grid" action when export is gone.
-        if not clipped and normalize_action(str(row.get("action") or "")) == ACTION_DISCHARGE_GRID:
-            row["action"] = classify_action(
-                bat_charge=float(row.get("bat_charge") or 0),
-                bat_discharge=float(row.get("bat_discharge") or 0),
-                grid_import=float(row.get("grid_import") or 0),
-                grid_export=float(row.get("grid_export") or 0),
-                production=float(row.get("production") or 0),
-            )
-
-    if now.minute == 0:
-        for row in result.get("rows") or []:
-            if row.get("start") == "TOTAL":
-                continue
-            if str(row.get("plan_date") or "") == today_str and int(row.get("hour", -1)) == hour:
-                if not row.get("timer_schedule_manual"):
-                    row["hour_labels_locked"] = True
-                _clip_current(row)
-                break
-        return
 
     existing_row = None
     if existing:
@@ -232,6 +275,30 @@ def apply_locked_hour_labels_from_plan(
             ),
             None,
         )
+
+    if now.minute == 0:
+        for row in result.get("rows") or []:
+            if row.get("start") == "TOTAL":
+                continue
+            if str(row.get("plan_date") or "") != today_str or int(row.get("hour", -1)) != hour:
+                continue
+            if row.get("timer_schedule_manual"):
+                row["hour_labels_locked"] = True
+                break
+            existing_timer = (
+                str(existing_row.get("timer_schedule") or "").strip()
+                if existing_row is not None
+                else ""
+            )
+            if existing_row is not None and existing_timer:
+                # Commit the already-planned current hour; do not take fresh wipe.
+                for key, val in existing_row.items():
+                    row[key] = copy.deepcopy(val)
+                row["hour_labels_locked"] = True
+            else:
+                row["hour_labels_locked"] = True
+            break
+        return
 
     for row in result.get("rows") or []:
         if row.get("start") == "TOTAL":
@@ -246,13 +313,18 @@ def apply_locked_hour_labels_from_plan(
             row["timer_schedule"] = existing_row.get("timer_schedule", "")
             row["action"] = existing_row.get("action", "")
             row["hour_labels_locked"] = True
-        _clip_current(row)
-        # Mid-hour: do not keep a fresh past-only Dis that clip just removed.
-        if not str(row.get("timer_schedule") or "").strip():
-            if not row.get("timer_schedule_manual"):
-                # Stay unlocked only if we never had a lock; otherwise keep lock with empty.
-                if existing_row is not None and existing_row.get("hour_labels_locked"):
-                    row["hour_labels_locked"] = True
+            # Keep frozen q15 slots from SQLite (from_actual) on full rebuild.
+            existing_q15 = list(existing_row.get("q15") or [])
+            if existing_q15:
+                row["q15"] = copy.deepcopy(existing_q15)
+                for key in (
+                    "production", "consumption", "battery", "bat_charge",
+                    "bat_discharge", "grid_import", "grid_export", "soc",
+                    "import_cost", "export_revenue", "energy_cost", "service_cost",
+                    "cost",
+                ):
+                    if key in existing_row:
+                        row[key] = copy.deepcopy(existing_row[key])
         break
 
 
@@ -320,18 +392,49 @@ def build_energy_arbitrage_plan(
         day_start_soc = soc_kwh
 
     rce_today = quarters_by_date.get(today_str) or []
-    smart_today = run_today_smart_q15_plan(
-        date_str=today_str,
-        pv_hourly=pv_merged,
-        load_hourly=load_merged,
-        tomorrow_pv=pv_tomorrow,
-        tomorrow_load=load_tomorrow,
-        cfg=cfg,
-        rce_quarters=rce_today if len(rce_today) >= Q15_PER_HOUR * 24 else None,
-        plan_from_hour=plan_from_hour,
-        day_start_soc_kwh=day_start_soc,
-        live_soc_kwh=soc_kwh,
+    committed_hour = _committed_current_hour_row(today_str, plan_from_hour)
+    committed_end_soc = (
+        _plan_row_end_soc_kwh(committed_hour, battery_cap)
+        if committed_hour is not None
+        else None
     )
+    # Current hour already has a Timer (e.g. Chg planned while it was future):
+    # do not re-optimize that hour — seed the rest of the day from its end SOC.
+    if committed_hour is not None and committed_end_soc is not None and plan_from_hour < 23:
+        smart_today = run_day_smart_q15_plan(
+            date_str=today_str,
+            pv_hourly=pv_merged,
+            load_hourly=load_merged,
+            tomorrow_pv=pv_tomorrow,
+            tomorrow_load=load_tomorrow,
+            cfg=cfg,
+            rce_quarters=rce_today if len(rce_today) >= Q15_PER_HOUR * 24 else None,
+            initial_soc_kwh=committed_end_soc,
+            from_hour=plan_from_hour + 1,
+            front_load_skip_leading_slots=0,
+        )
+    elif committed_hour is not None and committed_end_soc is not None:
+        # Hour 23 committed — only tomorrow is re-planned from this end SOC.
+        smart_today = {
+            "q15_by_hour": {h: [] for h in range(24)},
+            "q15_plan_rows": [],
+            "end_soc_kwh": round(committed_end_soc, 3),
+            "timer_schedule": {},
+            "epsilon": epsilon,
+        }
+    else:
+        smart_today = run_today_smart_q15_plan(
+            date_str=today_str,
+            pv_hourly=pv_merged,
+            load_hourly=load_merged,
+            tomorrow_pv=pv_tomorrow,
+            tomorrow_load=load_tomorrow,
+            cfg=cfg,
+            rce_quarters=rce_today if len(rce_today) >= Q15_PER_HOUR * 24 else None,
+            plan_from_hour=plan_from_hour,
+            day_start_soc_kwh=day_start_soc,
+            live_soc_kwh=soc_kwh,
+        )
 
     if 0 <= plan_from_hour < 24:
         pv_merged, load_merged = apply_current_hour_blend(
@@ -363,13 +466,12 @@ def build_energy_arbitrage_plan(
     smart_tomorrow: dict[str, Any] | None = None
     if need_tomorrow_hours > 0 and smart_today:
         rce_tomorrow = quarters_by_date.get(tomorrow_str) or []
-        # Use the locked current-hour SOC as tomorrow's starting point when available.
-        # The optimizer's own h23 projection may include a hypothetical export decision
-        # that won't actually happen (row is locked). Using the actual locked row's
-        # end SOC gives a more accurate initial SOC for tomorrow's plan.
-        tomorrow_initial_soc = _locked_current_hour_end_soc_kwh(
-            plan_from_hour, today_str, battery_cap,
-        )
+        # Prefer committed/locked current-hour end SOC (charge/discharge already fixed).
+        tomorrow_initial_soc = committed_end_soc
+        if tomorrow_initial_soc is None:
+            tomorrow_initial_soc = _locked_current_hour_end_soc_kwh(
+                plan_from_hour, today_str, battery_cap,
+            )
         if tomorrow_initial_soc is None:
             tomorrow_initial_soc = float(smart_today["end_soc_kwh"])
         smart_tomorrow = run_day_smart_q15_plan(
@@ -394,6 +496,7 @@ def build_energy_arbitrage_plan(
     )
 
     if smart_today and today_timer_ov:
+        ov_from = plan_from_hour + 1 if committed_hour is not None else plan_from_hour
         smart_today = apply_plan_timer_overrides_if_any(
             smart_today,
             date_str=today_str,
@@ -402,7 +505,7 @@ def build_energy_arbitrage_plan(
             tomorrow_pv=[float(v) for v in pv_tomorrow],
             tomorrow_load=[float(v) for v in load_tomorrow],
             cfg=cfg,
-            from_hour=plan_from_hour,
+            from_hour=ov_from,
             rce_quarters=rce_today_full,
         )
 
@@ -438,11 +541,85 @@ def build_energy_arbitrage_plan(
     blended_anchor_kwh: float | None = None
     blended_row_idx: int | None = None
 
-    if smart_today:
+    if smart_today or committed_hour is not None:
         for h in range(plan_from_hour, 24):
             if remaining <= 0:
                 break
-            slots = smart_today["q15_by_hour"].get(h) or []
+            if h == plan_from_hour and committed_hour is not None:
+                # Keep the committed Timer/Action/SOC path — do not rebuild from fresh DP.
+                row = copy.deepcopy(committed_hour)
+                row["hour_labels_locked"] = True
+                if h == plan_from_hour and now.minute != 0:
+                    slots_now = list(row.get("q15") or [])
+                    fpv_h = float(pv_merged[h]) if h < len(pv_merged) else 0.0
+                    flo_h = float(load_merged[h]) if h < len(load_merged) else 0.0
+                    sa_timer = sa_discharge_timer_for_hour(rules, h, cfg=cfg)
+                    # Prefer opt slots from committed q15 shape for blend physics.
+                    opt_slots = []
+                    for s in slots_now:
+                        opt_slots.append({
+                            "quarter": int(s.get("quarter", 0)),
+                            "pv": float(s.get("production") or 0),
+                            "load": float(s.get("consumption") or 0),
+                            "grid_import": float(s.get("grid_import") or 0),
+                            "grid_export": float(s.get("grid_export") or 0),
+                            "battery_delta": float(s.get("battery") or 0),
+                            "soc_pct": float(s.get("soc") or 0),
+                            "grid_charge_kw": 0.0,
+                            "battery_export_kwh": float(s.get("grid_export") or 0),
+                        })
+                    blended_q15 = build_blended_current_hour_q15(
+                        h,
+                        now,
+                        forecast_pv_q15=forecast_pv_q15,
+                        forecast_load_q15=forecast_load_q15,
+                        series_10min=series_10min,
+                        soc_start_kwh=plan_start_soc_kwh,
+                        opt_slots=opt_slots,
+                        cfg=cfg,
+                        pv_hourly=fpv_h,
+                        load_hourly=flo_h,
+                        sa_timer_txt=sa_timer or None,
+                    )
+                    pv_blend = round(sum(float(s.get("production") or 0) for s in blended_q15), 3)
+                    load_blend = round(sum(float(s.get("consumption") or 0) for s in blended_q15), 3)
+                    soc_blend = float(blended_q15[-1].get("soc") or initial_soc_pct)
+                    sync_blended_current_hour_row(
+                        row,
+                        blended_q15,
+                        production=pv_blend,
+                        consumption=load_blend,
+                        soc=soc_blend,
+                        cfg=cfg,
+                        epsilon=epsilon,
+                        hour=h,
+                        opt_slots=opt_slots,
+                        sa_timer_txt=sa_timer or None,
+                        now=now,
+                    )
+                    # Never let blend clear the committed Timer Schedule.
+                    row["timer_schedule"] = committed_hour.get("timer_schedule", "")
+                    row["action"] = committed_hour.get("action", "")
+                    row["hour_labels_locked"] = True
+                    # Current-hour UI may show live blend; forward hours must
+                    # chain from the *planned* end-of-hour SOC (same seed as
+                    # smart_today from_hour+1) — not from live blend.
+                    blended_anchor_kwh = (
+                        committed_end_soc
+                        if committed_end_soc is not None
+                        else (soc_blend / 100.0) * battery_cap
+                    )
+                    blended_row_idx = len(all_rows)
+                elif committed_end_soc is not None:
+                    blended_anchor_kwh = committed_end_soc
+                    blended_row_idx = len(all_rows)
+                all_rows.append(row)
+                if row.get("export_planned"):
+                    export_hours.add(h)
+                remaining -= 1
+                continue
+
+            slots = (smart_today or {}).get("q15_by_hour", {}).get(h) or []
             if not slots:
                 if h == 0 and plan_from_hour == 0:
                     prev_day_hourly = live_metrics.get("prev_day_hourly")
@@ -486,7 +663,7 @@ def build_energy_arbitrage_plan(
                 ),
             )
             if h == plan_from_hour:
-                slots_now = smart_today["q15_by_hour"].get(h) or []
+                slots_now = (smart_today or {}).get("q15_by_hour", {}).get(h) or []
                 fpv_h = float(pv_merged[h]) if h < len(pv_merged) else 0.0
                 flo_h = float(load_merged[h]) if h < len(load_merged) else 0.0
                 sa_timer = sa_discharge_timer_for_hour(rules, h, cfg=cfg)
@@ -519,7 +696,16 @@ def build_energy_arbitrage_plan(
                     sa_timer_txt=sa_timer or None,
                     now=now,
                 )
-                blended_anchor_kwh = (soc_blend / 100.0) * battery_cap
+                # Forward SOC from optimizer forecast EOH for this hour (quarterly
+                # replan seed), not from the live-blended display SOC.
+                planned_eoh = _smart_plan_hour_end_soc_kwh(
+                    smart_today, h, battery_cap,
+                )
+                blended_anchor_kwh = (
+                    planned_eoh
+                    if planned_eoh is not None
+                    else (soc_blend / 100.0) * battery_cap
+                )
                 blended_row_idx = len(all_rows)
             all_rows.append(row)
             if row.get("export_planned"):
@@ -573,6 +759,7 @@ def build_energy_arbitrage_plan(
         )
 
     def _soc_q15_from_q15_by_hour(plan: dict[str, Any] | None) -> list[float | None]:
+        """Full-day q15 SOC from the optimizer (today chart plan line)."""
         out: list[float | None] = [None] * 96
         if not plan:
             return out
@@ -587,6 +774,22 @@ def build_energy_arbitrage_plan(
                 v = slot.get("soc_pct")
                 out[idx] = round(float(v), 1) if v is not None else None
         return out
+
+    # Chart SOC plan = one full-day simulator run as if 00:00 (day-start SOC +
+    # day forecast). Mid-day pipeline freezes this series; live smart_today above
+    # is only for EA rows / timers from plan_from_hour.
+    day_plan_for_soc = run_day_smart_q15_plan(
+        date_str=today_str,
+        pv_hourly=pv_forecast_today,
+        load_hourly=load_forecast_today,
+        tomorrow_pv=pv_tomorrow,
+        tomorrow_load=load_tomorrow,
+        cfg=cfg,
+        rce_quarters=rce_today if len(rce_today) >= Q15_PER_HOUR * 24 else None,
+        initial_soc_kwh=day_start_soc,
+        from_hour=0,
+    )
+    today_plan_soc = _soc_q15_from_q15_by_hour(day_plan_for_soc)
 
     schedule_from = (
         now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
@@ -626,11 +829,14 @@ def build_energy_arbitrage_plan(
         "has_history_rows": bool(history_rows),
         "plan_from_hour": plan_from_hour,
         "live_soc_pct": round(initial_soc_pct, 1),
+        "battery_capacity_kwh": battery_cap,
         "today_date": today_str,
         "plan_soc_q15": {
-            "today": _soc_q15_from_q15_by_hour(smart_today),
+            "today": today_plan_soc,
             "tomorrow": _soc_q15_from_q15_by_hour(smart_tomorrow),
         },
+        # Candidate for lock; plan_simulation freezes today once locked.
+        "plan_soc_day_locked": False,
         "totals": today_totals,
         "tomorrow_remainder_rows": tomorrow_remainder_rows,
         "has_tomorrow_remainder": bool(tomorrow_remainder_rows),

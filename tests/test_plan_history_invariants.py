@@ -12,11 +12,15 @@ hours silently disappeared from SQLite:
   I4. Once an hour is in history, its timer_schedule/action never change.
   I5. soc_blended (violet live-SOC highlight in the UI) is never present on
       history rows — otherwise two rows are highlighted at once.
+  I6. Once hour_labels_locked, timer_schedule and action on that hour never
+      change for the rest of the day (current row and after promote to history),
+      even when mid-hour fresh sims wipe the optimizer timer.
+  I7. Once a q15 slot has from_actual=True, its values are never overwritten
+      by later quarter refreshes or forced rebuilds.
 """
 
 from __future__ import annotations
 
-import copy
 import random
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -73,7 +77,12 @@ def _mk_row(hour: int, *, source: str) -> dict:
 
 
 def _mk_fresh(sim_now: datetime) -> dict:
-    """Fresh sim payload: rows from sim_now.hour, meter history for earlier hours."""
+    """Fresh sim payload: rows from sim_now.hour, meter history for earlier hours.
+
+    Mid-hour optimizer intentionally wipes the current hour's Timer Schedule /
+    Action and rewrites q15 — the same wipe that used to erase started Dis/Chg
+    windows from SQLite. Merge must keep locked labels and from_actual slots.
+    """
     from_hour = sim_now.hour
     label = sim_now.strftime("%H:%M:%S")
     hist = []
@@ -83,13 +92,25 @@ def _mk_fresh(sim_now: datetime) -> dict:
         row["action"] = "Meters"
         row["history_hour"] = True
         hist.append(row)
+    rows = []
+    for h in range(from_hour, 24):
+        row = _mk_row(h, source=label)
+        if h == from_hour and sim_now.minute != 0:
+            row["timer_schedule"] = ""
+            row["action"] = f"WIPED@{label}"
+            row["hour_labels_locked"] = False
+            for slot in row["q15"]:
+                slot["production"] = 99.0
+                slot["consumption"] = 99.0
+                slot["from_actual"] = False
+        rows.append(row)
     return {
         "today_date": TODAY,
         "plan_from_hour": from_hour,
         "computed_at": sim_now.strftime("%Y-%m-%d %H:%M:%S"),
         "delta_kwh": 0.0,
         "history_rows": hist,
-        "rows": [_mk_row(h, source=label) for h in range(from_hour, 24)],
+        "rows": rows,
         "totals": {},
     }
 
@@ -108,6 +129,22 @@ def _today_row_hours(plan: dict) -> list[int]:
     )
 
 
+def _labels(row: dict) -> tuple[str, str]:
+    return (str(row.get("timer_schedule") or ""), str(row.get("action") or ""))
+
+
+def _actual_slot_fingerprint(slot: dict) -> tuple:
+    return (
+        round(float(slot.get("production") or 0), 4),
+        round(float(slot.get("consumption") or 0), 4),
+        round(float(slot.get("battery") or 0), 4),
+        round(float(slot.get("grid_import") or 0), 4),
+        round(float(slot.get("grid_export") or 0), 4),
+        round(float(slot.get("soc") or 0), 4),
+        True,
+    )
+
+
 class HistoryLedger:
     """Tracks first-seen history content to assert immutability (I4)."""
 
@@ -116,8 +153,10 @@ class HistoryLedger:
 
     def check(self, plan: dict, context: str) -> None:
         for row in plan.get("history_rows") or []:
+            if str(row.get("plan_date")) != TODAY:
+                continue
             hour = int(row["hour"])
-            content = (str(row.get("timer_schedule") or ""), str(row.get("action") or ""))
+            content = _labels(row)
             if hour in self.seen:
                 assert self.seen[hour] == content, (
                     f"{context}: history hour {hour} mutated "
@@ -127,7 +166,62 @@ class HistoryLedger:
                 self.seen[hour] = content
 
 
-def _assert_invariants(plan: dict, wall_hour: int, context: str, ledger: HistoryLedger) -> None:
+class LockedLabelsLedger:
+    """I6 — locked timer_schedule/action never change once hour_labels_locked."""
+
+    def __init__(self) -> None:
+        self.seen: dict[int, tuple[str, str]] = {}
+
+    def check(self, plan: dict, context: str) -> None:
+        for row in (plan.get("history_rows") or []) + (plan.get("rows") or []):
+            if str(row.get("plan_date")) != TODAY or row.get("start") == "TOTAL":
+                continue
+            if not (row.get("hour_labels_locked") or row.get("timer_schedule_manual")):
+                continue
+            hour = int(row["hour"])
+            content = _labels(row)
+            if hour in self.seen:
+                assert self.seen[hour] == content, (
+                    f"{context}: locked labels hour {hour} mutated "
+                    f"{self.seen[hour]} -> {content}"
+                )
+            else:
+                self.seen[hour] = content
+
+
+class ActualQ15Ledger:
+    """I7 — from_actual q15 slots are immutable after the first freeze."""
+
+    def __init__(self) -> None:
+        self.seen: dict[tuple[int, int], tuple] = {}
+
+    def check(self, plan: dict, context: str) -> None:
+        for row in (plan.get("history_rows") or []) + (plan.get("rows") or []):
+            if str(row.get("plan_date")) != TODAY or row.get("start") == "TOTAL":
+                continue
+            hour = int(row["hour"])
+            for slot in row.get("q15") or []:
+                if not slot.get("from_actual"):
+                    continue
+                key = (hour, int(slot.get("quarter", 0)))
+                fp = _actual_slot_fingerprint(slot)
+                if key in self.seen:
+                    assert self.seen[key] == fp, (
+                        f"{context}: from_actual q{key[1]} hour {hour} mutated "
+                        f"{self.seen[key]} -> {fp}"
+                    )
+                else:
+                    self.seen[key] = fp
+
+
+def _assert_invariants(
+    plan: dict,
+    wall_hour: int,
+    context: str,
+    ledger: HistoryLedger,
+    labels: LockedLabelsLedger | None = None,
+    actuals: ActualQ15Ledger | None = None,
+) -> None:
     hist = _today_history_hours(plan)
     rows = _today_row_hours(plan)
     assert hist == list(range(wall_hour)), (
@@ -145,6 +239,10 @@ def _assert_invariants(plan: dict, wall_hour: int, context: str, ledger: History
         f"UI would highlight live SOC on more than one row"
     )
     ledger.check(plan, context)
+    if labels is not None:
+        labels.check(plan, context)
+    if actuals is not None:
+        actuals.check(plan, context)
 
 
 def _scheduler_tick(stored: dict, now: datetime, *, sim_delay_s: int = SIM_DURATION_S) -> dict:
@@ -158,8 +256,14 @@ def _scheduler_tick(stored: dict, now: datetime, *, sim_delay_s: int = SIM_DURAT
 
 
 def _forced_rebuild(stored: dict | None, enter_now: datetime, *, sim_delay_s: int = SIM_DURATION_S) -> dict:
-    """Full rebuild as build_plan_simulation runs it (?refresh=1 / window mismatch)."""
+    """Full rebuild as build_plan_simulation runs it (window mismatch).
+
+    Same calendar day → merge_incremental_plan (preserves locked timer/action and
+    from_actual q15). New day / empty store → attach_immutable_history seed.
+    """
     result = _mk_fresh(enter_now + timedelta(seconds=sim_delay_s))
+    if stored is not None and str(stored.get("today_date") or "") == TODAY:
+        return merge_incremental_plan(stored, result, now=enter_now, metrics={}, cfg=CFG)
     attach_immutable_history(result, stored, now=enter_now)
     return result
 
@@ -170,10 +274,12 @@ def _day_start_plan() -> dict:
 
 
 def test_clean_day_of_quarter_ticks_keeps_history_contiguous():
-    """Baseline: 96 scheduler ticks, no interference — history grows 0..23."""
+    """Baseline: 96 scheduler ticks — history, locked timers, and actual q15 hold."""
     ledger = HistoryLedger()
+    labels = LockedLabelsLedger()
+    actuals = ActualQ15Ledger()
     stored = _day_start_plan()
-    _assert_invariants(stored, 0, "00:00 rebuild", ledger)
+    _assert_invariants(stored, 0, "00:00 rebuild", ledger, labels, actuals)
 
     for hour in range(24):
         for minute in (0, 15, 30, 45):
@@ -181,14 +287,41 @@ def test_clean_day_of_quarter_ticks_keeps_history_contiguous():
                 continue
             now = datetime(2026, 7, 7, hour, minute, 2, tzinfo=TZ)
             stored = _scheduler_tick(stored, now)
-            _assert_invariants(stored, hour, f"tick {hour:02d}:{minute:02d}", ledger)
+            _assert_invariants(
+                stored, hour, f"tick {hour:02d}:{minute:02d}", ledger, labels, actuals,
+            )
+            # After :00 lock, mid-hour wipe must not clear Timer Schedule.
+            if minute != 0:
+                cur = next(
+                    r for r in stored["rows"]
+                    if int(r["hour"]) == hour and str(r.get("plan_date")) == TODAY
+                )
+                assert cur.get("hour_labels_locked") is True, (
+                    f"tick {hour:02d}:{minute:02d}: current hour not locked"
+                )
+                assert str(cur.get("timer_schedule") or "").startswith(f"Dis {hour:02d}:00"), (
+                    f"tick {hour:02d}:{minute:02d}: timer wiped to {cur.get('timer_schedule')!r}"
+                )
+                assert not str(cur.get("action") or "").startswith("WIPED@"), (
+                    f"tick {hour:02d}:{minute:02d}: action overwritten by fresh wipe"
+                )
 
     assert _today_history_hours(stored) == list(range(23))
+    # Every completed quarter of hours 0..22 should be frozen (4 per hour).
+    # Hour 23 still in rows — quarters frozen through the last :45 tick (q0..q2).
+    assert len(actuals.seen) >= 23 * 4
+    assert all(
+        labels.seen[h][0].startswith(f"Dis {h:02d}:00")
+        for h in range(23)
+        if h in labels.seen
+    )
 
 
 def test_forced_rebuild_straddling_hour_boundary_loses_nothing():
     """The exact Pi failure: UI ?refresh=1 enters at HH:59:5x, sim ends after :00."""
     ledger = HistoryLedger()
+    labels = LockedLabelsLedger()
+    actuals = ActualQ15Ledger()
     stored = _day_start_plan()
 
     for hour in range(24):
@@ -197,18 +330,24 @@ def test_forced_rebuild_straddling_hour_boundary_loses_nothing():
                 continue
             now = datetime(2026, 7, 7, hour, minute, 2, tzinfo=TZ)
             stored = _scheduler_tick(stored, now)
-            _assert_invariants(stored, hour, f"tick {hour:02d}:{minute:02d}", ledger)
+            _assert_invariants(
+                stored, hour, f"tick {hour:02d}:{minute:02d}", ledger, labels, actuals,
+            )
 
         # UI-forced rebuild entered 4s before the next hour; its sim finishes after.
         enter = datetime(2026, 7, 7, hour, 59, 56, tzinfo=TZ)
         stored = _forced_rebuild(stored, enter)
         wall_hour = min(hour + 1, 23)  # sim crossed into the next hour
-        _assert_invariants(stored, wall_hour, f"straddle rebuild {hour:02d}:59:56", ledger)
+        _assert_invariants(
+            stored, wall_hour, f"straddle rebuild {hour:02d}:59:56", ledger, labels, actuals,
+        )
 
 
 def test_missed_hour_tick_after_restart_recovers_next_quarter():
     """Deploy/restart swallows the :00 tick — the :15 merge must still promote."""
     ledger = HistoryLedger()
+    labels = LockedLabelsLedger()
+    actuals = ActualQ15Ledger()
     stored = _day_start_plan()
 
     for hour in range(24):
@@ -219,12 +358,16 @@ def test_missed_hour_tick_after_restart_recovers_next_quarter():
                 continue
             now = datetime(2026, 7, 7, hour, minute, 2, tzinfo=TZ)
             stored = _scheduler_tick(stored, now)
-            _assert_invariants(stored, hour, f"tick {hour:02d}:{minute:02d}", ledger)
+            _assert_invariants(
+                stored, hour, f"tick {hour:02d}:{minute:02d}", ledger, labels, actuals,
+            )
 
 
 def test_forced_rebuild_racing_every_hour_boundary():
     """Forced rebuild right around each :00 in every order vs the scheduler tick."""
     ledger = HistoryLedger()
+    labels = LockedLabelsLedger()
+    actuals = ActualQ15Ledger()
     stored = _day_start_plan()
 
     for hour in range(1, 24):
@@ -232,19 +375,27 @@ def test_forced_rebuild_racing_every_hour_boundary():
         if hour % 2:
             # UI wins the lock first (entered just after :00), scheduler second.
             stored = _forced_rebuild(stored, boundary + timedelta(seconds=1))
-            _assert_invariants(stored, hour, f"UI-first {hour:02d}:00", ledger)
+            _assert_invariants(stored, hour, f"UI-first {hour:02d}:00", ledger, labels, actuals)
             stored = _scheduler_tick(stored, boundary + timedelta(seconds=8))
-            _assert_invariants(stored, hour, f"sched-second {hour:02d}:00", ledger)
+            _assert_invariants(
+                stored, hour, f"sched-second {hour:02d}:00", ledger, labels, actuals,
+            )
         else:
             # Scheduler first, then a UI forced rebuild a few seconds later.
             stored = _scheduler_tick(stored, boundary + timedelta(seconds=2))
-            _assert_invariants(stored, hour, f"sched-first {hour:02d}:00", ledger)
+            _assert_invariants(
+                stored, hour, f"sched-first {hour:02d}:00", ledger, labels, actuals,
+            )
             stored = _forced_rebuild(stored, boundary + timedelta(seconds=20))
-            _assert_invariants(stored, hour, f"UI-second {hour:02d}:00", ledger)
+            _assert_invariants(
+                stored, hour, f"UI-second {hour:02d}:00", ledger, labels, actuals,
+            )
         for minute in (15, 30, 45):
             now = datetime(2026, 7, 7, hour, minute, 2, tzinfo=TZ)
             stored = _scheduler_tick(stored, now)
-            _assert_invariants(stored, hour, f"tick {hour:02d}:{minute:02d}", ledger)
+            _assert_invariants(
+                stored, hour, f"tick {hour:02d}:{minute:02d}", ledger, labels, actuals,
+            )
 
 
 @pytest.mark.parametrize("seed", [1, 7, 42, 1337])
@@ -255,6 +406,8 @@ def test_randomized_day_with_forced_rebuilds_and_slow_sims(seed: int):
     """
     rng = random.Random(seed)
     ledger = HistoryLedger()
+    labels = LockedLabelsLedger()
+    actuals = ActualQ15Ledger()
     stored = _day_start_plan()
 
     for hour in range(24):
@@ -269,8 +422,14 @@ def test_randomized_day_with_forced_rebuilds_and_slow_sims(seed: int):
             now = datetime(2026, 7, 7, hour, minute, tick_s, tzinfo=TZ)
             stored = _scheduler_tick(stored, now, sim_delay_s=sim_s)
             wall = (now + timedelta(seconds=0)).hour
-            _assert_invariants(stored, max(wall, stored["plan_from_hour"]),
-                               f"seed{seed} tick {hour:02d}:{minute:02d}:{tick_s}", ledger)
+            _assert_invariants(
+                stored,
+                max(wall, stored["plan_from_hour"]),
+                f"seed{seed} tick {hour:02d}:{minute:02d}:{tick_s}",
+                ledger,
+                labels,
+                actuals,
+            )
 
             # 30% chance a UI forced rebuild lands right after, possibly
             # straddling the next hour boundary.
@@ -284,13 +443,21 @@ def test_randomized_day_with_forced_rebuilds_and_slow_sims(seed: int):
                 wall2 = (enter + timedelta(seconds=sim_s2)).hour
                 if enter.hour > wall2:  # crossed midnight — out of scope
                     continue
-                _assert_invariants(stored, max(wall2, stored["plan_from_hour"]),
-                                   f"seed{seed} rebuild {enter:%H:%M:%S}", ledger)
+                _assert_invariants(
+                    stored,
+                    max(wall2, stored["plan_from_hour"]),
+                    f"seed{seed} rebuild {enter:%H:%M:%S}",
+                    ledger,
+                    labels,
+                    actuals,
+                )
 
 
 def test_history_survives_sqlite_wipe_via_meter_seed():
     """delete_plan mid-day: seed restores meters history and the day continues."""
     ledger = HistoryLedger()
+    labels = LockedLabelsLedger()
+    actuals = ActualQ15Ledger()
     stored = _day_start_plan()
     for hour in range(10):
         for minute in (0, 15, 30, 45):
@@ -301,7 +468,9 @@ def test_history_survives_sqlite_wipe_via_meter_seed():
     # config save wipes plan_latest, then forces a rebuild with existing=None
     stored = _forced_rebuild(None, datetime(2026, 7, 7, 10, 5, 0, tzinfo=TZ))
     seed_ledger = HistoryLedger()  # seed rebuilds history from meters — new baseline
-    _assert_invariants(stored, 10, "post-wipe seed", seed_ledger)
+    seed_labels = LockedLabelsLedger()
+    seed_actuals = ActualQ15Ledger()
+    _assert_invariants(stored, 10, "post-wipe seed", seed_ledger, seed_labels, seed_actuals)
 
     for hour in range(10, 24):
         for minute in (0, 15, 30, 45):
@@ -309,4 +478,7 @@ def test_history_survives_sqlite_wipe_via_meter_seed():
                 continue
             now = datetime(2026, 7, 7, hour, minute, 2, tzinfo=TZ)
             stored = _scheduler_tick(stored, now)
-            _assert_invariants(stored, hour, f"post-wipe tick {hour:02d}:{minute:02d}", seed_ledger)
+            _assert_invariants(
+                stored, hour, f"post-wipe tick {hour:02d}:{minute:02d}",
+                seed_ledger, seed_labels, seed_actuals,
+            )

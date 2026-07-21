@@ -4,6 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from src.timer_plan import (
+    timer_charge_end_due,
     timer_discharge_active_at,
     timer_discharge_early_end_hhmm,
     timer_discharge_end_due,
@@ -140,6 +141,18 @@ def test_limit_home_not_due_when_current_discharge_active():
     due, end = limit_home_due_for_timer(txt, now, plan_hour=21)
     assert due is False
     assert end is None
+
+
+def test_charge_end_due_at_half_hour_does_not_trigger_limit_home():
+    """Charge end clears Timed charge only — not the discharge Limit-home path."""
+    txt = "Chg 03:00-03:30 6.0kW cap24%"
+    now = datetime(2026, 7, 21, 3, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
+    due, end = timer_charge_end_due(txt, now, plan_hour=3)
+    assert due is True
+    assert end == "03:30"
+    lh_due, lh_end = limit_home_due_for_timer(txt, now, plan_hour=3)
+    assert lh_due is False
+    assert lh_end is None
 
 
 def test_on_grid_applied_only_when_trigger_this_slot():

@@ -18,16 +18,15 @@ from fastapi.staticfiles import StaticFiles
 from .config import BASE_DIR, load_config
 from .sqlite_store import ensure_month_history_billing_model
 from . import forecast as forecast_mod
-from .app_logging import setup_app_file_logging
+from .app_logging import make_log_formatter, setup_app_file_logging
 from .plan_simulation import build_plan_simulation
 from .routes import register_routes
 from .plan_monthly_refresh import maybe_run_daily_month_history
 from .scheduler import create_scheduler
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-)
+_console = logging.StreamHandler()
+_console.setFormatter(make_log_formatter())
+logging.basicConfig(level=logging.INFO, handlers=[_console])
 setup_app_file_logging()
 log = logging.getLogger(__name__)
 
@@ -62,9 +61,7 @@ async def lifespan(app: FastAPI):
         await asyncio.sleep(delay_s)
         try:
             await forecast_mod.run_hourly_pv_refresh(cfg)
-            result = await build_plan_simulation(
-                cfg, force_refresh=False, invalidate_inputs=False,
-            )
+            result = await build_plan_simulation(cfg, invalidate_inputs=False)
             log.info(
                 "Startup plan ready — %s, %d rows",
                 result.get("computed_at"),

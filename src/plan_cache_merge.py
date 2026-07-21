@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from .influxdb import now_warsaw
@@ -21,14 +21,95 @@ from .plan_hourly_actuals import (
 )
 from .simulation_config import plan_min_soc_kwh, plan_min_soc_pct
 from .timer_plan import (
-    ACTION_DISCHARGE_GRID,
-    classify_action,
-    clip_timer_schedule_not_before,
-    normalize_action,
-    quarter_start_minute,
+    ACTION_DISCHARGE_LOAD,
+    parse_timer_schedule_segments,
 )
 
 log = logging.getLogger(__name__)
+
+
+def _timer_has_chg(timer_txt: str) -> bool:
+    return str(timer_txt or "").strip().startswith("Chg")
+
+
+def _timer_chg_ends_after(timer_txt: str, minute_of_day: int) -> bool:
+    """True when any Chg segment ends after *minute_of_day* (window not finished)."""
+    for seg in parse_timer_schedule_segments(timer_txt):
+        if seg.get("kind") != "chg":
+            continue
+        try:
+            hh, mm = str(seg["to"]).split(":")
+            end_min = int(hh) * 60 + int(mm)
+        except (TypeError, ValueError):
+            continue
+        if end_min > minute_of_day:
+            return True
+    return False
+
+
+def _should_preserve_imminent_chg(
+    existing_row: dict[str, Any],
+    fresh_row: dict[str, Any],
+    *,
+    plan_date: str,
+    hour: int,
+    today_str: str,
+    current_hour: int,
+) -> bool:
+    """Keep next-hour Chg when front-load clears it in the fresh sim.
+
+    Before :00 the target hour is still "future". Fresh often empties it and
+    slips charge to hour+1 — overwriting would wipe the committed Chg so the
+    :00 SA sync sees an empty timer (tonight: Chg 02:00 vanished → H03 slip).
+    """
+    if plan_date != today_str or hour != current_hour + 1:
+        return False
+    if existing_row.get("timer_schedule_manual"):
+        return False
+    existing_timer = str(existing_row.get("timer_schedule") or "").strip()
+    fresh_timer = str(fresh_row.get("timer_schedule") or "").strip()
+    if not _timer_has_chg(existing_timer):
+        return False
+    # Fresh cleared the timer (classic front-load wipe) — keep planned Chg.
+    return not fresh_timer
+
+
+def _strip_slipped_next_hour_chg(
+    row: dict[str, Any],
+    existing_row: dict[str, Any] | None,
+    *,
+    current_timer: str,
+    now: datetime,
+) -> bool:
+    """Clear next-hour Chg while the current hour Chg window is still open.
+
+    Prevents a second front-load Chg (e.g. 03:00-03:30) while 02:00-02:30 is
+    still the active commitment — recovery belongs after the window ends.
+    """
+    if not _timer_has_chg(current_timer):
+        return False
+    now_min = now.hour * 60 + now.minute
+    if not _timer_chg_ends_after(current_timer, now_min):
+        return False
+    if not _timer_has_chg(str(row.get("timer_schedule") or "")):
+        return False
+    prev_timer = (
+        str(existing_row.get("timer_schedule") or "").strip()
+        if existing_row is not None
+        else ""
+    )
+    prev_action = (
+        str(existing_row.get("action") or "").strip()
+        if existing_row is not None
+        else ""
+    )
+    if prev_timer and not _timer_has_chg(prev_timer):
+        row["timer_schedule"] = prev_timer
+        row["action"] = prev_action or ACTION_DISCHARGE_LOAD
+    else:
+        row["timer_schedule"] = ""
+        row["action"] = ACTION_DISCHARGE_LOAD
+    return True
 
 
 def last_completed_quarter_tick(now: datetime) -> tuple[int, int]:
@@ -125,16 +206,38 @@ def _apply_actual_quarter_if_needed(
     today_hourly: dict[str, list[float | None]] | None,
     cfg: dict,
     battery_cap: float,
+    live_soc_kwh: float | None = None,
+    force: bool = False,
 ) -> bool:
-    """Write one actual q15 slot when not yet frozen. Returns True if row changed."""
+    """Write one actual q15 slot when not yet frozen. Returns True if row changed.
+
+    *force*: one-shot datafix — rewrite an already-frozen completed quarter
+    (energy from Influx, SOC chained from live / prior actuals). Past hours stay locked.
+    """
     q15 = _ensure_q15_length(list(row.get("q15") or []))
-    if _q15_slot_actual(q15[quarter]):
+    if _q15_slot_actual(q15[quarter]) and not force:
         return False
 
     min_soc_pct = plan_min_soc_pct(cfg)
     soc_start = hour_start_soc_kwh(today_hourly, hour, battery_cap, min_soc_pct)
+    if soc_start is None and live_soc_kwh is not None:
+        soc_start = float(live_soc_kwh)
     if soc_start is None:
-        soc_start = (float(q15[0].get("soc") or 50) / 100.0) * battery_cap
+        # Prior actual end-SOC, else implied start from the :00 plan slot —
+        # never invent a flat 50% of capacity.
+        for q in range(quarter - 1, -1, -1):
+            if _q15_slot_actual(q15[q]):
+                soc_start = (float(q15[q].get("soc") or 0) / 100.0) * battery_cap
+                break
+    if soc_start is None and live_soc_kwh is not None:
+        soc_start = float(live_soc_kwh)
+    if soc_start is None and q15:
+        end0 = (float(q15[0].get("soc") or 0) / 100.0) * battery_cap
+        bat0 = float(q15[0].get("battery") or 0.0)
+        soc_start = end0 - bat0
+    if soc_start is None:
+        return False
+
     soc_kwh = soc_start
     for q in range(quarter):
         if _q15_slot_actual(q15[q]):
@@ -161,6 +264,84 @@ def _apply_actual_quarter_if_needed(
     return True
 
 
+def datafix_completed_quarters_from_live(
+    row: dict[str, Any],
+    *,
+    hour: int,
+    now: datetime,
+    series_10min: dict[str, list[float | None]] | None,
+    today_hourly: dict[str, list[float | None]] | None,
+    cfg: dict,
+    battery_cap: float,
+    live_soc_kwh: float,
+) -> bool:
+    """One-shot data fix for the *current* hour only (never past hours).
+
+    - Completed quarters: force-rewrite from Influx; SOC chain starts at *live*.
+    - Later quarters: keep energy/timer; only rechain SOC from that live start.
+    Timer/action labels are never changed here.
+    """
+    min_soc_pct = plan_min_soc_pct(cfg)
+    min_kwh = plan_min_soc_kwh(cfg)
+    hour_offset, tick_q = last_completed_quarter_tick(now)
+    completed_through = tick_q if (hour_offset == 0 and tick_q >= 0) else -1
+    changed = False
+
+    if completed_through >= 0:
+        for q in range(completed_through + 1):
+            if _apply_actual_quarter_if_needed(
+                row,
+                hour,
+                q,
+                series_10min=series_10min,
+                today_hourly=today_hourly,
+                cfg=cfg,
+                battery_cap=battery_cap,
+                live_soc_kwh=live_soc_kwh,
+                force=True,
+            ):
+                changed = True
+
+    q15 = _ensure_q15_length(list(row.get("q15") or []))
+    if completed_through >= 0:
+        soc_kwh = (float(q15[completed_through].get("soc") or 0) / 100.0) * battery_cap
+        start_q = completed_through + 1
+    else:
+        soc_kwh = float(live_soc_kwh)
+        start_q = 0
+
+    for q in range(start_q, Q15_PER_HOUR):
+        bat = float(q15[q].get("battery") or 0.0)
+        soc_kwh = _soc_kwh_after_battery_delta(
+            soc_kwh, bat, min_kwh=min_kwh, battery_cap=battery_cap,
+        )
+        new_pct = _clamp_soc_pct((soc_kwh / battery_cap) * 100.0, min_soc_pct)
+        if abs(float(q15[q].get("soc") or 0) - new_pct) > 0.05:
+            changed = True
+        q15[q]["soc"] = new_pct
+
+    row["q15"] = q15
+    apply_q15_physics_to_row(row, q15)
+    refresh_row_grid_cash(row, cfg)
+    return changed
+
+
+def _live_soc_kwh_from_metrics(
+    metrics: dict[str, Any] | None,
+    *,
+    battery_cap: float,
+    live_soc_pct: float | None = None,
+) -> float | None:
+    """Live inverter SOC in kWh when SA is online; never the offline 50% default."""
+    if not metrics or not metrics.get("sa_online"):
+        return None
+    raw = live_soc_pct if live_soc_pct is not None else metrics.get("battery_soc")
+    if raw is None:
+        return None
+    pct = max(0.0, min(100.0, float(raw)))
+    return (pct / 100.0) * battery_cap
+
+
 def _merge_current_hour_q15(
     row: dict[str, Any],
     *,
@@ -170,15 +351,18 @@ def _merge_current_hour_q15(
     today_hourly: dict[str, list[float | None]] | None,
     cfg: dict,
     battery_cap: float,
+    live_soc_kwh: float | None = None,
+    fresh_row: dict[str, Any] | None = None,
 ) -> None:
-    """Apply the latest completed quarter from Influx; keep all other slots from SQLite.
+    """Apply completed-quarter actuals; rebuild remaining q15 from *fresh_row*.
 
-    The current hour is excluded from the optimizer on :15/:30/:45 refreshes —
-    non-actual quarters keep their :00 values unchanged.
+    Timer Schedule / Action are left untouched (caller keeps them locked).
+    Future / in-progress quarters take Production, battery, grid, SOC from the
+    fresh optimizer (weather + plan); hour Energy Cost is recomputed from flows.
     """
     hour_offset, tick_q = last_completed_quarter_tick(now)
     if hour_offset == 0 and tick_q >= 0:
-        changed = _apply_actual_quarter_if_needed(
+        _apply_actual_quarter_if_needed(
             row,
             hour,
             tick_q,
@@ -186,23 +370,41 @@ def _merge_current_hour_q15(
             today_hourly=today_hourly,
             cfg=cfg,
             battery_cap=battery_cap,
+            live_soc_kwh=live_soc_kwh,
         )
-        if not changed:
-            return  # nothing new, nothing to recompute
 
-    # Recompute hourly aggregates from q15 (timer/action/labels stay untouched).
+    from_q = (tick_q + 1) if hour_offset == 0 and tick_q >= 0 else 0
+    if fresh_row is not None:
+        eq = _ensure_q15_length(list(row.get("q15") or []))
+        fq = _ensure_q15_length(list(fresh_row.get("q15") or []))
+        for q in range(from_q, Q15_PER_HOUR):
+            slot = copy.deepcopy(fq[q])
+            slot["quarter"] = q
+            slot["from_actual"] = False
+            eq[q] = slot
+        row["q15"] = eq
+
     q15 = _ensure_q15_length(list(row.get("q15") or []))
     apply_q15_physics_to_row(row, q15)
     refresh_row_grid_cash(row, cfg)
 
 
 def _lock_hour_labels(row: dict[str, Any], fresh_row: dict[str, Any]) -> None:
+    """Freeze Timer Schedule / Action for the current hour at :00.
+
+    If SQLite already has a non-empty timer for this hour (planned while it was
+    still a future hour), keep it. Fresh sim often clears current-hour Chg
+    because front-load skips hour 0 of the rolling horizon — overwriting would
+    wipe a started charge window (e.g. Chg 01:00-01:30 vanishes at 01:00).
+    """
     if row.get("timer_schedule_manual"):
         row["hour_labels_locked"] = True
         return
     if not row.get("hour_labels_locked"):
-        row["timer_schedule"] = fresh_row.get("timer_schedule", "")
-        row["action"] = fresh_row.get("action", "")
+        existing_timer = str(row.get("timer_schedule") or "").strip()
+        if not existing_timer:
+            row["timer_schedule"] = fresh_row.get("timer_schedule", "")
+            row["action"] = fresh_row.get("action", "")
         row["hour_labels_locked"] = True
 
 
@@ -300,6 +502,11 @@ def merge_incremental_plan(
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     today_hourly = (metrics or {}).get("today_hourly")
     series_10min = (metrics or {}).get("series_10min")
+    live_soc_kwh = _live_soc_kwh_from_metrics(
+        metrics,
+        battery_cap=battery_cap,
+        live_soc_pct=(fresh.get("live_soc_pct") if isinstance(fresh, dict) else None),
+    )
 
     merged = copy.deepcopy(fresh)
     merged["history_rows"] = copy.deepcopy(existing.get("history_rows") or [])
@@ -337,9 +544,19 @@ def merge_incremental_plan(
             if not _history_has(history, today_str, prev_hour):
                 history.append(prev_copy)
             else:
-                for i, hrow in enumerate(history):
+                # Hour already in history — freeze missing q3 only; never rewrite
+                # timer_schedule / action (I4).
+                for hrow in history:
                     if _row_key(hrow) == prev_key:
-                        history[i] = prev_copy
+                        _apply_actual_quarter_if_needed(
+                            hrow,
+                            prev_hour,
+                            3,
+                            series_10min=series_10min,
+                            today_hourly=today_hourly,
+                            cfg=cfg,
+                            battery_cap=battery_cap,
+                        )
                         break
 
     # Any older completed hour still sitting in existing.rows (missed :00 tick
@@ -384,18 +601,15 @@ def merge_incremental_plan(
         row = copy.deepcopy(existing_row)
 
         if plan_date == today_str and hour == current_hour:
-            if now.minute == 0 and not row.get("hour_labels_locked"):
-                _lock_hour_labels(row, fresh_row)
-            if hour_offset == 0 and tick_q >= 0:
-                _apply_actual_quarter_if_needed(
-                    row,
-                    hour,
-                    tick_q,
-                    series_10min=series_10min,
-                    today_hourly=today_hourly,
-                    cfg=cfg,
-                    battery_cap=battery_cap,
-                )
+            if not row.get("hour_labels_locked"):
+                if now.minute == 0:
+                    _lock_hour_labels(row, fresh_row)
+                else:
+                    # Missed :00 — freeze whatever timer/action SQLite already has
+                    # for this hour (do not take mid-hour optimizer wipe).
+                    row["hour_labels_locked"] = True
+            # Remaining q15 from fresh (weather/plan), then completed → fact and
+            # SOC rechain from live so mid-hour stays continuous.
             _merge_current_hour_q15(
                 row,
                 now=now,
@@ -404,31 +618,82 @@ def merge_incremental_plan(
                 today_hourly=today_hourly,
                 cfg=cfg,
                 battery_cap=battery_cap,
+                live_soc_kwh=live_soc_kwh,
+                fresh_row=fresh_row,
             )
-            # Never keep Dis/Chg segments that already ended (mid-hour refresh).
-            if not row.get("timer_schedule_manual"):
-                earliest = quarter_start_minute(now)
-                clipped = clip_timer_schedule_not_before(
-                    str(row.get("timer_schedule") or ""), earliest, cfg=cfg,
+            if live_soc_kwh is not None:
+                datafix_completed_quarters_from_live(
+                    row,
+                    hour=hour,
+                    now=now,
+                    series_10min=series_10min,
+                    today_hourly=today_hourly,
+                    cfg=cfg,
+                    battery_cap=battery_cap,
+                    live_soc_kwh=live_soc_kwh,
                 )
-                row["timer_schedule"] = clipped
-                if (
-                    not clipped
-                    and normalize_action(str(row.get("action") or "")) == ACTION_DISCHARGE_GRID
-                ):
-                    row["action"] = classify_action(
-                        bat_charge=float(row.get("bat_charge") or 0),
-                        bat_discharge=float(row.get("bat_discharge") or 0),
-                        grid_import=float(row.get("grid_import") or 0),
-                        grid_export=float(row.get("grid_export") or 0),
-                        production=float(row.get("production") or 0),
-                    )
+            # Violet live-SOC highlight: only the in-progress hour (from fresh blend).
+            if now.minute != 0 and fresh_row.get("soc_blended"):
+                row["soc_blended"] = True
+            else:
+                row.pop("soc_blended", None)
+            # Locked timer_schedule / action stay as written at :00 for the whole
+            # hour (and into history). Clip only when building SA write payloads —
+            # never erase a started Dis/Chg window from SQLite.
             out_rows.append(row)
             continue
 
         # Future hours (today after current, and tomorrow): live optimizer row.
         _copy_future_row(row, fresh_row)
+        if _should_preserve_imminent_chg(
+            existing_row,
+            fresh_row,
+            plan_date=plan_date,
+            hour=hour,
+            today_str=today_str,
+            current_hour=current_hour,
+        ):
+            row["timer_schedule"] = existing_row.get("timer_schedule", "")
+            row["action"] = existing_row.get("action", "")
+            log.info(
+                "Plan merge — preserved imminent Chg on H%02d (fresh wiped timer)",
+                hour,
+            )
         out_rows.append(row)
+
+    # While current-hour Chg is still open, drop slipped Chg on the next hour.
+    current_row = next(
+        (
+            r for r in out_rows
+            if str(r.get("plan_date") or "") == today_str
+            and int(r.get("hour", -1)) == current_hour
+        ),
+        None,
+    )
+    current_timer = (
+        str(current_row.get("timer_schedule") or "").strip()
+        if current_row is not None
+        else ""
+    )
+    if current_timer:
+        for row in out_rows:
+            if str(row.get("plan_date") or "") != today_str:
+                continue
+            if int(row.get("hour", -1)) != current_hour + 1:
+                continue
+            existing_next = existing_by_key.get((today_str, current_hour + 1))
+            if _strip_slipped_next_hour_chg(
+                row,
+                existing_next,
+                current_timer=current_timer,
+                now=now,
+            ):
+                log.info(
+                    "Plan merge — cleared slipped Chg on H%02d while H%02d Chg still open",
+                    current_hour + 1,
+                    current_hour,
+                )
+            break
 
     merged["history_rows"] = history
     merged["rows"] = out_rows
@@ -452,6 +717,330 @@ def plan_needs_full_rebuild(cached: dict[str, Any] | None, now: datetime | None 
         return True
     now = now or now_warsaw()
     return cached.get("today_date") != now.strftime("%Y-%m-%d")
+
+
+def next_replan_boundary(now: datetime | None = None) -> tuple[str, int, int]:
+    """First q15 slot a config/override replan may rewrite: (plan_date, hour, quarter).
+
+    Ceil to the next quarter start; if *now* is exactly on :00/:15/:30/:45, that
+    quarter is included.
+
+    Examples (Warsaw):
+      22:44 → (today, 22, 3)  # from 22:45
+      22:48 → (today, 23, 0)  # from 23:00
+      22:45:00 → (today, 22, 3)
+    """
+    now = now or now_warsaw()
+    today_str = now.strftime("%Y-%m-%d")
+    on_boundary = (
+        now.minute % 15 == 0
+        and now.second == 0
+        and now.microsecond == 0
+    )
+    if on_boundary:
+        return today_str, now.hour, now.minute // 15
+
+    total_min = now.hour * 60 + now.minute
+    next_min = ((total_min // 15) + 1) * 15
+    if next_min >= 24 * 60:
+        tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        return tomorrow, 0, 0
+    return today_str, next_min // 60, (next_min % 60) // 15
+
+
+def _first_fresh_quarter_in_hour(
+    now: datetime,
+    hour: int,
+    *,
+    boundary: tuple[str, int, int] | None = None,
+) -> int:
+    """Quarter index (0..4) from which *hour* may take fresh q15; 4 = keep all."""
+    today_str = now.strftime("%Y-%m-%d")
+    from_date, from_hour, from_q = boundary or next_replan_boundary(now)
+    if from_date != today_str:
+        return Q15_PER_HOUR if from_date > today_str else 0
+    if from_hour > hour:
+        return Q15_PER_HOUR
+    if from_hour < hour:
+        return 0
+    return from_q
+
+
+def splice_replan_from_quarter(
+    existing: dict[str, Any],
+    fresh: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    boundary: tuple[str, int, int] | None = None,
+) -> dict[str, Any]:
+    """Config/override splice: keep slots before *boundary*, take the rest from fresh.
+
+    Past hours stay verbatim. The boundary hour keeps completed + in-progress
+    quarters from SQLite and only rewrites from the boundary quarter onward.
+    Later hours / tomorrow come entirely from *fresh*.
+    """
+    now = now or now_warsaw()
+    today_str = now.strftime("%Y-%m-%d")
+    from_date, from_hour, from_q = boundary or next_replan_boundary(now)
+    result = copy.deepcopy(fresh)
+
+    result["history_rows"] = copy.deepcopy(existing.get("history_rows") or [])
+    _strip_blended_flags(result["history_rows"])
+
+    existing_by_key = {
+        _row_key(r): r for r in (existing.get("rows") or []) if r.get("start") != "TOTAL"
+    }
+    fresh_by_key = {
+        _row_key(r): r for r in (fresh.get("rows") or []) if r.get("start") != "TOTAL"
+    }
+
+    kept: list[dict[str, Any]] = []
+
+    # Today hours fully before the boundary hour — keep from SQLite.
+    for key, row in sorted(existing_by_key.items(), key=lambda x: (x[0][0], x[0][1])):
+        plan_date, hour = key
+        if plan_date != today_str:
+            continue
+        if from_date > today_str or hour < from_hour:
+            kept.append(copy.deepcopy(row))
+
+    # Boundary hour on today — merge q15 at from_q.
+    if from_date == today_str:
+        bkey = (today_str, from_hour)
+        existing_row = existing_by_key.get(bkey)
+        fresh_row = fresh_by_key.get(bkey)
+        if existing_row is not None and fresh_row is not None:
+            kept.append(
+                _merge_hour_from_quarter(existing_row, fresh_row, from_q=from_q),
+            )
+        elif existing_row is not None:
+            kept.append(copy.deepcopy(existing_row))
+        elif fresh_row is not None:
+            kept.append(copy.deepcopy(fresh_row))
+
+        # Later today hours — fresh only.
+        for key, row in sorted(fresh_by_key.items(), key=lambda x: (x[0][0], x[0][1])):
+            plan_date, hour = key
+            if plan_date == today_str and hour > from_hour:
+                kept.append(copy.deepcopy(row))
+            elif plan_date > today_str:
+                kept.append(copy.deepcopy(row))
+    else:
+        # Boundary is tomorrow (or later) — keep all today from SQLite, fresh after.
+        for key, row in sorted(fresh_by_key.items(), key=lambda x: (x[0][0], x[0][1])):
+            if key[0] >= from_date:
+                if key[0] == from_date and key[1] < from_hour:
+                    continue
+                if key[0] == from_date and key[1] == from_hour:
+                    existing_row = existing_by_key.get(key)
+                    if existing_row is not None:
+                        kept.append(
+                            _merge_hour_from_quarter(existing_row, row, from_q=from_q),
+                        )
+                    else:
+                        kept.append(copy.deepcopy(row))
+                else:
+                    kept.append(copy.deepcopy(row))
+
+    # Deduplicate by key (stable last-write) then sort.
+    by_key: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in kept:
+        by_key[_row_key(row)] = row
+    kept = [by_key[k] for k in sorted(by_key.keys(), key=lambda x: (x[0], x[1]))]
+
+    result["rows"] = kept
+    result["has_history_rows"] = bool(result["history_rows"])
+    result["today_date"] = today_str
+    result["plan_from_hour"] = now.hour
+
+    today_plan = [r for r in kept if str(r.get("plan_date") or "") == today_str]
+    result["totals"] = compute_plan_totals(result["history_rows"] + today_plan)
+    log.info(
+        "Config replan splice — fresh from %s %02d:q%d onward",
+        from_date,
+        from_hour,
+        from_q,
+    )
+    return result
+
+
+def _merge_hour_from_quarter(
+    existing_row: dict[str, Any],
+    incoming_row: dict[str, Any],
+    *,
+    from_q: int,
+) -> dict[str, Any]:
+    """Keep completed/from_actual (and optionally q < from_q); rest from incoming.
+
+    Meter actuals: prefer *incoming* when it also marks ``from_actual`` (Influx
+    refresh / datafix). Otherwise keep existing actuals (I7 — sim must not
+    wipe meters). Locked timer/action stay once a Chg/Dis window exists; an empty
+    locked timer may still take incoming labels so an early offpeak Chg is not
+    dropped when the current hour was seeded empty.
+    """
+    merged = copy.deepcopy(incoming_row)
+    existing_timer = str(existing_row.get("timer_schedule") or "")
+    has_actual = any(
+        _q15_slot_actual(s) for s in (existing_row.get("q15") or [])
+    )
+    if existing_row.get("timer_schedule_manual"):
+        merged["timer_schedule"] = existing_timer
+        merged["action"] = existing_row.get("action", "")
+        merged["hour_labels_locked"] = True
+        merged["timer_schedule_manual"] = True
+    elif existing_row.get("hour_labels_locked"):
+        if existing_timer.strip() or has_actual:
+            merged["timer_schedule"] = existing_timer
+            merged["action"] = existing_row.get("action", "")
+        merged["hour_labels_locked"] = True
+
+    eq = _ensure_q15_length(list(existing_row.get("q15") or []))
+    iq = _ensure_q15_length(list(incoming_row.get("q15") or []))
+    out: list[dict[str, Any]] = []
+    for q in range(Q15_PER_HOUR):
+        if _q15_slot_actual(iq[q]):
+            # Fresh Influx / datafix actual wins over a stale frozen actual.
+            out.append(copy.deepcopy(iq[q]))
+        elif _q15_slot_actual(eq[q]) or q < from_q:
+            slot = copy.deepcopy(eq[q])
+            if q < from_q and not _q15_slot_actual(eq[q]) and iq[q].get("soc") is not None:
+                slot["soc"] = copy.deepcopy(iq[q]["soc"])
+            out.append(slot)
+        else:
+            out.append(copy.deepcopy(iq[q]))
+    apply_q15_physics_to_row(merged, out)
+    return merged
+
+
+def _merge_current_hour_future_quarters(
+    existing_row: dict[str, Any],
+    incoming_row: dict[str, Any],
+    *,
+    now: datetime,
+) -> dict[str, Any]:
+    """Keep completed clock quarters (+ meter actuals); rest from incoming.
+
+    At :30, quarters 0–1 stay from SQLite unless *incoming* supplies a newer
+    ``from_actual`` (Influx datafix). Quarters still in progress / future
+    take the incoming plan.
+    """
+    hour_offset, tick_q = last_completed_quarter_tick(now)
+    from_q = (tick_q + 1) if hour_offset == 0 and tick_q >= 0 else 0
+    return _merge_hour_from_quarter(existing_row, incoming_row, from_q=from_q)
+
+
+def _in_progress_quarter(now: datetime) -> int:
+    """0..3 index of the quarter that is currently in progress (legacy helper)."""
+    return min(Q15_PER_HOUR - 1, max(0, now.minute // 15))
+
+
+def guard_future_quarters_on_write(
+    incoming: dict[str, Any],
+    existing: dict[str, Any] | None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Hard gate for plan_latest: only future quarters may change.
+
+    Same Warsaw day with an existing plan:
+      - past hours (today, hour < now.hour) stay verbatim in history_rows
+      - current hour: completed/from_actual q15 kept; current+future q15 from incoming
+      - future hours / tomorrow: taken from incoming
+    Empty SQLite or new calendar day: deep-copy of *incoming* (first seed only).
+    """
+    now = now or now_warsaw()
+    today_str = now.strftime("%Y-%m-%d")
+    current_hour = now.hour
+    result = copy.deepcopy(incoming)
+
+    if existing is None or str(existing.get("today_date") or "") != today_str:
+        return result
+
+    history = copy.deepcopy(existing.get("history_rows") or [])
+    _strip_blended_flags(history)
+
+    for row in existing.get("rows") or []:
+        if row.get("start") == "TOTAL":
+            continue
+        plan_date = str(row.get("plan_date") or "")
+        try:
+            hour = int(row.get("hour", -1))
+        except (TypeError, ValueError):
+            continue
+        if plan_date != today_str or hour < 0 or hour >= current_hour:
+            continue
+        if _history_has(history, today_str, hour):
+            continue
+        history.append(_as_history_row(row))
+
+    blocked = 0
+    for src in (result.get("history_rows"), result.get("rows")):
+        for row in src or []:
+            plan_date = str(row.get("plan_date") or "")
+            try:
+                hour = int(row.get("hour", -1))
+            except (TypeError, ValueError):
+                continue
+            if plan_date != today_str or hour < 0 or hour >= current_hour:
+                continue
+            if _history_has(history, today_str, hour):
+                blocked += 1
+                continue
+            history.append(_as_history_row(row))
+
+    if blocked:
+        log.warning(
+            "write_plan guard — blocked overwrite of %d past hour(s) before %02d:00",
+            blocked,
+            current_hour,
+        )
+
+    _sort_history(history)
+
+    existing_current = _find_row(existing.get("rows") or [], today_str, current_hour)
+
+    live_rows: list[dict[str, Any]] = []
+    stripped = 0
+    for row in result.get("rows") or []:
+        if row.get("start") == "TOTAL":
+            continue
+        plan_date = str(row.get("plan_date") or "")
+        try:
+            hour = int(row.get("hour", -1))
+        except (TypeError, ValueError):
+            continue
+        if plan_date == today_str and hour < current_hour:
+            stripped += 1
+            continue
+        if plan_date == today_str and hour == current_hour and existing_current is not None:
+            live_rows.append(
+                _merge_current_hour_future_quarters(existing_current, row, now=now),
+            )
+        else:
+            live_rows.append(row)
+
+    if stripped:
+        log.warning(
+            "write_plan guard — stripped %d past hour(s) from rows before %02d:00",
+            stripped,
+            current_hour,
+        )
+
+    result["history_rows"] = history
+    result["rows"] = live_rows
+    result["has_history_rows"] = bool(history)
+    result["today_date"] = today_str
+
+    today_plan = [
+        r for r in live_rows
+        if str(r.get("plan_date") or "") == today_str
+    ]
+    result["totals"] = compute_plan_totals(history + today_plan)
+    return result
+
+
+# Back-compat alias used by older tests/imports.
+guard_past_hours_on_write = guard_future_quarters_on_write
 
 
 def attach_immutable_history(

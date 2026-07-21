@@ -134,7 +134,15 @@ async def _set_work_mode_if_needed(
         before,
         target_mode,
     )
-    ok = await sa_client.set_work_mode(cfg, target_mode)
+    # Ordered SA writes (timed flags are handled by hour_boundary_scheduler):
+    #   export start → Battery Grid export, then On-grid
+    #   export end / charge prepare → Limit home, then UPS and home
+    if target_mode == sa_client.WORK_MODE_ON_GRID:
+        ok = await sa_client.apply_export_start_modes(cfg)
+    elif target_mode == sa_client.WORK_MODE_LIMIT_HOME_LOAD:
+        ok = await sa_client.apply_home_modes(cfg)
+    else:
+        ok = await sa_client.set_work_mode(cfg, target_mode)
     status["ok"] = ok
     rules_after = await sa_client.get_rules(cfg, fresh=True)
     status["work_mode_after"] = rules_after.get("work_mode")

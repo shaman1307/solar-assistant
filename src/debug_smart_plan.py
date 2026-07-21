@@ -274,8 +274,13 @@ def run_day_smart_q15_plan(
     rce_quarters: list[float | None] | None = None,
     initial_soc_kwh: float,
     from_hour: int = 0,
+    front_load_skip_leading_slots: int | None = None,
 ) -> dict[str, Any] | None:
-    """15-min optimizer replay from *from_hour* through end of day (shared by debug and PROD)."""
+    """15-min optimizer replay from *from_hour* through end of day (shared by debug and PROD).
+
+    ``front_load_skip_leading_slots=0`` when *from_hour* is already after a
+    committed current clock hour (do not skip the first future hour).
+    """
     cfg = merge_simulation_defaults(cfg)
     params = get_simulation_params(cfg)
     battery_cap = float(cfg["battery"]["capacity_kwh"])
@@ -350,6 +355,7 @@ def run_day_smart_q15_plan(
         forecast=forecast,
         step_scale=STEP_SCALE,
         rce_step_offset=start_step,
+        front_load_skip_leading_slots=front_load_skip_leading_slots,
     )
 
     reserves = reserve_soc_per_step(
@@ -526,9 +532,10 @@ def run_today_smart_q15_plan(
     day_start_soc_kwh: float,
     live_soc_kwh: float,
 ) -> dict[str, Any] | None:
-    """Today's smart plan: live SOC at plan_from_hour; earlier hours unchanged replay."""
+    """Live EA plan from *plan_from_hour* (timers / rows). Chart SOC plan is separate."""
+    del day_start_soc_kwh  # kept for call-site compatibility
     plan_from_hour = max(0, min(23, int(plan_from_hour)))
-    common = dict(
+    return run_day_smart_q15_plan(
         date_str=date_str,
         pv_hourly=pv_hourly,
         load_hourly=load_hourly,
@@ -536,30 +543,9 @@ def run_today_smart_q15_plan(
         tomorrow_load=tomorrow_load,
         cfg=cfg,
         rce_quarters=rce_quarters,
-    )
-
-    if plan_from_hour <= 0:
-        return run_day_smart_q15_plan(
-            **common,
-            initial_soc_kwh=live_soc_kwh,
-            from_hour=0,
-        )
-
-    head = run_day_smart_q15_plan(
-        **common,
-        initial_soc_kwh=day_start_soc_kwh,
-        from_hour=0,
-    )
-    tail = run_day_smart_q15_plan(
-        **common,
         initial_soc_kwh=live_soc_kwh,
         from_hour=plan_from_hour,
     )
-    if tail is None:
-        return head
-    if head is None:
-        return tail
-    return _merge_smart_day_plans(head, tail, from_hour=plan_from_hour, cfg=cfg)
 
 
 def _slot_to_q15_plan_row(dt: datetime, hour: int, slot: dict[str, Any]) -> dict[str, Any]:

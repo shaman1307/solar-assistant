@@ -26,6 +26,7 @@ from .simulation_config import (
     plan_timer_charge_power_kw,
     plan_timer_discharge_power_kw,
     plan_timer_min_block_minutes,
+    plan_timer_min_hourly_transfer_kwh,
 )
 from .plan_spill import pv_load_energy_split
 
@@ -322,19 +323,59 @@ def _hour_q15_timer_energy(
     return total, active
 
 
+def _round_pct_half_up(value: float) -> int:
+    """School / mathematical percent rounding: .5 and above rounds away from zero."""
+    x = float(value)
+    if x >= 0:
+        return int(math.floor(x + 0.5))
+    return int(math.ceil(x - 0.5))
+
+
 def _charge_timer_cap_pct(slots: list[dict[str, Any]], cfg: dict) -> int:
-    """SA charge stop target: reserve SOC needed until PV carries load again."""
-    battery_cap = float(cfg["battery"]["capacity_kwh"])
+    """SA charge stop %: SOC at end of this hour's charge window (math round).
+
+    Not hour-end SOC after post-charge discharge, and not overnight reserve.
+    Example: Chg 01:00-01:30 peaks at 24.5%, then load drains to 23.6% by 02:00 —
+    cap must be 25% (round 24.5), else SA would stop at 24% and end ~23.1%.
+    """
     min_soc = int(plan_min_soc_pct(cfg))
-    reserve_kwh = next(
-        (float(s["reserve_kwh"]) for s in slots if s.get("reserve_kwh") is not None),
-        None,
-    )
-    if reserve_kwh is not None and battery_cap > 0:
-        pct = reserve_kwh / battery_cap * 100.0
-        return int(round(min(100.0, max(float(min_soc), pct))))
-    if slots:
-        return int(round(float(slots[-1].get("soc_pct", min_soc))))
+    if not slots:
+        return min_soc
+
+    eps = 0.001
+    last_charge_soc: float | None = None
+    for s in slots:
+        charged = _slot_bat_charge_kwh(s)
+        grid_chg = float(s.get("grid_import") or 0)
+        is_chg = charged > eps or grid_chg > eps
+        if not is_chg:
+            act = str(s.get("action") or "")
+            is_chg = "Charging from Grid" in act or act == ACTION_CHARGE_GRID
+        if not is_chg:
+            continue
+        soc = s.get("soc_pct")
+        if soc is None:
+            continue
+        try:
+            last_charge_soc = float(soc)
+        except (TypeError, ValueError):
+            continue
+
+    if last_charge_soc is not None:
+        return min(100, max(min_soc, _round_pct_half_up(last_charge_soc)))
+
+    # Fallback: last slot SOC in the hour.
+    last_soc: float | None = None
+    for s in slots:
+        soc = s.get("soc_pct")
+        if soc is None:
+            continue
+        try:
+            last_soc = float(soc)
+        except (TypeError, ValueError):
+            continue
+    if last_soc is not None:
+        return min(100, max(min_soc, _round_pct_half_up(last_soc)))
     return min_soc
 
 
@@ -410,12 +451,13 @@ def _hour_timer_segment(
     if to_min - from_min < min_block:
         return None
 
-    power_kw = (
-        plan_timer_charge_power_kw(cfg)
-        if target_action == ACTION_CHARGE_GRID
-        else _infer_discharge_timer_power_kw(
+    duration_min = to_min - from_min
+    if target_action == ACTION_CHARGE_GRID:
+        power_kw = _infer_charge_timer_power_kw(total_kwh, duration_min, cfg)
+    else:
+        power_kw = _infer_discharge_timer_power_kw(
             total_kwh,
-            to_min - from_min,
+            duration_min,
             cfg,
             load_kwh=sum(
                 _slot_load_kwh(slots[qi]) for qi in active_q if 0 <= qi < len(slots)
@@ -424,7 +466,6 @@ def _hour_timer_segment(
                 _slot_pv_kwh(slots[qi]) for qi in active_q if 0 <= qi < len(slots)
             ),
         )
-    )
     if power_kw <= 0:
         return None
 
@@ -459,7 +500,7 @@ def _fallback_charge_grid_timer(
     if totals["bat_charge"] <= epsilon:
         return ""
     hour_start = hour * 60
-    power_kw = plan_timer_charge_power_kw(cfg)
+    power_kw = _infer_charge_timer_power_kw(totals["bat_charge"], 60, cfg)
     cap = _charge_timer_cap_pct(slots, cfg) if slots else 80
     return (
         f"Chg {_min_to_hhmm(hour_start)}-{_min_to_hhmm(hour_start + 60)} "
@@ -519,7 +560,7 @@ def _inactive_slot(slot_n: int, kind: str, template: dict | None) -> dict[str, A
         "from": "00:00",
         "to": "00:00",
         "capacity_pct": base.get("capacity_pct", 15 if kind == "discharge" else 80),
-        "voltage_v": base.get("voltage_v", 57.6 if kind == "charge" else 42.0),
+        "voltage_v": base.get("voltage_v", 58.0 if kind == "charge" else 42.0),
         "power_kw": base.get("power_kw", 0.0),
         **({"grid": base.get("grid", True), "generator": base.get("generator", False)} if kind == "charge" else {}),
     }
@@ -647,6 +688,32 @@ def _slot_pv_kwh(slot: dict[str, Any]) -> float:
     return 0.0
 
 
+def _infer_charge_timer_power_kw(
+    charge_kwh: float,
+    duration_min: int,
+    cfg: dict,
+) -> float:
+    """SA timer DC kW from planned battery charge over duration.
+
+    Floors at ``min_hourly_transfer_kwh / duration`` so a Chg block still meets
+    the configured minimum battery transfer (e.g. 2 kWh / 0.5 h → 4 kW).
+    Caps at ``plan_timer_charge_power_kw``. Steps to 0.5 kW like discharge.
+    """
+    max_kw = plan_timer_charge_power_kw(cfg)
+    min_block = plan_timer_min_block_minutes(cfg)
+    if charge_kwh <= 0.001 or duration_min < min_block:
+        return max_kw
+    duration_h = duration_min / 60.0
+    needed_dc = charge_kwh / duration_h
+    min_hourly = plan_timer_min_hourly_transfer_kwh(cfg)
+    if min_hourly > 0.001:
+        needed_dc = max(needed_dc, min_hourly / duration_h)
+    if needed_dc <= 0.001:
+        return max_kw
+    stepped = min(max_kw, math.ceil(needed_dc * 2.0) / 2.0)
+    return round(max(stepped, 0.5), 1)
+
+
 def _infer_discharge_timer_power_kw(
     export_kwh: float,
     duration_min: int,
@@ -724,7 +791,7 @@ def _blocks_q15_to_slots(
             "from": _min_to_hhmm(blk["from_min"]),
             "to": _min_to_hhmm(blk["to_min"]),
             "capacity_pct": int(blk["capacity_pct"]) if kind == "charge" else int(min_soc),
-            "voltage_v": float(tpl.get("voltage_v", 57.6 if kind == "charge" else 42.0)),
+            "voltage_v": float(tpl.get("voltage_v", 58.0 if kind == "charge" else 42.0)),
             "power_kw": timer_kw,
         }
         if kind == "charge":
@@ -1116,29 +1183,27 @@ def sa_discharge_timer_for_hour(
     return ""
 
 
-_DISCHARGE_END_LOOKBACK_MIN = 15
+_TIMER_END_LOOKBACK_MIN = 15
 
 
-def timer_discharge_end_due(
+def _timer_kind_end_due(
     timer_txt: str,
     now: datetime,
     *,
+    kind: str,
     plan_hour: int | None = None,
 ) -> tuple[bool, str | None]:
-    """True when a discharge end in *plan_hour*'s row is <= *now* and still fresh.
-
-  Covers in-hour ends (e.g. 22:45) and full-hour ends (e.g. 22:00 on row 21).
-    """
+    """True when a *kind* segment end in *plan_hour*'s row is <= *now* and fresh."""
     if not timer_txt or not str(timer_txt).strip():
         return False, None
     now_min = now.hour * 60 + now.minute
     row_hour = now.hour if plan_hour is None else plan_hour
     row_start = row_hour * 60
     row_end = (row_hour + 1) * 60
-    earliest_relevant = now_min - _DISCHARGE_END_LOOKBACK_MIN
+    earliest_relevant = now_min - _TIMER_END_LOOKBACK_MIN
     latest_due: int | None = None
     for seg in parse_timer_schedule_segments(timer_txt):
-        if seg.get("kind") != "dis":
+        if seg.get("kind") != kind:
             continue
         end_min = _hhmm_to_minute_of_day(seg["to"])
         if end_min is None or end_min > now_min:
@@ -1152,6 +1217,37 @@ def timer_discharge_end_due(
     if latest_due is None:
         return False, None
     return True, f"{latest_due // 60:02d}:{latest_due % 60:02d}"
+
+
+def timer_discharge_end_due(
+    timer_txt: str,
+    now: datetime,
+    *,
+    plan_hour: int | None = None,
+) -> tuple[bool, str | None]:
+    """True when a discharge end in *plan_hour*'s row is <= *now* and still fresh.
+
+    Covers in-hour ends (e.g. 22:45) and full-hour ends (e.g. 22:00 on row 21).
+    """
+    return _timer_kind_end_due(
+        timer_txt, now, kind="dis", plan_hour=plan_hour,
+    )
+
+
+def timer_charge_end_due(
+    timer_txt: str,
+    now: datetime,
+    *,
+    plan_hour: int | None = None,
+) -> tuple[bool, str | None]:
+    """True when a grid-charge end in *plan_hour*'s row is <= *now* and still fresh.
+
+    Needed so mid-quarter Limit-home clears Timed charge after Chg …-H:30/H:45,
+    not only after discharge ends.
+    """
+    return _timer_kind_end_due(
+        timer_txt, now, kind="chg", plan_hour=plan_hour,
+    )
 
 
 def plan_row_grid_export_kwh(row: dict[str, Any] | None) -> float:
@@ -1201,7 +1297,7 @@ def build_sa_schedule_from_hour_row(
                 "from": seg["from"],
                 "to": seg["to"],
                 "capacity_pct": seg["capacity_pct"],
-                "voltage_v": float(tpl.get("voltage_v", 57.6)),
+                "voltage_v": float(tpl.get("voltage_v", 58.0)),
                 "power_kw": round(min(float(seg["power_kw"]), charge_cap), 2),
                 "grid": True,
                 "generator": False,
@@ -1334,7 +1430,7 @@ def _blocks_to_slots(
             "from": f"{from_h:02d}:00",
             "to": f"{to_h:02d}:00",
             "capacity_pct": int(blk["capacity_pct"]) if kind == "charge" else int(min_soc),
-            "voltage_v": float(tpl.get("voltage_v", 57.6 if kind == "charge" else 42.0)),
+            "voltage_v": float(tpl.get("voltage_v", 58.0 if kind == "charge" else 42.0)),
             "power_kw": timer_kw,
         }
         if kind == "charge":
@@ -1416,7 +1512,7 @@ def build_hourly_schedule(
             "from": f"{from_h:02d}:00",
             "to": f"{to_h:02d}:00",
             "capacity_pct": int(round(float(row.get("soc", 80)))),
-            "voltage_v": float(tpl.get("voltage_v", 57.6)),
+            "voltage_v": float(tpl.get("voltage_v", 58.0)),
             "power_kw": _row_power_kw(row, action, cfg),
             "grid": True,
             "generator": False,

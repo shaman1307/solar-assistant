@@ -21,7 +21,6 @@ from ..plan_monthly_refresh import (
     rebuild_all_month_history,
 )
 from ..sqlite_store import (
-    delete_plan,
     load_month_history,
     read_cached_deposit_total,
     read_plan,
@@ -32,7 +31,8 @@ from ..sqlite_store import (
 from ..plan_simulation import (
     build_buy_tariff_payload,
     build_plan_simulation,
-    extract_plan_soc_q15,
+    extract_actual_soc_q15,
+    hourly_plan_refresh,
 )
 from ..plan_timer_override import is_timer_schedule_hour_editable, set_timer_schedule_override
 from ..timer_plan import parse_timer_schedule_segments
@@ -117,8 +117,17 @@ async def api_forecast() -> dict[str, Any]:
         forecast["load_actual_q15_is_kw"] = False
     forecast["load_actual_hourly"] = hourly.get("load")
     forecast["pv_actual_hourly"] = hourly.get("pv")
-    plan = read_plan()
-    forecast["plan_soc_q15"] = extract_plan_soc_q15(plan)
+    plan = read_plan() or {}
+    plan_soc = plan.get("plan_soc_q15")
+    if isinstance(plan_soc, dict) and (
+        (isinstance(plan_soc.get("today"), list) and any(v is not None for v in plan_soc["today"]))
+        or (isinstance(plan_soc.get("tomorrow"), list) and any(v is not None for v in plan_soc["tomorrow"]))
+    ):
+        forecast["plan_soc_q15"] = plan_soc
+    else:
+        # Legacy plans stored EA-blended SOC under plan_soc_q15 — treat as actual only.
+        forecast["plan_soc_q15"] = {"today": [None] * 96, "tomorrow": [None] * 96}
+    forecast["actual_soc_q15"] = extract_actual_soc_q15(plan)
     return forecast
 
 
@@ -173,12 +182,11 @@ async def api_history_month(month: str, refresh: bool = False) -> dict[str, Any]
 
 @router.get("/api/simulation")
 async def api_simulation(refresh: bool = False) -> dict[str, Any]:
+    """Return EA plan. ``?refresh=1`` uses the same path as :00/:15/:30/:45 jobs."""
     cfg = load_config()
-    return await build_plan_simulation(
-        cfg,
-        force_refresh=refresh,
-        invalidate_inputs=refresh,
-    )
+    if refresh:
+        return await hourly_plan_refresh(cfg)
+    return await build_plan_simulation(cfg, invalidate_inputs=False)
 
 
 @router.post("/api/plan/timer-schedule")
@@ -220,8 +228,7 @@ async def api_set_plan_timer_schedule(body: dict[str, Any]) -> dict[str, Any]:
     cfg = load_config()
     set_timer_schedule_override(cfg, plan_date, hour, timer_schedule)
     save_config(cfg)
-    delete_plan()
-    plan = await build_plan_simulation(cfg, force_refresh=True, invalidate_inputs=False)
+    plan = await hourly_plan_refresh(cfg, unlock_plan_soc=True)
     return {"ok": True, "plan_date": plan_date, "hour": hour, "timer_schedule": timer_schedule, "plan": plan}
 
 

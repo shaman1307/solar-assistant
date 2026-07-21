@@ -156,15 +156,21 @@ def hour_start_soc_kwh(
     battery_cap: float,
     min_soc_pct: float,
 ) -> float | None:
-    """SOC at the start of *hour* from Influx (end of previous hour, or backtrack at h=0)."""
+    """SOC at the start of *hour* from Influx (end of previous hour, or backtrack at h=0).
+
+    Returns None when Influx has no reading — callers must use live SOC, never invent 50%.
+    """
     if not hourly or not (0 <= hour < 24):
         return None
     min_kwh = (float(min_soc_pct) / 100.0) * battery_cap
+    soc_series = hourly.get("soc") or [None] * 24
     if hour == 0:
+        # Only backtrack when hour-0 SOC exists; do not use _initial_soc_kwh's 50% placeholder.
+        if not soc_series or soc_series[0] is None:
+            return None
         start_kwh, _ = _initial_soc_kwh(hourly, battery_cap)
         return start_kwh
 
-    soc_series = hourly.get("soc") or [None] * 24
     prev_pct = soc_series[hour - 1] if hour - 1 < len(soc_series) else None
     if prev_pct is not None:
         pct = max(min_soc_pct, min(100.0, float(prev_pct)))
@@ -320,6 +326,18 @@ def _hour_10m_base(hour: int) -> int:
     return hour * SLOTS_PER_HOUR_10M
 
 
+def _ten_min_slot_present(
+    series: list[float | None] | None,
+    hour: int,
+    slot_i: int,
+) -> bool:
+    """True when the 10-min bucket exists (not missing) in *series*."""
+    if not series or slot_i < 0:
+        return False
+    idx = _hour_10m_base(hour) + slot_i
+    return idx < len(series) and series[idx] is not None
+
+
 def _ten_min_energy_kwh(
     series: list[float | None] | None,
     hour: int,
@@ -338,6 +356,39 @@ def _ten_min_energy_kwh(
         if idx < len(series) and series[idx] is not None:
             total += float(series[idx]) * TEN_MIN_KWH_PER_KW
     return total * scale
+
+
+def _elapsed_to_quarter_boundary_kwh(
+    series: list[float | None] | None,
+    hour: int,
+    boundary: int,
+    *,
+    fn,
+) -> float:
+    """Cumulative kWh from hour start through :15/:30/:45 (boundary 1/2/3).
+
+    When the next 10-min sample after a :15/:45 mark is already present, use a
+    true half-slot split (slot0 + 0.5·slot1) instead of extrapolating only the
+    first bucket ×1.5 — otherwise a charge that starts at :10 is invisible in
+    completed q0 and the current-hour SOC chain collapses.
+    """
+    if boundary <= 0:
+        return 0.0
+    if boundary == 1:
+        first = fn(series, hour, 0, 1)
+        if _ten_min_slot_present(series, hour, 1):
+            return first + fn(series, hour, 1, 1, scale=0.5)
+        return first * PARTIAL_Q15_SCALE
+    if boundary == 2:
+        return fn(series, hour, 0, 3)
+    if boundary == 3:
+        first_half = fn(series, hour, 0, 3)
+        if _ten_min_slot_present(series, hour, 4):
+            return first_half + fn(series, hour, 3, 1) + fn(
+                series, hour, 4, 1, scale=0.5,
+            )
+        return first_half + fn(series, hour, 3, 1, scale=PARTIAL_Q15_SCALE)
+    return 0.0
 
 
 def _ten_min_grid_import_kwh(
@@ -401,16 +452,7 @@ def _actual_kwh_for_quarter(
         fn = _ten_min_grid_import_kwh
     else:
         fn = _ten_min_grid_export_kwh
-
-    if quarter == 1:
-        return fn(series, hour, 0, 1, scale=PARTIAL_Q15_SCALE)
-    if quarter == 2:
-        return fn(series, hour, 0, 3)
-    if quarter == 3:
-        first = fn(series, hour, 0, 3)
-        partial = fn(series, hour, 3, 1, scale=PARTIAL_Q15_SCALE)
-        return first + partial
-    return 0.0
+    return _elapsed_to_quarter_boundary_kwh(series, hour, quarter, fn=fn)
 
 
 def _elapsed_kwh_through_quarter(
@@ -458,17 +500,9 @@ def _actual_energy_for_quarter(
     quarter: int,
 ) -> float:
     """Influx 10-min energy accumulated so far in the hour (scaled at :15/:45)."""
-    if quarter <= 0:
-        return 0.0
-    if quarter == 1:
-        return _ten_min_energy_kwh(series, hour, 0, 1, scale=PARTIAL_Q15_SCALE)
-    if quarter == 2:
-        return _ten_min_energy_kwh(series, hour, 0, 3)
-    if quarter == 3:
-        first = _ten_min_energy_kwh(series, hour, 0, 3)
-        partial = _ten_min_energy_kwh(series, hour, 3, 1, scale=PARTIAL_Q15_SCALE)
-        return first + partial
-    return 0.0
+    return _elapsed_to_quarter_boundary_kwh(
+        series, hour, quarter, fn=_ten_min_energy_kwh,
+    )
 
 
 def _refresh_slot_index(now: datetime, hour: int) -> int:
@@ -951,8 +985,10 @@ def build_blended_current_hour_q15(
 
 
 def apply_q15_physics_to_row(row: dict[str, Any], q15: list[dict[str, Any]]) -> None:
-    """Refresh hourly battery/grid from q15 sums; keep display production/consumption."""
+    """Refresh hourly energy columns from q15 sums (PV/load/battery/grid/SOC)."""
     row["q15"] = q15
+    row["production"] = round(sum(float(s.get("production") or 0) for s in q15), 3)
+    row["consumption"] = round(sum(float(s.get("consumption") or 0) for s in q15), 3)
     row["battery"] = round(sum(float(s.get("battery") or 0) for s in q15), 3)
     row["bat_charge"] = round(sum(max(0.0, float(s.get("battery") or 0)) for s in q15), 3)
     row["bat_discharge"] = round(sum(max(0.0, -float(s.get("battery") or 0)) for s in q15), 3)

@@ -89,7 +89,8 @@ def test_build_hour_timer_future_quarters_ok():
     assert "22:30-23:00" in txt
 
 
-def test_apply_locked_mid_hour_clears_past_only_dis():
+def test_apply_locked_mid_hour_keeps_full_past_dis():
+    """Started Dis window stays in SQLite after mid-hour rebuild (no clip erase)."""
     cfg = _cfg()
     now = datetime(2026, 7, 18, 22, 35, tzinfo=ZoneInfo("Europe/Warsaw"))
     existing = {
@@ -114,8 +115,8 @@ def test_apply_locked_mid_hour_clears_past_only_dis():
             "plan_date": "2026-07-18",
             "hour": 22,
             "start": "18-07-2026 23:00",
-            "timer_schedule": "Dis 22:00-22:30 8.0kW cap16%",
-            "action": ACTION_DISCHARGE_GRID,
+            "timer_schedule": "",
+            "action": "Idle",
             "bat_charge": 0.0,
             "bat_discharge": 1.4,
             "grid_import": 0.0,
@@ -125,5 +126,6 @@ def test_apply_locked_mid_hour_clears_past_only_dis():
     }
     apply_locked_hour_labels_from_plan(fresh, existing, now, cfg=cfg)
     row = fresh["rows"][0]
-    assert row["timer_schedule"] == ""
-    assert row["action"] != ACTION_DISCHARGE_GRID
+    assert row["timer_schedule"] == "Dis 22:00-22:30 8.0kW cap16%"
+    assert row["action"] == ACTION_DISCHARGE_GRID
+    assert row["hour_labels_locked"] is True

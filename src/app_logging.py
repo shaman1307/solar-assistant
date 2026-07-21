@@ -33,6 +33,20 @@ def parse_log_date(date_str: str) -> date | None:
         return None
 
 
+class WarsawFormatter(logging.Formatter):
+    """Format asctime in Europe/Warsaw (Pi system timezone is often UTC)."""
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        dt = datetime.fromtimestamp(record.created, tz=WARSAW)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def make_log_formatter() -> WarsawFormatter:
+    return WarsawFormatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT)
+
+
 class DailyDirFileHandler(logging.Handler):
     """Write to logs/YYYY/MM/YYYY-MM-DD.log; create year/month dirs as needed."""
 
@@ -40,7 +54,7 @@ class DailyDirFileHandler(logging.Handler):
         super().__init__(level)
         self._current_key: str | None = None
         self._stream = None
-        self.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+        self.setFormatter(make_log_formatter())
 
     def _day_now(self) -> date:
         return datetime.now(WARSAW).date()
@@ -85,9 +99,15 @@ def setup_app_file_logging(root: logging.Logger | None = None) -> Path:
     """Attach daily file handler to the root logger (idempotent)."""
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
     logger = root or logging.getLogger()
+    formatter = make_log_formatter()
+    # Pi clock is often UTC; ensure console/journal handlers also use Warsaw.
+    has_daily = False
     for h in logger.handlers:
+        h.setFormatter(formatter)
         if isinstance(h, DailyDirFileHandler):
-            return LOG_ROOT
+            has_daily = True
+    if has_daily:
+        return LOG_ROOT
     handler = DailyDirFileHandler()
     handler.setLevel(logging.INFO)
     logger.addHandler(handler)

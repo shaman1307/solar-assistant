@@ -221,19 +221,116 @@ def test_derive_timer_schedule_q15_half_discharge_power():
     assert dis["power_kw"] == 4.5
 
 
+def test_charge_timer_uses_needed_power_not_always_max():
+    """Bat +2.5 kWh in 30 min → ~5 kW (min hourly 2 → floor 4 kW), not 6."""
+    cfg = {
+        "inverter": {"ac_capacity_kw": 8.0},
+        "battery": {
+            "capacity_kwh": 48.0,
+            "max_charge_power_kw": 6.0,
+            "max_discharge_power_kw": 8.0,
+        },
+        "simulation": {"min_soc_pct": 16},
+        "timer_schedule": {"min_block_minutes": 30, "min_hourly_transfer_kwh": 2.0},
+    }
+    slots = [
+        {
+            "action": ACTION_CHARGE_GRID,
+            "battery_delta": 1.25,
+            "grid_import": 1.35,
+            "grid_export": 0.0,
+            "pv": 0.0,
+            "soc_pct": 21.0,
+        },
+        {
+            "action": ACTION_CHARGE_GRID,
+            "battery_delta": 1.25,
+            "grid_import": 1.35,
+            "grid_export": 0.0,
+            "pv": 0.0,
+            "soc_pct": 23.5,
+        },
+        {
+            "action": ACTION_DISCHARGE_LOAD,
+            "battery_delta": -0.1,
+            "grid_import": 0.0,
+            "grid_export": 0.0,
+            "pv": 0.0,
+            "soc_pct": 23.3,
+        },
+        {
+            "action": ACTION_DISCHARGE_LOAD,
+            "battery_delta": -0.1,
+            "grid_import": 0.0,
+            "grid_export": 0.0,
+            "pv": 0.0,
+            "soc_pct": 23.1,
+        },
+    ]
+    txt = build_hour_timer_schedule(
+        3, slots, cfg, action=ACTION_CHARGE_GRID,
+    )
+    assert "03:00-03:30" in txt
+    assert "5.0kW" in txt
+    assert "6.0kW" not in txt
+
+
+def test_charge_timer_floors_at_min_hourly_transfer():
+    """Tiny charge in 30 min still ≥ min_hourly/duration (2 kWh / 0.5 h → 4 kW)."""
+    cfg = {
+        "inverter": {"ac_capacity_kw": 8.0},
+        "battery": {
+            "capacity_kwh": 48.0,
+            "max_charge_power_kw": 6.0,
+            "max_discharge_power_kw": 8.0,
+        },
+        "simulation": {"min_soc_pct": 16},
+        "timer_schedule": {"min_block_minutes": 30, "min_hourly_transfer_kwh": 2.0},
+    }
+    slots = [
+        {
+            "action": ACTION_CHARGE_GRID,
+            "battery_delta": 0.3,
+            "grid_import": 0.35,
+            "grid_export": 0.0,
+            "pv": 0.0,
+            "soc_pct": 18.5,
+        },
+        {
+            "action": ACTION_CHARGE_GRID,
+            "battery_delta": 0.3,
+            "grid_import": 0.35,
+            "grid_export": 0.0,
+            "pv": 0.0,
+            "soc_pct": 19.0,
+        },
+        {"action": ACTION_DISCHARGE_LOAD, "battery_delta": -0.1,
+         "grid_import": 0.0, "grid_export": 0.0, "pv": 0.0, "soc_pct": 18.8},
+        {"action": ACTION_DISCHARGE_LOAD, "battery_delta": -0.1,
+         "grid_import": 0.0, "grid_export": 0.0, "pv": 0.0, "soc_pct": 18.6},
+    ]
+    txt = build_hour_timer_schedule(
+        3, slots, cfg, action=ACTION_CHARGE_GRID,
+    )
+    assert "4.0kW" in txt
+
+
 def test_charge_timer_capped_at_battery_max():
     cfg = {
         **_CFG,
         "inverter": {"ac_capacity_kw": 8.0},
         "battery": {**_CFG["battery"], "max_charge_power_kw": 5.0},
+        "timer_schedule": {"min_block_minutes": 30, "min_hourly_transfer_kwh": 2.0},
     }
+    # 5 kWh over 60 min → needs 5 kW (hits battery max).
     slots = [{
         "action": ACTION_CHARGE_GRID,
-        "battery_delta": 1.0,
-        "grid_import": 0.5,
+        "battery_delta": 1.25,
+        "grid_import": 1.4,
         "grid_export": 0.0,
         "pv": 0.0,
-    } for _ in range(4)]
+        "soc_pct": 20.0 + i,
+    } for i in range(4)]
     txt = build_hour_timer_schedule(
         2, slots, cfg, action=ACTION_CHARGE_GRID,
     )

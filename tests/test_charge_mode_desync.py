@@ -13,6 +13,7 @@ from src.sa_client import (
     WORK_MODE_LIMIT_HOME_LOAD,
     WORK_MODE_ON_GRID,
     _build_schedule_writes,
+    _grid_charge_current_a,
     work_mode_battery_modes_paired,
 )
 from src.timer_plan import timer_charge_active_at
@@ -48,7 +49,7 @@ def test_charge_schedule_writes_skip_unsupported_srne_registers():
             "from": "03:00",
             "to": "04:00",
             "capacity_pct": 19,
-            "voltage_v": 57.6,
+            "voltage_v": 58.0,
             "power_kw": 6.0,
             "grid": True,
             "generator": False,
@@ -68,12 +69,26 @@ def test_charge_schedule_writes_skip_unsupported_srne_registers():
     assert "inverter_1/charge_using_grid_slot_1" not in topics
     assert "inverter_1/charge_using_generator_slot_1" not in topics
     assert ("inverter_1/charge_power_slot_1", "6000") in writes
+    # Timer sync must not touch max_grid_charge_current (power slot is enough).
+    assert "inverter_1/charge_current" not in topics
+    assert _grid_charge_current_a(6.0) == 100
+    assert _grid_charge_current_a(4.0) == 68  # 4000 / 58
 
 
 def test_limit_home_not_due_during_active_charge_window():
     txt = "Chg 03:00-04:00 6kW cap19%"
     now = datetime(2026, 7, 20, 3, 15, tzinfo=ZoneInfo("Europe/Warsaw"))
     assert timer_charge_active_at(txt, now) is True
+    due, end = limit_home_due_for_timer(txt, now, plan_hour=3)
+    assert due is False
+    assert end is None
+
+
+def test_limit_home_not_due_when_charge_window_ended():
+    """03:30 — Chg ended; Limit home path stays off (only Timed charge untick)."""
+    txt = "Chg 03:00-03:30 6.0kW cap24%"
+    now = datetime(2026, 7, 21, 3, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
+    assert timer_charge_active_at(txt, now) is False
     due, end = limit_home_due_for_timer(txt, now, plan_hour=3)
     assert due is False
     assert end is None
@@ -120,17 +135,17 @@ def test_charge_hour_repairs_on_grid_ups_desync():
                 ],
             ),
             patch(
-                "src.work_mode_scheduler.sa_client.set_work_mode",
+                "src.work_mode_scheduler.sa_client.apply_home_modes",
                 new_callable=AsyncMock,
                 return_value=True,
-            ) as set_wm,
+            ) as set_home,
         ):
             status = await run_work_mode_hour_start()
 
         assert status.get("charge_grid_prepare") is True
         assert status["work_mode_target"] == WORK_MODE_LIMIT_HOME_LOAD
         assert status["on_grid_trigger_this_slot"] is False
-        set_wm.assert_awaited_once_with(cfg, WORK_MODE_LIMIT_HOME_LOAD)
+        set_home.assert_awaited_once_with(cfg)
         assert status["ok"] is True
         # After repair, modes must be the charge-safe pair.
         assert work_mode_battery_modes_paired(

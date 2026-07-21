@@ -28,7 +28,7 @@ from .simulation import (
     run_simulation,
 )
 from .simulation_config import merge_simulation_defaults, plan_min_soc_pct
-from .sqlite_store import delete_plan, read_plan, write_plan
+from .sqlite_store import read_plan, write_plan
 from .timer_plan import build_hourly_schedule
 
 log = logging.getLogger(__name__)
@@ -75,47 +75,143 @@ def extract_plan_soc_hourly(plan: dict[str, Any] | None) -> dict[str, list[float
     return out
 
 
-def _optimizer_soc_q15(plan: dict[str, Any] | None, label: str) -> list[float | None]:
-    """Raw 96-slot SOC from the 15-min optimizer replay."""
-    direct = (plan or {}).get("plan_soc_q15") or {}
-    if not isinstance(direct, dict):
+def _normalize_soc_q15(raw: Any) -> list[float | None]:
+    """Pad/truncate to 96 slots; round numeric values."""
+    if not isinstance(raw, list):
         return [None] * 96
-    raw = list(direct.get(label) or [])
-    while len(raw) < 96:
-        raw.append(None)
     out: list[float | None] = []
-    for v in raw[:96]:
+    for v in list(raw)[:96]:
         out.append(round(float(v), 1) if v is not None else None)
+    while len(out) < 96:
+        out.append(None)
     return out
 
 
-def extract_plan_soc_q15(plan: dict[str, Any] | None) -> dict[str, list[float | None]]:
-    """Today: q15 SOC from Energy arbitrage rows. Tomorrow: optimizer q15."""
-    today_str = now_warsaw().strftime("%Y-%m-%d")
+def _q15_index(now) -> int:
+    """Index 0..95 for the current 15-minute slot (Warsaw wall clock)."""
+    return int(now.hour) * 4 + int(now.minute) // 15
+
+
+def normalize_plan_soc_q15(plan: dict[str, Any] | None) -> dict[str, list[float | None]]:
+    """Pad simulator plan_soc_q15 to 96 slots per day (no EA stitching)."""
+    bundle = (plan or {}).get("plan_soc_q15") or {}
+    if not isinstance(bundle, dict):
+        bundle = {}
+    return {
+        "today": _normalize_soc_q15(bundle.get("today")),
+        "tomorrow": _normalize_soc_q15(bundle.get("tomorrow")),
+    }
+
+
+def compose_plan_soc_q15(
+    existing: dict[str, Any] | None,
+    fresh: dict[str, Any] | None,
+    *,
+    refresh: bool = False,
+) -> dict[str, list[float | None]]:
+    """Solid chart SOC plan: one as-if-00:00 day run, then freeze for the day.
+
+    Never copies EA actuals. Once *plan_soc_day_locked* for the same calendar
+    day, today's 96 slots stay unchanged across mid-day refresh — unless
+    *refresh* is True (Forecast Overrides / config replan), which takes the
+    fresh full-day simulator curve. Tomorrow always follows the fresh simulator.
+    """
+    old_bundle = (existing or {}).get("plan_soc_q15") or {}
+    new_bundle = (fresh or {}).get("plan_soc_q15") or {}
+    if not isinstance(old_bundle, dict):
+        old_bundle = {}
+    if not isinstance(new_bundle, dict):
+        new_bundle = {}
+
+    old_today = _normalize_soc_q15(old_bundle.get("today"))
+    new_today = _normalize_soc_q15(new_bundle.get("today"))
+    same_day = (
+        existing is not None
+        and str(existing.get("today_date") or "")
+        == str((fresh or {}).get("today_date") or "")
+    )
+    locked = bool(
+        same_day
+        and not refresh
+        and existing.get("plan_soc_day_locked")
+        and any(v is not None for v in old_today)
+    )
+
+    today = old_today if locked else new_today
+    new_tom = _normalize_soc_q15(new_bundle.get("tomorrow"))
+    old_tom = _normalize_soc_q15(old_bundle.get("tomorrow"))
+    tomorrow = new_tom if any(v is not None for v in new_tom) else old_tom
+    return {"today": today, "tomorrow": tomorrow}
+
+
+def extract_actual_soc_q15(
+    plan: dict[str, Any] | None,
+    now=None,
+) -> dict[str, list[float | None]]:
+    """Today q15 SOC from completed EA history / current hour only (not future plan)."""
+    now = now or now_warsaw()
+    today_str = now.strftime("%Y-%m-%d")
+    max_idx = _q15_index(now)
     today_slots: list[float | None] = [None] * 96
-    if plan:
-        for row in (plan.get("history_rows") or []) + (plan.get("rows") or []):
-            date_key = row.get("plan_date") or row.get("date")
-            if date_key != today_str:
+    if not plan:
+        return {"today": today_slots, "tomorrow": [None] * 96}
+
+    def _fill_row(row: dict, *, hour_cap: int | None = None) -> None:
+        h = row.get("hour")
+        if h is None or not (0 <= int(h) < 24):
+            return
+        hour = int(h)
+        if hour_cap is not None and hour > hour_cap:
+            return
+        for slot in row.get("q15") or []:
+            q = int(slot.get("quarter", 0))
+            idx = hour * 4 + q
+            if idx > max_idx:
                 continue
-            h = row.get("hour")
-            if h is None or not (0 <= int(h) < 24):
-                continue
-            for slot in row.get("q15") or []:
-                q = int(slot.get("quarter", 0))
-                idx = int(h) * 4 + q
-                soc = slot.get("soc")
-                if 0 <= idx < 96 and soc is not None:
-                    today_slots[idx] = round(float(soc), 1)
+            soc = slot.get("soc")
+            if 0 <= idx < 96 and soc is not None:
+                today_slots[idx] = round(float(soc), 1)
+
+    # Completed hours — meter / blended fact.
+    for row in plan.get("history_rows") or []:
+        date_key = row.get("plan_date") or row.get("date")
+        if date_key != today_str:
+            continue
+        _fill_row(row)
+
+    # Current hour only (future hours in rows are optimizer projections, not actuals).
+    for row in plan.get("rows") or []:
+        date_key = row.get("plan_date") or row.get("date")
+        if date_key != today_str:
+            continue
+        h = row.get("hour")
+        if h is None or int(h) != now.hour:
+            continue
+        _fill_row(row, hour_cap=now.hour)
+
     if not any(v is not None for v in today_slots):
         hourly = extract_plan_soc_hourly(plan)
-        for h in range(24):
+        for h in range(0, now.hour + 1):
             v = hourly["today"][h]
-            today_slots[h * 4:(h + 1) * 4] = [v] * 4
+            if v is None:
+                continue
+            for q in range(4):
+                idx = h * 4 + q
+                if idx <= max_idx:
+                    today_slots[idx] = v
+
+    # Hard clip — never draw "actual" into the future.
+    for i in range(max_idx + 1, 96):
+        today_slots[i] = None
+
     return {
         "today": today_slots,
-        "tomorrow": _optimizer_soc_q15(plan, "tomorrow"),
+        "tomorrow": [None] * 96,
     }
+
+
+# Backwards-compatible alias (old name mixed plan with EA actuals).
+extract_plan_soc_q15 = extract_actual_soc_q15
 
 
 def _plan_window_matches(stored: dict[str, Any], now) -> bool:
@@ -246,7 +342,8 @@ def _wrap_sim_result(
         "forecast": forecast_bundle,
         "rce": rce_prices,
         "buy_tariff": build_buy_tariff_payload(cfg, sim["rows"]),
-        "plan_soc_q15": extract_plan_soc_q15(sim),
+        # plan_soc_q15 comes from run_simulation (optimizer); do not overwrite with EA actuals.
+        "actual_soc_q15": extract_actual_soc_q15(sim),
     }
     if result.get("rce"):
         rce_mod._refresh_current_price(result["rce"])
@@ -276,49 +373,46 @@ async def _run_fresh_simulation(
 async def build_plan_simulation(
     cfg: dict,
     *,
-    force_refresh: bool = False,
     invalidate_inputs: bool = False,
     store_cache: bool = True,
 ) -> dict[str, Any]:
-    """Return Energy arbitrage plan from SQLite; rebuild when missing or forced."""
+    """Return Energy arbitrage plan from SQLite; rebuild only on window mismatch.
+
+    Forced recalculation (config / Overrides / EV / UI Refresh / quarter jobs)
+    goes through ``hourly_plan_refresh``.
+    """
     cfg = merge_simulation_defaults(cfg)
     now = now_warsaw()
     cached = read_plan()
 
-    if (
-        not force_refresh
-        and cached is not None
-        and _plan_window_matches(cached, now)
-    ):
+    if cached is not None and _plan_window_matches(cached, now):
         result = dict(cached)
         if result.get("rce"):
             rce_mod._refresh_current_price(result["rce"])
             result["rce_current"] = result["rce"].get("current_price_pln_kwh")
+        # Always re-clip actual SOC to "now" (future EA rows are plan, not fact).
+        result["actual_soc_q15"] = extract_actual_soc_q15(result, now=now)
         return result
 
     async with _get_plan_lock():
         cached = read_plan()
-        if (
-            not force_refresh
-            and cached is not None
-            and _plan_window_matches(cached, now)
-        ):
+        if cached is not None and _plan_window_matches(cached, now):
             result = dict(cached)
             if result.get("rce"):
                 rce_mod._refresh_current_price(result["rce"])
                 result["rce_current"] = result["rce"].get("current_price_pln_kwh")
+            result["actual_soc_q15"] = extract_actual_soc_q15(result, now=now)
             return result
 
         existing = read_plan()
         log.info(
-            "Plan full rebuild (%s) — window %s/%s vs now %s",
-            "forced" if force_refresh else "window mismatch",
+            "Plan rebuild (window mismatch) — window %s/%s vs now %s",
             (existing or {}).get("today_date"),
             (existing or {}).get("plan_from_hour"),
             now.strftime("%Y-%m-%d %H:%M"),
         )
         sim, forecast, metrics, rules, rce_prices = await _run_fresh_simulation(
-            cfg, invalidate_inputs=invalidate_inputs or force_refresh,
+            cfg, invalidate_inputs=invalidate_inputs,
         )
         result = _wrap_sim_result(
             sim,
@@ -328,17 +422,46 @@ async def build_plan_simulation(
             cfg=cfg,
             rules=rules,
         )
-        apply_locked_hour_labels_from_plan(result, existing, now, cfg=cfg)
-        attach_immutable_history(result, existing, now=now)
-        result["plan_soc_q15"] = extract_plan_soc_q15(result)
+        if existing is not None and not plan_needs_full_rebuild(existing, now):
+            # Same day: merge so locked timer/action and from_actual q15 stay in SQLite.
+            result = merge_incremental_plan(
+                existing,
+                result,
+                now=now,
+                metrics=metrics,
+                cfg=cfg,
+                rules=rules,
+            )
+        else:
+            apply_locked_hour_labels_from_plan(result, existing, now, cfg=cfg)
+            attach_immutable_history(result, existing, now=now)
+        # Chart: solid stays frozen across window-mismatch merge (unlock via
+        # hourly_plan_refresh(unlock_plan_soc=True)).
+        result["plan_soc_q15"] = compose_plan_soc_q15(existing, result)
+        result["plan_soc_day_locked"] = any(
+            v is not None for v in (result["plan_soc_q15"].get("today") or [])
+        )
+        result["actual_soc_q15"] = extract_actual_soc_q15(result, now=now)
         if store_cache:
             write_plan(result)
         return result
 
 
-async def hourly_plan_refresh(cfg: dict) -> dict[str, Any]:
-    """Scheduler refresh: incremental quarter merge or full rebuild at new day."""
-    log.info("Plan Simulation refresh …")
+async def hourly_plan_refresh(
+    cfg: dict,
+    *,
+    unlock_plan_soc: bool = False,
+) -> dict[str, Any]:
+    """Scheduler / config refresh: incremental quarter merge or full rebuild at new day.
+
+    *unlock_plan_soc*: when True (config / Forecast Overrides / EV / manual timer),
+    replace the frozen solid SOC day-plan curve with the fresh simulator curve.
+    Quarterly :00/:15/:30/:45 jobs keep the lock (default False).
+    """
+    log.info(
+        "Plan Simulation refresh%s …",
+        " (unlock plan SOC)" if unlock_plan_soc else "",
+    )
     cfg = merge_simulation_defaults(cfg)
     now = now_warsaw()
     existing = read_plan()
@@ -371,7 +494,15 @@ async def hourly_plan_refresh(cfg: dict) -> dict[str, Any]:
                 rules=rules,
             )
 
-        result["plan_soc_q15"] = extract_plan_soc_q15(result)
+        # Solid = as-if-00:00 day plan (frozen once); dashed = EA actual.
+        result["plan_soc_q15"] = compose_plan_soc_q15(
+            existing, result, refresh=unlock_plan_soc,
+        )
+        result["plan_soc_day_locked"] = any(
+            v is not None for v in (result["plan_soc_q15"].get("today") or [])
+        )
+        result["actual_soc_q15"] = extract_actual_soc_q15(result, now=now)
+
         result["next_hour"] = (now.hour + 1) % 24
         result["next_hour_schedule"] = build_hourly_schedule(
             result["rows"], result["next_hour"], cfg, rules,

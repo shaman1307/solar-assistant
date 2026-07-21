@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from src.plan_cache_merge import (
     _apply_actual_quarter_if_needed,
     _ensure_q15_length,
@@ -75,6 +77,85 @@ def test_plan_needs_full_rebuild_on_new_day():
     assert plan_needs_full_rebuild(None, now) is True
 
 
+def test_merge_at_hour_start_preserves_existing_chg_timer():
+    """Regression: front-load clears current-hour Chg in fresh; :00 must not wipe SQLite.
+
+    Before 01:00 H01 was future with Chg 01:00-01:30. At 01:00 fresh has empty H01
+    (charge deferred to H02). Merge must keep the planned Chg and lock it.
+    """
+    tz = ZoneInfo("Europe/Warsaw")
+    now = datetime(2026, 7, 21, 1, 0, tzinfo=tz)
+    existing = {
+        "today_date": "2026-07-21",
+        "plan_from_hour": 0,
+        "rows": [
+            _row(1, timer="Chg 01:00-01:30 6.0kW cap25%", action="Charging from Grid", locked=False),
+            _row(2, timer="", action="Discharging to Load", locked=False),
+        ],
+        "history_rows": [],
+        "totals": {},
+    }
+    # Fix plan_date on helper rows
+    for r in existing["rows"]:
+        r["plan_date"] = "2026-07-21"
+        r["start"] = f"21-07-2026 {int(r['hour']) + 1:02d}:00"
+
+    fresh = {
+        "today_date": "2026-07-21",
+        "plan_from_hour": 1,
+        "rows": [
+            _row(1, timer="", action="Discharging to Load", locked=False),
+            _row(2, timer="Chg 02:00-02:30 6.0kW cap23%", action="Charging from Grid", locked=False),
+        ],
+        "history_rows": [],
+        "totals": {},
+        "plan_soc_q15": {"today": [None] * 96, "tomorrow": [None] * 96},
+    }
+    for r in fresh["rows"]:
+        r["plan_date"] = "2026-07-21"
+        r["start"] = f"21-07-2026 {int(r['hour']) + 1:02d}:00"
+
+    merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
+    h1 = next(r for r in merged["rows"] if int(r["hour"]) == 1 and r["plan_date"] == "2026-07-21")
+    assert h1["timer_schedule"] == "Chg 01:00-01:30 6.0kW cap25%", h1.get("timer_schedule")
+    assert h1["action"] == "Charging from Grid"
+    assert h1["hour_labels_locked"] is True
+
+
+def test_merge_at_hour_start_takes_fresh_when_existing_timer_empty():
+    """If current hour had no timer yet, :00 may adopt fresh labels (incl. new Chg)."""
+    tz = ZoneInfo("Europe/Warsaw")
+    now = datetime(2026, 7, 21, 1, 0, tzinfo=tz)
+    existing = {
+        "today_date": "2026-07-21",
+        "plan_from_hour": 0,
+        "rows": [
+            _row(1, timer="", action="Discharging to Load", locked=False),
+        ],
+        "history_rows": [],
+        "totals": {},
+    }
+    for r in existing["rows"]:
+        r["plan_date"] = "2026-07-21"
+    fresh = {
+        "today_date": "2026-07-21",
+        "plan_from_hour": 1,
+        "rows": [
+            _row(1, timer="Chg 01:00-01:45 6.0kW cap22%", action="Charging from Grid", locked=False),
+        ],
+        "history_rows": [],
+        "totals": {},
+        "plan_soc_q15": {"today": [None] * 96, "tomorrow": [None] * 96},
+    }
+    for r in fresh["rows"]:
+        r["plan_date"] = "2026-07-21"
+
+    merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
+    h1 = next(r for r in merged["rows"] if int(r["hour"]) == 1)
+    assert "Chg 01:00-01:45" in h1["timer_schedule"]
+    assert h1["hour_labels_locked"] is True
+
+
 def test_merge_keeps_locked_timer_on_current_hour():
     now = datetime(2026, 7, 7, 8, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
     existing = {
@@ -122,6 +203,82 @@ def test_merge_updates_future_hour_timer_from_fresh():
     future = next(r for r in merged["rows"] if r["hour"] == 9)
     assert future["timer_schedule"] == "Dis 09:00-09:45"
     assert future["action"] == "Discharging to Grid"
+
+
+def test_merge_preserves_imminent_chg_when_fresh_wipes():
+    """Before :00, front-load must not erase next-hour Chg from SQLite."""
+    tz = ZoneInfo("Europe/Warsaw")
+    now = datetime(2026, 7, 21, 1, 45, tzinfo=tz)
+    existing = {
+        "today_date": "2026-07-21",
+        "plan_from_hour": 1,
+        "rows": [
+            _row(1, timer="", action="Discharging to Load", locked=True),
+            _row(2, timer="Chg 02:00-02:30 6.0kW cap24%", action="Charging from Grid"),
+            _row(3, timer="", action="Discharging to Load"),
+        ],
+        "history_rows": [],
+        "totals": {},
+    }
+    for r in existing["rows"]:
+        r["plan_date"] = "2026-07-21"
+    fresh = {
+        "today_date": "2026-07-21",
+        "plan_from_hour": 1,
+        "rows": [
+            _row(1, timer="", action="Discharging to Load", locked=False),
+            _row(2, timer="", action="Discharging to Load"),
+            _row(3, timer="Chg 03:00-03:30 6.0kW cap20%", action="Charging from Grid"),
+        ],
+        "history_rows": [],
+        "totals": {},
+        "plan_soc_q15": {"today": [None] * 96, "tomorrow": [None] * 96},
+    }
+    for r in fresh["rows"]:
+        r["plan_date"] = "2026-07-21"
+
+    merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
+    h2 = next(r for r in merged["rows"] if int(r["hour"]) == 2)
+    assert h2["timer_schedule"] == "Chg 02:00-02:30 6.0kW cap24%"
+    assert h2["action"] == "Charging from Grid"
+
+
+def test_merge_strips_slipped_next_hour_chg_while_current_open():
+    """Do not keep Chg 03:00 while Chg 02:00-02:30 is still the open window."""
+    tz = ZoneInfo("Europe/Warsaw")
+    now = datetime(2026, 7, 21, 2, 15, tzinfo=tz)
+    existing = {
+        "today_date": "2026-07-21",
+        "plan_from_hour": 2,
+        "rows": [
+            _row(2, timer="Chg 02:00-02:30 6.0kW cap24%", action="Charging from Grid", locked=True),
+            _row(3, timer="", action="Discharging to Load"),
+        ],
+        "history_rows": [],
+        "totals": {},
+    }
+    for r in existing["rows"]:
+        r["plan_date"] = "2026-07-21"
+    fresh = {
+        "today_date": "2026-07-21",
+        "plan_from_hour": 2,
+        "rows": [
+            _row(2, timer="", action="Discharging to Load"),
+            _row(3, timer="Chg 03:00-03:30 6.0kW cap20%", action="Charging from Grid"),
+        ],
+        "history_rows": [],
+        "totals": {},
+        "plan_soc_q15": {"today": [None] * 96, "tomorrow": [None] * 96},
+    }
+    for r in fresh["rows"]:
+        r["plan_date"] = "2026-07-21"
+
+    merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
+    h2 = next(r for r in merged["rows"] if int(r["hour"]) == 2)
+    h3 = next(r for r in merged["rows"] if int(r["hour"]) == 3)
+    assert "Chg 02:00-02:30" in h2["timer_schedule"]
+    assert h3["timer_schedule"] == ""
+    assert h3["action"] == "Discharging to Load"
 
 
 def test_merge_preserves_history_rows():
@@ -275,6 +432,62 @@ def test_promoted_history_rows_drop_blended_soc_flag():
     merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
     hist8 = next(r for r in merged["history_rows"] if int(r["hour"]) == 8)
     assert "soc_blended" not in hist8
+
+
+def test_merge_keeps_soc_blended_on_current_hour_from_fresh():
+    """Mid-hour merge must keep violet SOC highlight from the fresh blended row."""
+    now = datetime(2026, 7, 7, 8, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
+    existing_cur = _row(8, timer="Dis 08:00-08:45", action="Discharging to Grid", locked=True)
+    # SQLite row lost the flag (regression path) while sim still marks blend.
+    existing_cur.pop("soc_blended", None)
+    fresh_cur = _row(8, timer="OPTIMIZER_WIPE", action="Idle")
+    fresh_cur["soc_blended"] = True
+    fresh_cur["q15"] = [
+        {"quarter": q, "production": 0.3, "consumption": 0.1, "soc": 48.0 - q,
+         "battery": -0.05, "grid_import": 0.0, "grid_export": 0.0, "from_actual": False}
+        for q in range(4)
+    ]
+    existing = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 8,
+        "history_rows": [],
+        "rows": [existing_cur, _row(9)],
+    }
+    fresh = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 8,
+        "delta_kwh": 0.0,
+        "history_rows": [],
+        "rows": [fresh_cur, _row(9, timer="FUTURE_9")],
+    }
+    merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
+    cur = next(r for r in merged["rows"] if r["hour"] == 8)
+    assert cur["soc_blended"] is True
+    assert cur["timer_schedule"] == "Dis 08:00-08:45"
+    assert "soc_blended" not in next(r for r in merged["rows"] if r["hour"] == 9)
+
+
+def test_merge_clears_soc_blended_at_hour_start():
+    """At :00 the new current hour must not inherit a stale violet flag."""
+    now = datetime(2026, 7, 7, 9, 0, 0, tzinfo=ZoneInfo("Europe/Warsaw"))
+    existing = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 9,
+        "history_rows": [],
+        "rows": [_row(9, locked=True)],
+    }
+    fresh_cur = _row(9)
+    fresh_cur["soc_blended"] = True
+    fresh = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 9,
+        "delta_kwh": 0.0,
+        "history_rows": [],
+        "rows": [fresh_cur],
+    }
+    merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
+    cur = next(r for r in merged["rows"] if r["hour"] == 9)
+    assert "soc_blended" not in cur
 
 
 def test_stale_blended_flags_in_stored_history_are_healed():
@@ -461,6 +674,7 @@ def test_merge_q15_keeps_actual_and_takes_fresh_for_future():
         today_hourly=None,
         cfg=cfg,
         battery_cap=20.0,
+        fresh_row=fresh_row,
     )
 
     q15 = existing["q15"]
@@ -469,9 +683,12 @@ def test_merge_q15_keeps_actual_and_takes_fresh_for_future():
     assert q15[0]["production"] == 0.5
     # q1 — written from Influx at :30
     assert q15[1]["from_actual"] is True
-    # q2, q3 — untouched from SQLite (:00 values), NOT from fresh optimizer
+    # q2, q3 — from fresh optimizer (weather / plan), not stale :00 SQLite
     assert q15[2]["from_actual"] is False
+    assert q15[2]["production"] == 0.3
     assert q15[3]["from_actual"] is False
+    assert q15[3]["production"] == 0.3
+    assert float(existing["soc"]) == 52.0
 
 
 def test_merge_q15_at_hour_start_no_actuals():
@@ -541,10 +758,56 @@ def test_merge_incremental_at_30_quarter_pattern():
     assert cur["q15"][0]["production"] == 0.5
     # q1 — written from Influx at :30
     assert cur["q15"][1]["from_actual"] is True
-    # q2, q3 — from SQLite (:00 values), NOT touched by fresh optimizer
+    # q2, q3 — from fresh optimizer (not stale :00 SQLite)
     assert cur["q15"][2]["from_actual"] is False
-    assert cur["q15"][3]["from_actual"] is False
+    assert cur["q15"][2]["production"] == 0.3
+    assert cur["q15"][3]["production"] == 0.3
+    assert float(cur["soc"]) == 49.0
     # future hour gets optimizer value
     future = next(r for r in merged["rows"] if r["hour"] == 9)
     assert future["timer_schedule"] == "FUTURE_9"
+
+
+def test_datafix_rechains_current_hour_soc_from_live_without_unlocking_past():
+    """Poisoned :00 50% seed is fixed from live; past hours and timers stay locked."""
+    cfg = _cfg()
+    now = datetime(2026, 7, 7, 8, 5, tzinfo=ZoneInfo("Europe/Warsaw"))
+    hist = _row(7, timer="Dis 07:00-07:45", locked=True)
+    hist["history_hour"] = True
+    hist["soc"] = 40.0
+
+    cur = _row(8, timer="Dis 08:00-08:45", action="Discharging to Grid", locked=True)
+    # Midnight placeholder seed (~50%) while live is 22%.
+    for q, slot in enumerate(cur["q15"]):
+        slot["soc"] = 50.0 - q * 0.4
+        slot["battery"] = -0.08
+        slot["from_actual"] = False
+
+    existing = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 8,
+        "history_rows": [hist],
+        "rows": [cur, _row(9)],
+    }
+    fresh = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 8,
+        "live_soc_pct": 22.0,
+        "delta_kwh": 0.0,
+        "history_rows": [],
+        "rows": [_row(8), _row(9, timer="FUTURE_9")],
+    }
+    metrics = {"sa_online": True, "battery_soc": 22.0}
+
+    merged = merge_incremental_plan(existing, fresh, now=now, metrics=metrics, cfg=cfg)
+    assert merged["history_rows"][0]["timer_schedule"] == "Dis 07:00-07:45"
+    assert merged["history_rows"][0]["soc"] == 40.0
+
+    out = next(r for r in merged["rows"] if r["hour"] == 8)
+    assert out["timer_schedule"] == "Dis 08:00-08:45"
+    assert out["action"] == "Discharging to Grid"
+    assert all(not s.get("from_actual") for s in out["q15"])
+    # SOC chain starts near live 22%, not the 50% placeholder.
+    assert out["q15"][0]["soc"] == pytest.approx(22.0, abs=0.5)
+    assert out["soc"] < 25.0
 

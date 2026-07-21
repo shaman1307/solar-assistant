@@ -24,6 +24,7 @@ from .simulation_config import (
     plan_reserve_min_soc_kwh,
     plan_timer_charge_grid_kw,
     plan_timer_discharge_ac_kw,
+    plan_timer_min_block_minutes,
     plan_timer_min_hourly_transfer_kwh,
 )
 
@@ -972,13 +973,26 @@ def _grid_charge_target_soc_kwh_from_step(
     slots_per_hour: int = 4,
     global_step_offset: int = 0,
 ) -> float:
-    """SOC worth buying from the grid into the battery.
+    """SOC worth buying from the grid: floor + future *peak* house deficits only.
 
-    Only future *peak*-priced house deficits count (e.g. weekday morning until
-    PV covers). Overnight/offpeak deficits do not — buying offpeak into the
-    battery to later serve offpeak load loses round-trip energy; better to
-    import for the house when SOC hits min (especially all-offpeak weekends).
+    Offpeak deficits are not part of the *purchase* budget — reserve/discharge
+    already plans to avoid offpeak import (including midnight→morning peak
+    selection). Grid→battery covers only missing kWh for the nearest peak hours
+    until PV covers within the morning tariff horizon.
+    Weekend / all-offpeak: floor only.
     """
+    hour_buys = _day_hour_buys_from_series(
+        buy_series,
+        (global_step_offset + step) // max(1, slots_per_hour * HOURS_PER_DAY),
+        slots_per_hour=slots_per_hour,
+        global_step_offset=global_step_offset,
+        offpeak_buy=offpeak_buy,
+    )
+    if morning_cover_bound_from_hour_buys(
+        hour_buys, offpeak_buy=offpeak_buy, epsilon=epsilon,
+    ) is None:
+        return float(reserve_floor_kwh)
+
     return _forward_soc_need_from_step(
         step, pv_series, load_series, reserve_floor_kwh, eta_out, eta_pv_load, epsilon,
         buy_series=buy_series, offpeak_buy=offpeak_buy, peak_deficits_only=True,
@@ -1102,8 +1116,8 @@ def _grid_charge_ac_kw(
 ) -> float:
     """Single grid→battery decision: offpeak + below peak-cover target + headroom.
 
-    Returns AC kWh to charge this step (0 if not allowed). Continuous fill is
-    expressed by callers taking only this action when the returned rate > 0.
+    Returns AC kWh to charge this step (0 if not allowed). Uses only the AC
+    still needed to reach *charge_target_soc_kwh* (not always the hardware cap).
     """
     if buy_p > offpeak_buy + epsilon:
         return 0.0
@@ -1111,8 +1125,10 @@ def _grid_charge_ac_kw(
         return 0.0
     if head_room_kwh <= epsilon:
         return 0.0
+    need_dc = charge_target_soc_kwh - soc_kwh
+    need_ac = need_dc / eta_grid if eta_grid > 0 else need_dc
     max_ac = head_room_kwh / eta_grid if eta_grid > 0 else head_room_kwh
-    return min(charge_ac_cap_kw, max_ac)
+    return min(charge_ac_cap_kw, max_ac, max(0.0, need_ac))
 
 
 def _control_options(
@@ -1182,6 +1198,162 @@ def _control_options(
             seen.add(key)
             out.append(o)
     return out
+
+
+def _front_load_charge_step_ac(
+    budget_ac: float,
+    *,
+    charge_ac_step: float,
+    step_scale: float,
+    min_block_minutes: int,
+    eps_step: float,
+) -> float:
+    """AC kWh per fill step: spread budget over ≥ min_block (needed rate, ≤ max).
+
+    Small budgets stretch across the SA min-block so timer kW = need/duration
+    instead of always hardware max. ``min_hourly_transfer_kwh`` is enforced later
+    by ``_correct_min_hourly_transfer_controls``.
+    """
+    if budget_ac <= eps_step or charge_ac_step <= eps_step:
+        return 0.0
+    min_block_steps = max(1, int(math.ceil(min_block_minutes / max(1.0, 60.0 * step_scale))))
+    steps_at_max = max(1, int(math.ceil(budget_ac / charge_ac_step - 1e-12)))
+    n_fill = max(min_block_steps, steps_at_max)
+    return min(charge_ac_step, budget_ac / n_fill)
+
+
+def _front_load_offpeak_grid_charge(
+    controls: list[HourControl],
+    *,
+    pv_series: list[float],
+    load_series: list[float],
+    buy_prices: list[float],
+    offpeak_buy: float,
+    charge_targets: list[float],
+    initial_soc_kwh: float,
+    battery_cap: float,
+    min_kwh: float,
+    charge_ac_step: float,
+    discharge_ac_step: float,
+    eta_grid: float,
+    eta_out: float,
+    eta_pv_load: float,
+    eta_pv_grid: float,
+    eta_pv_battery: float,
+    eps_step: float,
+    reserves: list[float],
+    step_scale: float = 1.0,
+    skip_leading_slots: int | None = None,
+    min_block_minutes: int | None = None,
+) -> list[HourControl]:
+    """Move DP pre-peak grid charge to the earliest allowed offpeak steps.
+
+    Default: skip the first clock hour of the horizon (current hour) so a fresh
+    plan does not invent Chg there. Pass ``skip_leading_slots=0`` when the
+    horizon already starts after a committed current hour (future-only replan).
+
+    Relocates the optimizer AC budget into consecutive offpeak steps from
+    ``fill_from_step`` at the *needed* rate (spread over ≥ min block, ≤ max).
+
+    ``charge_targets`` kept for call-site compatibility (unused).
+    House load stays on the battery during the relocated fill.
+    """
+    del charge_targets
+    if not controls:
+        return controls
+
+    slots_per_hour = slots_per_hour_from_scale(step_scale)
+    if skip_leading_slots is None:
+        skip_leading_slots = slots_per_hour
+    fill_from_step = min(len(controls), max(0, int(skip_leading_slots)))
+    if min_block_minutes is None:
+        min_block_minutes = 30
+
+    first_peak = len(controls)
+    for i, p in enumerate(buy_prices):
+        if i >= len(controls):
+            break
+        if float(p) > offpeak_buy + eps_step:
+            first_peak = i
+            break
+
+    # Optimizer-decided volume: all pre-peak offpeak charge DP already chose.
+    budget_ac = sum(
+        float(controls[i].grid_charge_kw)
+        for i in range(min(first_peak, len(controls)))
+        if float(buy_prices[i] if i < len(buy_prices) else offpeak_buy)
+        <= offpeak_buy + eps_step
+    )
+    if budget_ac <= eps_step:
+        # Still clear any charge left in the current hour.
+        out_clear: list[HourControl] = []
+        for step, prev in enumerate(controls):
+            if step < fill_from_step and float(prev.grid_charge_kw) > eps_step:
+                out_clear.append(
+                    HourControl(0.0, prev.battery_export_kwh, prev.load_from_grid)
+                )
+            else:
+                out_clear.append(prev)
+        return out_clear
+
+    step_ac = _front_load_charge_step_ac(
+        budget_ac,
+        charge_ac_step=charge_ac_step,
+        step_scale=step_scale,
+        min_block_minutes=int(min_block_minutes),
+        eps_step=eps_step,
+    )
+
+    fill_done = False
+    budget_left = float(budget_ac)
+    out: list[HourControl] = []
+    soc = float(initial_soc_kwh)
+    for step, prev in enumerate(controls):
+        pv = float(pv_series[step]) if step < len(pv_series) else 0.0
+        load = float(load_series[step]) if step < len(load_series) else 0.0
+        buy_p = float(buy_prices[step]) if step < len(buy_prices) else offpeak_buy
+        reserve = float(reserves[step]) if step < len(reserves) else min_kwh
+
+        if step >= first_peak:
+            ctrl = HourControl(prev.grid_charge_kw, 0.0, prev.load_from_grid)
+        elif step < fill_from_step:
+            # Current hour: never start grid charge here.
+            ctrl = HourControl(0.0, 0.0, False)
+        else:
+            charge_kw = 0.0
+            if (
+                not fill_done
+                and buy_p <= offpeak_buy + eps_step
+                and budget_left > eps_step
+            ):
+                head_room = max(0.0, battery_cap - soc)
+                max_ac = head_room / eta_grid if eta_grid > 0 else head_room
+                charge_kw = min(step_ac, charge_ac_step, max_ac, budget_left)
+                if charge_kw <= eps_step:
+                    charge_kw = 0.0
+            ctrl = HourControl(charge_kw, 0.0, False)
+
+        phys = simulate_hour(
+            soc, pv, load, ctrl,
+            battery_cap=battery_cap,
+            min_kwh=min_kwh,
+            ac_cap_kw=discharge_ac_step,
+            eta_grid=eta_grid,
+            eta_out=eta_out,
+            eta_pv_load=eta_pv_load,
+            eta_pv_grid=eta_pv_grid,
+            eta_pv_battery=eta_pv_battery,
+            epsilon=eps_step,
+            reserve_soc_kwh=reserve,
+        )
+        out.append(ctrl)
+        soc = phys.soc_end
+        if ctrl.grid_charge_kw > eps_step:
+            budget_left = max(0.0, budget_left - float(ctrl.grid_charge_kw))
+            if budget_left <= eps_step:
+                fill_done = True
+    return out
+
 
 
 def _correct_min_hourly_transfer_controls(
@@ -1382,6 +1554,7 @@ def optimize_horizon(
     forecast: dict[str, Any] | None = None,
     step_scale: float = 1.0,
     rce_step_offset: int = 0,
+    front_load_skip_leading_slots: int | None = None,
 ) -> list[HourControl]:
     from .plan_cost import hour_grid_cash_pln
 
@@ -1550,6 +1723,30 @@ def optimize_horizon(
         controls.append(ctrl)
         b = soc_bin
     controls.reverse()
+
+    controls = _front_load_offpeak_grid_charge(
+        controls,
+        pv_series=pv_series,
+        load_series=load_series,
+        buy_prices=buy_prices,
+        offpeak_buy=offpeak_buy,
+        charge_targets=charge_targets,
+        initial_soc_kwh=initial_soc_kwh,
+        battery_cap=battery_cap,
+        min_kwh=min_kwh,
+        charge_ac_step=charge_ac_step,
+        discharge_ac_step=discharge_ac_step,
+        eta_grid=eta_grid,
+        eta_out=eta_out,
+        eta_pv_load=eta_pv_load,
+        eta_pv_grid=eta_pv_grid,
+        eta_pv_battery=eta_pv_battery,
+        eps_step=eps_step,
+        reserves=reserves,
+        step_scale=step_scale,
+        skip_leading_slots=front_load_skip_leading_slots,
+        min_block_minutes=plan_timer_min_block_minutes(cfg),
+    )
 
     controls = assign_ranked_battery_export(
         controls,

@@ -257,7 +257,7 @@ def test_weekend_grid_charge_target_ignores_overnight_offpeak_load():
 
 
 def test_weekday_grid_charge_target_includes_morning_peak():
-    """Peak-priced morning deficits raise the grid-charge target above floor."""
+    """Only peak-priced morning deficits raise the grid-charge target above floor."""
     pv = [0.0] * 32 + [0.5] * 4
     load = [0.2] * len(pv)
     buy = [OFF] * 24 + [PEAK] * 8 + [PEAK] * 4
@@ -267,6 +267,7 @@ def test_weekday_grid_charge_target_includes_morning_peak():
         3, pv, load, buy, floor, 1.0, 1.0, 0.01, offpeak_buy=OFF,
         global_step_offset=0,
     )
+    # Offpeak steps ignored; peak steps 24..31 → 8 × 0.2.
     assert target == pytest.approx(floor + 1.6)
     assert _grid_charge_ac_kw(
         floor + 0.5, buy_p=OFF, offpeak_buy=OFF, charge_target_soc_kwh=target,

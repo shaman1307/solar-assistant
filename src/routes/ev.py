@@ -10,8 +10,7 @@ from fastapi import APIRouter, HTTPException
 from .. import ev_charging as ev
 from .. import forecast as forecast_mod
 from ..config import load_config
-from ..plan_simulation import build_plan_simulation
-from ..sqlite_store import delete_plan
+from ..plan_simulation import hourly_plan_refresh
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -40,7 +39,6 @@ async def api_save_ev_charging(body: dict) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     await forecast_mod.apply_overrides_to_cache(cfg)
-    delete_plan()
-    await build_plan_simulation(cfg, force_refresh=True, invalidate_inputs=False)
+    await hourly_plan_refresh(cfg, unlock_plan_soc=True)
     log.info("EV charging updated for %s", date_str)
     return {"status": "saved", "date": date_str, "session": session}

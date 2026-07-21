@@ -520,6 +520,21 @@ _SRNE_UNSUPPORTED_TIMER_TOPICS = frozenset({
     f"{_INVERTER_PREFIX}/charge_using_generator_slot_{n}" for n in range(1, _SLOT_COUNT + 1)
 })
 
+# SRNE rejects max_grid_charge_current above this (422 Rejected) and aborts the
+# whole timer batch — Chg never reaches timed_charge / slot registers.
+_MAX_GRID_CHARGE_CURRENT_A = 100
+# Match charge_battery_voltage_slot (import Chg target). At 48 V, 6 kW → 125 A
+# (422 Rejected); at ≥54 V amps stay within SA's 100 A accept path.
+_GRID_CHARGE_BUS_V = 58.0
+
+
+def _grid_charge_current_a(power_kw: float, *, max_a: int = _MAX_GRID_CHARGE_CURRENT_A) -> int:
+    """Amps for SA grid-charge current limit from planned AC kW (charge bus V)."""
+    if power_kw <= 0:
+        return 0
+    raw = int((float(power_kw) * 1000.0) / _GRID_CHARGE_BUS_V)
+    return max(1, min(int(max_a), raw))
+
 
 def work_mode_battery_modes_paired(
     work_mode: str | None,
@@ -548,14 +563,11 @@ def _build_schedule_writes(
     p = _INVERTER_PREFIX
     writes: list[tuple[str, str]] = []
     # Enable grid-charge permission first so a later slot failure cannot skip it.
+    # Do NOT write max_grid_charge_current here — power is charge_power_slot only;
+    # writing current (e.g. 125 A from 6 kW/48 V) 422-rejects the whole batch.
     if settings and 1 in charge_slot_nums:
         if schedule.get("timed_charge_enabled"):
-            pwr = float((schedule.get("charge_slots") or [{}])[0].get("power_kw", 0))
             writes.append((settings["grid_charge_switch"], _grid_charge_switch(True)))
-            if pwr > 0:
-                writes.append(
-                    (settings["charge_current_limit"], str(int((pwr * 1000) / 48.0))),
-                )
         elif any(int(s.get("slot", 0)) == 1 for s in schedule.get("charge_slots") or []):
             writes.append((settings["grid_charge_switch"], _grid_charge_switch(False)))
     if schedule.get("timed_charge_enabled") is not None:
@@ -574,7 +586,7 @@ def _build_schedule_writes(
             (f"{p}/charge_start_slot_{n}", _time_to_sa(slot.get("from"))),
             (f"{p}/charge_end_slot_{n}", _time_to_sa(slot.get("to"))),
             (f"{p}/charge_battery_capacity_slot_{n}", str(cap)),
-            (f"{p}/charge_battery_voltage_slot_{n}", str(_float(slot.get("voltage_v"), 57.6))),
+            (f"{p}/charge_battery_voltage_slot_{n}", str(_float(slot.get("voltage_v"), _GRID_CHARGE_BUS_V))),
             (f"{p}/charge_power_slot_{n}", str(pwr_w)),
         ])
     for slot in schedule.get("discharge_slots", []):
@@ -602,9 +614,9 @@ async def set_grid_charging(cfg: dict, *, enabled: bool, power_kw: float = 0.0) 
         (settings["grid_charge_switch"], _grid_charge_switch(enabled)),
     ]
     if enabled and power_kw > 0:
-        voltage_v: float = 48.0
-        current_a = int((power_kw * 1000) / voltage_v)
-        writes.append((settings["charge_current_limit"], str(current_a)))
+        writes.append(
+            (settings["charge_current_limit"], str(_grid_charge_current_a(power_kw))),
+        )
     try:
         await _write_metrics(cfg, writes, lock_wait_s=90.0)
         log.info("Grid charging %s (%.1f kW)", "ON" if enabled else "OFF", power_kw)
@@ -750,6 +762,75 @@ async def set_battery_discharge_mode(
             label="Battery discharge mode",
             verify=verify,
             verify_timeout_s=verify_timeout_s,
+        )
+
+
+async def _set_work_mode_only(
+    cfg: dict,
+    mode: str,
+    *,
+    verify: bool = True,
+    verify_timeout_s: float = WORK_MODE_VERIFY_TIMEOUT_S,
+) -> bool:
+    """Write Work mode only (no paired battery write). Caller holds enum lock."""
+    mode = str(mode).strip()
+    if not mode:
+        return False
+    return await _set_inverter_enum_setting(
+        cfg,
+        topic=_work_mode_topic(cfg),
+        value=mode,
+        rules_field="work_mode",
+        label="Work mode",
+        verify=verify,
+        verify_timeout_s=verify_timeout_s,
+    )
+
+
+async def _set_battery_discharge_mode_only(
+    cfg: dict,
+    mode: str,
+    *,
+    verify: bool = True,
+    verify_timeout_s: float = BATTERY_DISCHARGE_VERIFY_TIMEOUT_S,
+) -> bool:
+    """Write battery discharge mode only (no paired work-mode write). Caller holds enum lock."""
+    mode = _normalize_battery_discharge_mode_for_sa(mode)
+    if not mode:
+        return False
+    return await _set_inverter_enum_setting(
+        cfg,
+        topic=_battery_discharge_mode_topic(cfg),
+        value=mode,
+        rules_field="battery_discharge_mode",
+        label="Battery discharge mode",
+        verify=verify,
+        verify_timeout_s=verify_timeout_s,
+    )
+
+
+async def apply_export_start_modes(cfg: dict) -> bool:
+    """Export window start: Battery Grid export → Work mode On-grid (then caller enables timed)."""
+    async with _get_enum_setting_lock():
+        bdm_ok = await _set_battery_discharge_mode_only(
+            cfg, BATTERY_DISCHARGE_MODE_GRID_EXPORT,
+        )
+        if not bdm_ok:
+            return False
+        return await _set_work_mode_only(cfg, WORK_MODE_ON_GRID)
+
+
+async def apply_home_modes(cfg: dict) -> bool:
+    """Export end / charge prepare: Work mode Limit home → Battery UPS and home.
+
+    Caller must clear Timed discharge *before* this when ending an export window.
+    """
+    async with _get_enum_setting_lock():
+        wm_ok = await _set_work_mode_only(cfg, WORK_MODE_LIMIT_HOME_LOAD)
+        if not wm_ok:
+            return False
+        return await _set_battery_discharge_mode_only(
+            cfg, BATTERY_DISCHARGE_MODE_UPS_AND_HOME,
         )
 
 

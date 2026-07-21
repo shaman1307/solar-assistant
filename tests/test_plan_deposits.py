@@ -225,6 +225,91 @@ def test_deposits_june_backfill_migration(tmp_path, monkeypatch):
     assert row["value"] == "1"
 
 
+def test_seed_month_import_not_drawn_different_tariff(tmp_path, monkeypatch):
+    """May import stays off the 174 PLN seed — May was still on a different tariff."""
+    db_path = tmp_path / "solar_smart.db"
+    monkeypatch.setattr("src.sqlite_store._DB_PATH", db_path)
+    reset_connection_for_tests()
+
+    may = {
+        "month": "2026-05",
+        "billing_model_version": BILLING_MODEL_VERSION,
+        "rows": [{
+            "date": "2026-05-31",
+            "export_revenue": 0.05,
+            "import_energy_cost": 8.27,
+            "energy_cost_total": -8.22,
+            "import_cost_total": 1.0,
+        }],
+        "totals": {
+            "export_revenue": 0.05,
+            "import_energy_cost": 8.27,
+            "energy_cost_total": -8.22,
+            "import_cost_total": 1.0,
+            "baseline_cost": 0.0,
+            "baseline_service_fee": 0.0,
+            "service_fee": 0.0,
+            "service_cost": 0.0,
+        },
+    }
+    save_month_history("2026-05", may)
+    june = {
+        "month": "2026-06",
+        "billing_model_version": BILLING_MODEL_VERSION,
+        "rows": [{
+            "date": "2026-06-01",
+            "export_revenue": 100.0,
+            "import_energy_cost": 50.0,
+            "energy_cost_total": 100.0,
+            "import_cost_total": 10.0,
+        }],
+        "totals": {
+            "export_revenue": 100.0,
+            "import_energy_cost": 50.0,
+            "energy_cost_total": 100.0,
+            "import_cost_total": 10.0,
+            "baseline_cost": 0.0,
+            "baseline_service_fee": 0.0,
+            "service_fee": 0.0,
+            "service_cost": 0.0,
+        },
+    }
+    save_month_history("2026-06", june)
+    # Persist June as a closed-month deposit (as when June was the open month).
+    from src.sqlite_store import upsert_open_month_deposit
+
+    upsert_open_month_deposit("2026-06", 100.0)
+
+    july = {
+        "month": "2026-07",
+        "rows": [],
+        "totals": {
+            "export_revenue": 20.0,
+            "import_energy_cost": 10.0,
+            "import_cost_total": 2.0,
+            "baseline_cost": 0.0,
+            "baseline_service_fee": 0.0,
+            "service_fee": 0.0,
+            "service_cost": 0.0,
+        },
+    }
+    monkeypatch.setattr("src.plan_deposits.open_month_id", lambda _today=None: "2026-07")
+    result, deposit_total = run_deposit_cascade("2026-07", july, today=date(2026, 7, 21))
+
+    may_saved = load_month_history("2026-05")
+    assert may_saved is not None
+    # No prior pool in May → uncovered import nets against export in the month total.
+    assert may_saved["totals"]["energy_cost_total"] == round(0.05 - 8.27, 4)
+    deposits = load_all_deposits()
+    # Seed untouched by May import; June/July draw only: 174 - 50 - 10 = 114
+    assert deposits[DEPOSIT_SEED_MONTH]["current"] == round(174.0 - 50.0 - 10.0, 4)
+    assert deposit_total == round(
+        deposits[DEPOSIT_SEED_MONTH]["current"] + 100.0 + 20.0,
+        4,
+    )
+    assert result["totals"]["energy_cost_total"] == 20.0
+
+
 def test_deposit_start_constant():
     assert DEPOSIT_START_MONTH == "2026-05"
 

@@ -36,6 +36,28 @@ def deposit_total_needs_refresh(today: date | None = None) -> bool:
     return as_of != open_month_id(today)
 
 
+async def _ensure_month_history_through(
+    cfg: dict,
+    open_month: str,
+) -> list[str]:
+    """Build any missing closed/open months so cascade can draw imports correctly.
+
+    Without this, a missing June history leaves June's deposit_initial in the pool
+    while skipping June's import draw — Energy Deposit Total becomes a naive sum.
+    """
+    rebuilt: list[str] = []
+    for month_id in iter_months(DEPOSIT_START_MONTH, open_month):
+        if load_month_history(month_id) is not None:
+            continue
+        payload = await build_month_history(month_id, cfg)
+        if payload.get("error"):
+            log.warning("month_history ensure failed %s: %s", month_id, payload["error"])
+            continue
+        save_month_history(month_id, payload)
+        rebuilt.append(month_id)
+    return rebuilt
+
+
 async def refresh_open_month_history(
     cfg: dict,
     *,
@@ -47,6 +69,7 @@ async def refresh_open_month_history(
     if open_month < DEPOSIT_START_MONTH:
         return {"ok": True, "skipped": True, "reason": "before_deposit_start"}
 
+    ensured = await _ensure_month_history_through(cfg, open_month)
     payload = await build_month_history(open_month, cfg)
     if payload.get("error"):
         return {"ok": False, "error": payload["error"], "month": open_month}
@@ -55,15 +78,17 @@ async def refresh_open_month_history(
     write_cached_deposit_total(deposit_total, open_month)
     write_month_history_daily_date(today.isoformat())
     log.info(
-        "month_history daily refresh %s deposit_total=%.2f",
+        "month_history daily refresh %s deposit_total=%.2f ensured=%s",
         open_month,
         deposit_total,
+        ensured,
     )
     return {
         "ok": True,
         "month": open_month,
         "deposit_total": deposit_total,
         "days": len(payload.get("rows") or []),
+        "months_ensured": ensured,
     }
 
 

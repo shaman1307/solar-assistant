@@ -1345,7 +1345,7 @@
         overflow: hidden;
       }
       .dashboard-col {
-        padding: 0.75rem 1rem 1rem;
+        padding: 0.5rem 0.875rem 0.75rem;
         min-width: 0;
       }
       .dashboard-col + .dashboard-col {
@@ -1370,7 +1370,7 @@
       background: #ffffff;
       border: 1px solid #ececec;
       border-radius: 0.75rem;
-      padding: 0.75rem 1rem 1rem;
+      padding: 0.5rem 1rem 0.75rem;
       min-width: 0;
     }
     .dashboard-col-head {
@@ -1412,7 +1412,8 @@
       padding: 0;
       margin: 0;
       width: 100%;
-      max-width: 66.67%;
+      /* Cap width so Live System + Energy Overview + chart fit FHD 16:9 without scroll */
+      max-width: 52%;
     }
     .live-flow-stage {
       position: relative;
@@ -1476,14 +1477,14 @@
       z-index: 3;
     }
     .flow-w {
-      font-size: 18px;
+      font-size: 14px;
       font-weight: 700;
       color: #374151;
       margin-top: 1px;
       font-variant-numeric: tabular-nums;
     }
     .flow-soc {
-      font-size: 18px;
+      font-size: 14px;
       font-weight: 700;
       color: #374151;
       margin-bottom: 1px;
@@ -1528,6 +1529,22 @@
       }
       .flow-w {
         margin-top: 0.125rem;
+      }
+    }
+    /* Tall desktop: allow a larger Live System once vertical budget exists */
+    @media (min-width: 768px) and (min-height: 1200px) {
+      .live-flow-wrap {
+        max-width: 66.67%;
+      }
+      .flow-w,
+      .flow-soc {
+        font-size: 18px;
+      }
+      .dashboard-col-live .dashboard-col-head h2 {
+        font-size: 18px;
+      }
+      .energy-overview-cards .dash-card-value {
+        font-size: 22px;
       }
     }
     @media (pointer: fine) {
@@ -2051,7 +2068,7 @@
       flex-shrink: 0;
     }
     .dashboard-col-live .dashboard-col-head h2 {
-      font-size: 18px;
+      font-size: 14px;
     }
     .dashboard-col-energy .dashboard-col-head h2,
     .dashboard-col-energy #accruals-date {
@@ -2062,7 +2079,7 @@
       font-size: 10px;
     }
     .energy-overview-cards .dash-card-value {
-      font-size: 22px;
+      font-size: 18px;
       line-height: 1;
       margin-top: 0.125rem;
       flex: 1;
@@ -2178,7 +2195,7 @@
 <!-- ===================================================================== -->
 <!--  TAB 1 — DASHBOARD                                                     -->
 <!-- ===================================================================== -->
-<div id="tab-dashboard" class="p-4 space-y-6{% if (initial_tab | default('dashboard')) != 'dashboard' %} hidden{% endif %}">
+<div id="tab-dashboard" class="p-4 space-y-4{% if (initial_tab | default('dashboard')) != 'dashboard' %} hidden{% endif %}">
 
   <!-- Dashboard: Live System flow | Energy Overview (2 equal columns) -->
   <section class="dashboard-system-row">
@@ -2787,7 +2804,11 @@
   <section>
     <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
       <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Forecast Overrides</h2>
-      <div class="flex gap-2 text-xs">
+      <div class="flex gap-2 text-xs items-center">
+        <button type="button" id="fc-overrides-refresh"
+          onclick="refreshForecastOverridesPlan()"
+          class="fc-day-btn bg-gray-200 hover:bg-gray-300 text-gray-800"
+          title="Force rebuild plan and SOC plan from current overrides / EV">Refresh</button>
         <button onclick="showForecastDay('today')" id="fc-btn-today"
           class="fc-day-btn bg-amber-500 text-gray-950 font-semibold">Today</button>
         <button onclick="showForecastDay('tomorrow')" id="fc-btn-tomorrow"
@@ -2920,18 +2941,12 @@
                 <polyline id="fc-load-line-forecast" fill="none" stroke="#60a5fa" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.85"/>
                 <polyline id="fc-load-line-actual"   fill="none" stroke="#93c5fd" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-dasharray="6 4" opacity="0.95"/>
                 <polyline id="fc-soc-line"           fill="none" stroke="#a855f7" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.9"/>
+                <polyline id="fc-soc-line-actual"    fill="none" stroke="#c084fc" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-dasharray="6 4" opacity="0.95"/>
               </svg>
             </div>
             <div class="absolute left-6 right-8 bottom-0 h-6 dash-chart-x overflow-hidden" id="fc-labels-pv"></div>
           </div>
-          <div class="flex flex-wrap gap-x-4 gap-y-1 mt-2 ml-6 dash-chart-legend" style="font-size:11px">
-            <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#f59e0b" stroke-width="1.5"/></svg><span class="text-gray-400">PV forecast</span></span>
-            <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6 4"/></svg><span class="text-gray-400">PV actual</span></span>
-            <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#60a5fa" stroke-width="1.5"/></svg><span class="text-gray-400">Consumption forecast</span></span>
-            <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="6 4"/></svg><span class="text-gray-400">Consumption actual</span></span>
-            <span class="flex items-center gap-1"><svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke="#a855f7" stroke-width="1.5"/></svg><span class="text-gray-400">SOC plan</span></span>
-            <span class="flex items-center gap-1"><span class="inline-block w-4 h-3 rounded-sm" style="background:rgba(134,239,172,0.45)"></span><span class="text-gray-400">SOC ≥ 90%</span></span>
-          </div>
+          <div class="flex flex-wrap gap-x-4 gap-y-1 mt-2 ml-6 dash-chart-legend" id="fc-chart-legend" style="font-size:11px"></div>
           <div id="fc-bars-pv" class="hidden"></div>
         </div>
       </div>
@@ -3351,7 +3366,31 @@ function planSocQ15FromEaRows(simData, dayKey) {
       }
     }
   }
-  return found ? slots : null;
+  return found ? clipSocQ15ToNow(slots, simData) : null;
+}
+
+/** Clip series to the current Warsaw quarter (from sim computed_at when available). */
+function currentQ15Index(simData) {
+  const ca = simData?.computed_at;
+  if (typeof ca === 'string') {
+    const m = ca.match(/\b(\d{2}):(\d{2})(?::\d{2})?\s*$/);
+    if (m) {
+      const hh = Number(m[1]);
+      const mm = Number(m[2]);
+      if (Number.isFinite(hh) && Number.isFinite(mm)) return hh * 4 + Math.floor(mm / 15);
+    }
+  }
+  const d = new Date();
+  return d.getHours() * 4 + Math.floor(d.getMinutes() / 15);
+}
+
+function clipSocQ15ToNow(slots, simData) {
+  if (!Array.isArray(slots)) return slots;
+  const maxIdx = currentQ15Index(simData);
+  const out = slots.slice(0, CHART_SLOTS_Q15);
+  while (out.length < CHART_SLOTS_Q15) out.push(null);
+  for (let i = maxIdx + 1; i < out.length; i++) out[i] = null;
+  return out;
 }
 
 function renderFcSocBands(container, socQ15, slotCount, minP, maxP) {
@@ -3553,6 +3592,8 @@ const SA_LABELS = {
   batCharge: 'Battery charged',
   batDischarge: 'Battery discharged',
   soc: 'SOC',
+  socPlan: 'SOC plan',
+  socActual: 'SOC',
   pvForecast: 'PV forecast',
   pvActual: 'PV actual',
   loadForecast: 'Consumption forecast',
@@ -3699,8 +3740,8 @@ let lastSaRulesWriteAt = 0;
 const SA_WRITE_SETTLE_MS = 45000;
 const RULES_UI_CACHE_KEY = 'rulesUiCache';
 const SA_RULES_WRITE_AT_KEY = 'saRulesWriteAt';
-let metricsPollTimer = null;
-const METRICS_POLL_MS = 30000;
+let dashboardRefreshTimer = null;
+const DASHBOARD_REFRESH_MS = 60000;
 const QUARTER_REFRESH_MS = 15 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
@@ -3998,12 +4039,22 @@ function renderForecast() {
     loadActualKw = actualLoadQ15ToKw(forecastData);
   }
 
-  const planSocQ15 = (isToday ? planSocQ15FromEaRows(simData, 'today') : null)
-    || (simData?.plan_soc_q15?.[currentForecastDay]?.some(v => v != null)
+  const planSocQ15 = (simData?.plan_soc_q15?.[currentForecastDay]?.some(v => v != null)
     ? simData.plan_soc_q15[currentForecastDay]
     : null) || (forecastData.plan_soc_q15?.[currentForecastDay]?.some(v => v != null)
     ? forecastData.plan_soc_q15[currentForecastDay]
     : null) || [];
+
+  // Actual SOC from EA rows (today only) — dashed; plan is solid optimizer trajectory.
+  let actualSocQ15 = [];
+  if (isToday) {
+    actualSocQ15 = (simData?.actual_soc_q15?.today?.some(v => v != null)
+      ? simData.actual_soc_q15.today
+      : null) || (forecastData.actual_soc_q15?.today?.some(v => v != null)
+      ? forecastData.actual_soc_q15.today
+      : null) || planSocQ15FromEaRows(simData, 'today') || [];
+    actualSocQ15 = clipSocQ15ToNow(actualSocQ15, simData || forecastData);
+  }
 
   const fcYEl = document.getElementById('fc-y-axis');
   const fcSocYEl = document.getElementById('fc-y-axis-soc');
@@ -4031,13 +4082,19 @@ function renderForecast() {
   const lineForecast   = document.getElementById('fc-load-line-forecast');
   const lineActual     = document.getElementById('fc-load-line-actual');
   const socLine        = document.getElementById('fc-soc-line');
+  const socLineActual  = document.getElementById('fc-soc-line-actual');
   if (pvLine)       pvLine.setAttribute('points',         dashLinePts(pvForecastKw, slotCount, fcToY));
   if (pvLineActual) pvLineActual.setAttribute('points',   isToday && pvActualKw ? dashLinePts(pvActualKw, slotCount, fcToY) : '');
   if (lineForecast) lineForecast.setAttribute('points',   dashLinePts(loadForecastKw, slotCount, fcToY));
   if (lineActual)   lineActual.setAttribute('points',     isToday && loadActualKw ? dashLinePts(loadActualKw, slotCount, fcToY) : '');
   if (socLine)      socLine.setAttribute('points',       dashLinePts(planSocQ15, slotCount, fcSocToY));
+  if (socLineActual) socLineActual.setAttribute('points', isToday && actualSocQ15.length
+    ? dashLinePts(actualSocQ15, slotCount, fcSocToY) : '');
 
+  // SOC ≥ 90% bands follow the plan trajectory, not actual SOC.
   renderFcSocBands(document.getElementById('fc-soc-bands'), planSocQ15, slotCount, fcMin, fcMax);
+  renderFcChartLegend();
+  applyFcChartLegendVisibility();
 
   const labels = document.getElementById('fc-labels-pv');
   if (labels) {
@@ -4058,12 +4115,15 @@ function renderForecast() {
     ? new Date().toISOString().slice(0, 10)
     : new Date(Date.now() + 86400000).toISOString().slice(0, 10);
   bindDashChartHover(fcAEl, fcTip, fcWrap, (slot) => {
+    const hidden = window._fcLegendHidden;
+    const show = (key) => !hidden || !hidden.has(key);
     let html = '';
-    if (pvForecastKw[slot] != null) html += tooltipRowLine('#f59e0b', false, SA_LABELS.pvForecast, fmtChartK(pvForecastKw[slot]));
-    if (isToday && pvActualKw?.[slot] != null) html += tooltipRowLine('#fbbf24', true, SA_LABELS.pvActual, fmtChartK(pvActualKw[slot]));
-    if (loadForecastKw[slot] != null) html += tooltipRowLine('#60a5fa', false, SA_LABELS.loadForecast, fmtChartK(loadForecastKw[slot]));
-    if (isToday && loadActualKw?.[slot] != null) html += tooltipRowLine('#93c5fd', true, SA_LABELS.loadActual, fmtChartK(loadActualKw[slot]));
-    if (planSocQ15[slot] != null) html += tooltipRowLine('#a855f7', false, SA_LABELS.soc, fmtChartSoc(planSocQ15[slot]));
+    if (show('pv-forecast') && pvForecastKw[slot] != null) html += tooltipRowLine('#f59e0b', false, SA_LABELS.pvForecast, fmtChartK(pvForecastKw[slot]));
+    if (show('pv-actual') && isToday && pvActualKw?.[slot] != null) html += tooltipRowLine('#fbbf24', true, SA_LABELS.pvActual, fmtChartK(pvActualKw[slot]));
+    if (show('load-forecast') && loadForecastKw[slot] != null) html += tooltipRowLine('#60a5fa', false, SA_LABELS.loadForecast, fmtChartK(loadForecastKw[slot]));
+    if (show('load-actual') && isToday && loadActualKw?.[slot] != null) html += tooltipRowLine('#93c5fd', true, SA_LABELS.loadActual, fmtChartK(loadActualKw[slot]));
+    if (show('soc-plan') && planSocQ15[slot] != null) html += tooltipRowLine('#a855f7', false, SA_LABELS.socPlan, fmtChartSoc(planSocQ15[slot]));
+    if (show('soc-actual') && isToday && actualSocQ15[slot] != null) html += tooltipRowLine('#c084fc', true, SA_LABELS.socActual, fmtChartSoc(actualSocQ15[slot]));
     if (!html) return '';
     return `<div class="tt-time">${chartSlotTitleQ15(slot, fcDate)}</div>${html}`;
   }, slotCount);
@@ -4517,6 +4577,36 @@ async function saveOverrides() {
     console.warn('overrides save', e);
   } finally {
     ovSaveInFlight = false;
+  }
+}
+
+/** Force rebuild forecast chart + EA plan + solid SOC plan from current overrides/EV. */
+async function refreshForecastOverridesPlan() {
+  const btn = document.getElementById('fc-overrides-refresh');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Refreshing…';
+  }
+  try {
+    if (ovSaveTimer) {
+      clearTimeout(ovSaveTimer);
+      ovSaveTimer = null;
+      await saveOverrides();
+    }
+    if (evSaveTimer) {
+      clearTimeout(evSaveTimer);
+      evSaveTimer = null;
+      await saveEvCharging();
+    }
+    await refreshQuarterCycle({ silent: false, syncSliders: false, force: true });
+    renderForecast();
+  } catch (e) {
+    console.warn('forecast overrides refresh', e);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Refresh';
+    }
   }
 }
 
@@ -6462,6 +6552,73 @@ function bindAcrChartLegend() {
   });
 }
 
+function getFcChartLegendItems() {
+  return [
+    { key: 'pv-forecast', label: 'PV forecast', swatch: acrLegendLineSwatch('#f59e0b', false) },
+    { key: 'pv-actual', label: 'PV actual', swatch: acrLegendLineSwatch('#fbbf24', true) },
+    { key: 'load-forecast', label: 'Consumption forecast', swatch: acrLegendLineSwatch('#60a5fa', false) },
+    { key: 'load-actual', label: 'Consumption actual', swatch: acrLegendLineSwatch('#93c5fd', true) },
+    { key: 'soc-plan', label: 'SOC plan', swatch: acrLegendLineSwatch('#a855f7', false) },
+    { key: 'soc-actual', label: 'SOC', swatch: acrLegendLineSwatch('#c084fc', true) },
+    { key: 'soc-bands', label: 'SOC ≥ 90%', swatch: acrLegendSwatch('rgba(134,239,172,0.45)') },
+  ];
+}
+
+function ensureFcLegendHidden() {
+  if (!window._fcLegendHidden) {
+    window._fcLegendHidden = new Set();
+  }
+}
+
+function applyFcChartLegendVisibility() {
+  ensureFcLegendHidden();
+  const hidden = window._fcLegendHidden;
+  const show = (key) => !hidden.has(key);
+  const setDisplay = (el, key) => {
+    if (!el) return;
+    el.style.display = show(key) ? '' : 'none';
+  };
+
+  setDisplay(document.getElementById('fc-pv-line'), 'pv-forecast');
+  setDisplay(document.getElementById('fc-pv-line-actual'), 'pv-actual');
+  setDisplay(document.getElementById('fc-load-line-forecast'), 'load-forecast');
+  setDisplay(document.getElementById('fc-load-line-actual'), 'load-actual');
+  setDisplay(document.getElementById('fc-soc-line'), 'soc-plan');
+  setDisplay(document.getElementById('fc-soc-line-actual'), 'soc-actual');
+  const bands = document.getElementById('fc-soc-bands');
+  if (bands) bands.style.display = show('soc-bands') ? '' : 'none';
+
+  document.querySelectorAll('#fc-chart-legend [data-fc-series]').forEach((btn) => {
+    btn.classList.toggle('dash-legend-item--muted', hidden.has(btn.dataset.fcSeries));
+  });
+}
+
+function renderFcChartLegend() {
+  const el = document.getElementById('fc-chart-legend');
+  if (!el) return;
+  ensureFcLegendHidden();
+  el.innerHTML = getFcChartLegendItems().map((item) => (
+    `<button type="button" class="dash-legend-item" data-fc-series="${item.key}">${item.swatch}<span>${item.label}</span></button>`
+  )).join('');
+  applyFcChartLegendVisibility();
+}
+
+function bindFcChartLegend() {
+  if (window._fcLegendClickBound) return;
+  window._fcLegendClickBound = true;
+  const el = document.getElementById('fc-chart-legend');
+  if (!el) return;
+  ensureFcLegendHidden();
+  el.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-fc-series]');
+    if (!btn) return;
+    const key = btn.dataset.fcSeries;
+    if (window._fcLegendHidden.has(key)) window._fcLegendHidden.delete(key);
+    else window._fcLegendHidden.add(key);
+    applyFcChartLegendVisibility();
+  });
+}
+
 function updateTariffRceNowLine(nowLineEl, areaEl, timeline) {
   if (!nowLineEl || !areaEl || !Array.isArray(timeline) || !timeline.length) return;
   const nowMs = Date.now();
@@ -7938,8 +8095,8 @@ function toggleHistoryMonthDays() {
   btn.textContent = hidden ? label + ' ▼' : 'Hide daily breakdown ▲';
 }
 
-const HISTORY_MONTH_CACHE_KEY = 'sa_history_month_v11';
-const HISTORY_MONTH_BILLING_MODEL = '13';
+const HISTORY_MONTH_CACHE_KEY = 'sa_history_month_v13';
+const HISTORY_MONTH_BILLING_MODEL = '15';
 
 function historyMonthCacheDay() {
   return DEBUG_TODAY;
@@ -9628,10 +9785,17 @@ function bindEnergyCardsHeightSync() {
   run();
 }
 
-function startMetricsPolling() {
-  if (metricsPollTimer) return;
-  loadMetrics();
-  metricsPollTimer = setInterval(loadMetrics, METRICS_POLL_MS);
+async function refreshDashboard() {
+  if (currentTab !== 'dashboard') return;
+  await loadMetrics();
+  const dateStr = document.getElementById('accruals-date')?.value || DEBUG_TODAY;
+  await loadAccruals(dateStr);
+}
+
+function startDashboardRefresh() {
+  if (dashboardRefreshTimer) return;
+  void refreshDashboard();
+  dashboardRefreshTimer = setInterval(() => { void refreshDashboard(); }, DASHBOARD_REFRESH_MS);
 }
 
 function bootForCurrentTab() {
@@ -9642,8 +9806,7 @@ function bootForCurrentTab() {
   })();
 
   if (currentTab === 'dashboard') {
-    startMetricsPolling();
-    setInterval(() => { loadAccruals(document.getElementById('accruals-date')?.value); }, 60000);
+    startDashboardRefresh();
     return;
   }
 
@@ -9693,6 +9856,7 @@ bindSimPriceColsToggle();
 initSimEaPriceCols();
 bindTariffChartResize();
 bindAcrChartLegend();
+bindFcChartLegend();
 initPageTab();
 applyFocusFromQuery();
 loadDebugTabSetting();

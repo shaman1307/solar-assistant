@@ -362,11 +362,30 @@ def read_plan() -> dict[str, Any] | None:
         return None
 
 
-def write_plan(plan: dict[str, Any]) -> None:
-    """Persist Energy arbitrage plan to SQLite."""
-    payload = json.dumps(plan, ensure_ascii=False, separators=(",", ":"))
+def write_plan(plan: dict[str, Any], *, now: datetime | None = None) -> None:
+    """Sole writer for Energy arbitrage plan (plan_latest).
+
+    Never deletes the plan. On the same Warsaw day, only future quarters are
+    taken from *plan*; past hours and completed q15 slots stay from SQLite
+    (see ``guard_future_quarters_on_write``).
+    """
+    from .plan_cache_merge import guard_future_quarters_on_write
+
+    now = now or now_warsaw()
     with _lock:
         conn = _connect()
+        row = conn.execute(
+            "SELECT payload_json FROM plan_latest WHERE id = 1",
+        ).fetchone()
+        existing: dict[str, Any] | None = None
+        if row:
+            try:
+                existing = json.loads(row["payload_json"])
+            except json.JSONDecodeError as exc:
+                log.warning("plan_latest JSON corrupt before write: %s", exc)
+                existing = None
+        guarded = guard_future_quarters_on_write(plan, existing, now=now)
+        payload = json.dumps(guarded, ensure_ascii=False, separators=(",", ":"))
         conn.execute(
             """
             INSERT INTO plan_latest(id, payload_json, updated_at)
@@ -381,7 +400,7 @@ def write_plan(plan: dict[str, Any]) -> None:
 
 
 def delete_plan() -> None:
-    """Remove Energy arbitrage plan from SQLite (plan_latest)."""
+    """Test-only wipe of plan_latest. Production paths must never call this."""
     with _lock:
         conn = _connect()
         conn.execute("DELETE FROM plan_latest WHERE id = 1")
@@ -409,8 +428,9 @@ def read_plan_buy_tariff() -> dict[str, Any] | None:
     return plan.get("buy_tariff")
 
 
-def save_plan_snapshot(plan: dict[str, Any]) -> None:
-    write_plan(plan)
+def save_plan_snapshot(plan: dict[str, Any], *, now: datetime | None = None) -> None:
+    """Alias for write_plan — keep a single persistence entry point."""
+    write_plan(plan, now=now)
 
 
 def load_plan_snapshot() -> dict[str, Any] | None:
