@@ -3256,7 +3256,10 @@ const CHART_COLORS = {
 };
 
 const TARIFF_RCE_SLOTS_PER_HOUR = 4;
-const ACR_PRICE_Y_MAX_PLN = 4;
+/** Full price axis (100%): 2× G12 peak so peak bars hit mid height (50%). */
+function acrPriceYMaxPln() {
+  return g12PeakPricePln() * 2;
+}
 const CHART_G12_BG_OPACITY = 0.32;
 /** Energa G12 weekday peak windows (hour ranges, start inclusive, end exclusive). */
 const G12_PEAK_HOURS_WEEKDAY = [[6, 13], [15, 22]];
@@ -5922,22 +5925,23 @@ function tariffBarHeight(price, minP, maxP) {
   return Math.max(2, Math.round(((price - minP) / range) * 92) + 4);
 }
 
-/** Price Y on Live System chart: 0 PLN = energy zero line, 4 PLN = SOC 100%. */
-function buildAcrPriceYScale(energyMinVal, energyMaxVal) {
-  const range = energyMaxVal - energyMinVal || 1;
-  const topEnergy0 = 2 + ((energyMaxVal - 0) / range) * 96;
+/** Price Y on EO chart: 0 PLN = SOC 0%, G12 peak = 50%, 2×peak = SOC 100%. */
+function buildAcrPriceYScale() {
+  // Same vertical mapping as socY() in renderAccrualsChart.
+  const topSoc0 = Math.max(2, Math.round(100 - 0));
   const topSoc100 = Math.max(2, Math.round(100 - 96));
-  const baselineBottomPct = 100 - topEnergy0;
+  const baselineBottomPct = 100 - topSoc0;
   const ceilingBottomPct = 100 - topSoc100;
-  const spanBottom = ceilingBottomPct - baselineBottomPct;
+  const spanBottom = Math.max(0, ceilingBottomPct - baselineBottomPct);
   const chartBottomPct = 2;
   const spanBelowBaseline = Math.max(0, baselineBottomPct - chartBottomPct);
+  const maxP = acrPriceYMaxPln();
 
   function priceToBarStyle(price) {
     if (price == null || price <= 0) {
       return { bottom: `${baselineBottomPct}%`, height: '0%' };
     }
-    const t = Math.min(1, price / ACR_PRICE_Y_MAX_PLN);
+    const t = Math.min(1, price / maxP);
     return {
       bottom: `${baselineBottomPct}%`,
       height: `${t * spanBottom}%`,
@@ -5951,10 +5955,10 @@ function buildAcrPriceYScale(energyMinVal, energyMaxVal) {
     }
     let fromBottomPct;
     if (p >= 0) {
-      const t = Math.min(1, p / ACR_PRICE_Y_MAX_PLN);
+      const t = Math.min(1, p / maxP);
       fromBottomPct = baselineBottomPct + t * spanBottom;
     } else {
-      const t = Math.max(-1, p / ACR_PRICE_Y_MAX_PLN);
+      const t = Math.max(-1, p / maxP);
       fromBottomPct = baselineBottomPct + t * spanBelowBaseline;
     }
     return height * (1 - fromBottomPct / 100);
@@ -5962,7 +5966,7 @@ function buildAcrPriceYScale(energyMinVal, energyMaxVal) {
 
   return {
     minP: 0,
-    maxP: ACR_PRICE_Y_MAX_PLN,
+    maxP,
     priceToBarStyle,
     priceToPxY,
     offpeakPxY(height) {
@@ -6384,10 +6388,7 @@ function renderAcrPriceBackground(dateStr) {
   const areaEl = document.getElementById('acr-chart-area');
   if (!columnsEl || !areaEl) return;
 
-  const energyRange = window._acrChartEnergyRange;
-  if (!energyRange) return;
-
-  const scale = buildAcrPriceYScale(energyRange.minVal, energyRange.maxVal);
+  const scale = buildAcrPriceYScale();
   const timeline = buildAcrPriceTimeline(dateStr);
   columnsEl.innerHTML = '';
   if (splineEl) splineEl.innerHTML = '';
@@ -6506,6 +6507,7 @@ function applyAcrChartLegendVisibility() {
   setDisplay(document.getElementById('acr-line-grid-buy'), 'grid-buy');
   setDisplay(document.getElementById('acr-line-grid-sell'), 'grid-sell');
   setDisplay(document.getElementById('acr-line-soc'), 'soc');
+  document.querySelectorAll('.acr-pv-seg').forEach((el) => setDisplay(el, 'pv'));
   document.querySelectorAll('.acr-grid-buy-seg').forEach((el) => setDisplay(el, 'grid-buy'));
   document.querySelectorAll('.acr-grid-sell-seg').forEach((el) => setDisplay(el, 'grid-sell'));
   document.querySelectorAll('.acr-soc-seg').forEach((el) => setDisplay(el, 'soc'));
@@ -6856,10 +6858,13 @@ function renderAccrualsChart(d) {
   let maxVal = values.length ? Math.max(...values) : 1;
   minVal = Math.floor(minVal * 10) / 10;
   maxVal = Math.ceil(maxVal * 10) / 10;
-  const span = maxVal - minVal || 1;
-  const pad = Math.max(span * 0.05, 0.1);
-  minVal -= pad;
-  maxVal += pad;
+  // Pin zero to the vertical center: symmetric ±absMax around 0.
+  let absMax = Math.max(Math.abs(minVal), Math.abs(maxVal), 0.1);
+  absMax = Math.ceil(absMax * 10) / 10;
+  const pad = Math.max(absMax * 0.05, 0.1);
+  absMax = Math.ceil((absMax + pad) * 10) / 10;
+  minVal = -absMax;
+  maxVal = absMax;
   const range = maxVal - minVal || 1;
   window._acrChartEnergyRange = { minVal, maxVal };
 
@@ -6871,7 +6876,7 @@ function renderAccrualsChart(d) {
     return 2 + ((maxVal - val) / range) * 96;
   }
 
-  // Signed Y-axis: span from data min to max (zero line at proportional height).
+  // Signed Y-axis: zero fixed at mid-height.
   if (yEl && aEl) {
     clearDashGrid(aEl);
     yEl.innerHTML = '';
@@ -6887,12 +6892,6 @@ function renderAccrualsChart(d) {
       const top = energyAxisTop(val);
       grid.style.cssText = `top:${top}%;border-top:1px solid ${DASH_CHART.gridH};`;
       aEl.appendChild(grid);
-    }
-    if (minVal < 0 && maxVal > 0) {
-      const zeroGrid = document.createElement('div');
-      zeroGrid.className = 'dash-grid-h absolute w-full pointer-events-none';
-      zeroGrid.style.cssText = `top:${energyAxisTop(0)}%;border-top:1px solid ${DASH_CHART.gridHZero};`;
-      aEl.appendChild(zeroGrid);
     }
     addDashboardVerticalGrid(aEl, 24);
   }
@@ -6950,10 +6949,55 @@ function renderAccrualsChart(d) {
     el.setAttribute('points', linePtsZeroBaseline(data, yFn));
   }
 
-  setLine('acr-line-pv',        h.pv,   energyY);
+  /** Draw only positive energy samples; break segments across zeros/nulls. */
+  function setEnergyLineSkipZero(id, data, yFn, segClass, style) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const parent = el.parentNode;
+    parent.querySelectorAll('.' + segClass).forEach(n => n.remove());
+    const yZero = yFn(0);
+    let segment = [];
+    const segments = [];
+    for (let i = 0; i < data.length; i++) {
+      const raw = data[i];
+      const n = raw == null ? null : Number(raw);
+      if (n != null && Number.isFinite(n) && n > 0) {
+        const y = yFn(n);
+        if (y != null && y !== yZero) segment.push(`${xPos(i)},${y}`);
+        else if (segment.length) {
+          segments.push(segment.join(' '));
+          segment = [];
+        }
+      } else if (segment.length) {
+        segments.push(segment.join(' '));
+        segment = [];
+      }
+    }
+    if (segment.length) segments.push(segment.join(' '));
+
+    el.setAttribute('points', segments[0] || '');
+    segments.slice(1).forEach(pts => {
+      const seg = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      seg.setAttribute('fill', 'none');
+      seg.setAttribute('stroke', style.stroke);
+      seg.setAttribute('stroke-width', DASH_CHART.lineWidth);
+      seg.setAttribute('vector-effect', 'non-scaling-stroke');
+      seg.setAttribute('opacity', style.opacity);
+      if (style.dasharray) seg.setAttribute('stroke-dasharray', style.dasharray);
+      seg.setAttribute('points', pts);
+      seg.classList.add(segClass);
+      parent.insertBefore(seg, el.nextSibling);
+    });
+  }
+
   setLine('acr-line-load',      h.load, energyY);
   setGridLine('acr-line-grid-buy',  h.grid_buy,  energyY, 'acr-grid-buy-seg');
-  setGridLine('acr-line-grid-sell', h.grid_sell, energyY, 'acr-grid-sell-seg');
+  setEnergyLineSkipZero('acr-line-pv', h.pv || [], energyY, 'acr-pv-seg', {
+    stroke: '#f59e0b', opacity: '0.9',
+  });
+  setEnergyLineSkipZero('acr-line-grid-sell', h.grid_sell || [], energyY, 'acr-grid-sell-seg', {
+    stroke: '#4ade80', opacity: '0.85', dasharray: DASH_CHART.dashArray,
+  });
 
   // SOC — separate segments so gaps do not draw diagonals.
   const socEl = document.getElementById('acr-line-soc');
