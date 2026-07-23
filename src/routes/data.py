@@ -32,6 +32,7 @@ from ..plan_simulation import (
     build_buy_tariff_payload,
     build_plan_simulation,
     extract_actual_soc_q15,
+    get_simulation_for_date,
     hourly_plan_refresh,
 )
 from ..plan_timer_override import is_timer_schedule_hour_editable, set_timer_schedule_override
@@ -181,12 +182,17 @@ async def api_history_month(month: str, refresh: bool = False) -> dict[str, Any]
 
 
 @router.get("/api/simulation")
-async def api_simulation(refresh: bool = False) -> dict[str, Any]:
-    """Return EA plan. ``?refresh=1`` uses the same path as :00/:15/:30/:45 jobs."""
+async def api_simulation(
+    refresh: bool = False,
+    date: str | None = None,
+) -> dict[str, Any]:
+    """Return EA plan for today, or a past day history view.
+
+    ``?refresh=1`` — same path as :00/:15/:30/:45 (today only).
+    ``?date=YYYY-MM-DD`` — past day from archive (timers) or Influx rebuild.
+    """
     cfg = load_config()
-    if refresh:
-        return await hourly_plan_refresh(cfg)
-    return await build_plan_simulation(cfg, invalidate_inputs=False)
+    return await get_simulation_for_date(cfg, date, refresh=refresh)
 
 
 @router.post("/api/plan/timer-schedule")

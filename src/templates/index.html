@@ -1420,7 +1420,10 @@
       width: 100%;
       max-width: 100%;
       margin: 0 auto;
+      /* Match SVG viewBox 420×300 so pipes stay aligned with nodes. */
       aspect-ratio: 420 / 300;
+      container-type: inline-size;
+      container-name: live-flow;
     }
     .live-system-cards {
       display: none;
@@ -1457,13 +1460,22 @@
       width: 26%;
       text-align: center;
       z-index: 2;
-      line-height: 1.2;
+      line-height: 1.15;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      /* Labels stay in normal flow — never painted over the icon. */
+      gap: 0.12em;
     }
     .flow-node img {
-      width: 100%;
+      /* Shrink art so watt/SOC text fits under/above without covering plates. */
+      width: 78%;
       height: auto;
       display: block;
       margin: 0 auto;
+      flex-shrink: 0;
+      position: relative;
+      z-index: 0;
     }
     .flow-node-solar { left: 0; top: 0; }
     .flow-node-battery { left: 0; bottom: 0; }
@@ -1476,19 +1488,25 @@
       width: 24%;
       z-index: 3;
     }
-    .flow-w {
-      font-size: 14px;
-      font-weight: 700;
-      color: #374151;
-      margin-top: 1px;
-      font-variant-numeric: tabular-nums;
+    .flow-node-inverter img {
+      width: 100%;
     }
+    /* Fluid type from stage width — outside icons only. */
+    .flow-w,
     .flow-soc {
-      font-size: 14px;
+      position: static;
+      font-size: clamp(11px, 3.4cqi, 15px);
       font-weight: 700;
       color: #374151;
-      margin-bottom: 1px;
+      line-height: 1.1;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
       font-variant-numeric: tabular-nums;
+      margin: 0;
+      z-index: 1;
+      pointer-events: none;
     }
     @media (max-width: 767px) {
       .live-flow-wrap {
@@ -1499,36 +1517,23 @@
         max-width: 22rem;
         margin-left: auto;
         margin-right: auto;
-        aspect-ratio: 420 / 340;
+        aspect-ratio: 420 / 300;
       }
       .flow-node {
         width: 30%;
       }
+      .flow-node img {
+        width: 76%;
+      }
       .flow-node-inverter {
         width: 22%;
       }
+      .flow-node-inverter img {
+        width: 100%;
+      }
       .flow-w,
       .flow-soc {
-        font-size: 17px;
-        line-height: 1.1;
-        max-width: 100%;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .flow-node-battery .flow-soc {
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        margin-bottom: 0;
-        z-index: 1;
-      }
-      .flow-node-battery img {
-        margin-top: 0.875rem;
-      }
-      .flow-w {
-        margin-top: 0.125rem;
+        font-size: clamp(12px, 4cqi, 16px);
       }
     }
     /* Tall desktop: allow a larger Live System once vertical budget exists */
@@ -1538,13 +1543,13 @@
       }
       .flow-w,
       .flow-soc {
-        font-size: 18px;
+        font-size: clamp(13px, 3.6cqi, 17px);
       }
       .dashboard-col-live .dashboard-col-head h2 {
         font-size: 18px;
       }
       .energy-overview-cards .dash-card-value {
-        font-size: 22px;
+        font-size: clamp(18px, 4.5cqi, 22px);
       }
     }
     @media (pointer: fine) {
@@ -2008,15 +2013,24 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 0.375rem;
       min-width: 0;
+      container-type: inline-size;
+      container-name: eo-cards;
     }
+    /*
+      EO plaque: two columns — title (left) + unit/value (right).
+      Survives narrow/wide aspect ratios: title can wrap; value stays readable
+      on the right, vertically centered in the plaque.
+    */
     .energy-metric-card {
       display: flex;
       flex-direction: column;
-      justify-content: flex-start;
-      min-height: 0;
-      padding: 0.375rem 0.5rem;
+      /* Content-sized by default. height:100% collapses plaques on mobile. */
+      height: auto;
+      min-height: 3.25rem;
+      padding: 0.55rem 0.75rem;
       position: relative;
       overflow: hidden;
+      box-sizing: border-box;
     }
     .eo-plan-bg {
       position: absolute;
@@ -2043,29 +2057,65 @@
     .energy-metric-card-inner {
       position: relative;
       z-index: 1;
-      display: flex;
-      flex-direction: column;
-      flex: 1;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content;
+      align-items: center;
+      justify-items: stretch;
+      column-gap: 0.65rem;
+      flex: 0 1 auto;
       min-height: 0;
       min-width: 0;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .eo-card-label {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-self: center;
+      gap: 0.12rem;
+      padding-right: 0.1rem;
+    }
+    .eo-card-title {
+      margin: 0;
+      font-size: 10px;
+      line-height: 1.25;
+      color: #6b7280;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      word-break: break-word;
     }
     .eo-plan-value {
-      position: absolute;
-      right: 0;
-      bottom: 0;
+      position: static;
       font-size: 10px;
-      line-height: 1;
+      line-height: 1.1;
       color: #6b7280;
       font-variant-numeric: tabular-nums;
       pointer-events: none;
     }
-    .energy-metric-card-head {
+    .eo-plan-value.is-empty {
+      display: none;
+    }
+    .eo-card-unit {
+      margin: 0;
+      font-size: 10px;
+      line-height: 1.1;
+      color: #9ca3af;
+      white-space: nowrap;
+    }
+    .eo-card-metric {
       display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 0.5rem;
-      min-width: 0;
+      flex-direction: row;
+      align-items: center;
+      justify-content: flex-end;
+      justify-self: end;
+      align-self: center;
       flex-shrink: 0;
+      min-width: 0;
+      max-width: none;
     }
     .dashboard-col-live .dashboard-col-head h2 {
       font-size: 14px;
@@ -2074,21 +2124,20 @@
     .dashboard-col-energy #accruals-date {
       font-size: 10px;
     }
-    .energy-overview-cards .energy-metric-card-head p,
-    .energy-overview-cards .energy-metric-card-head span {
-      font-size: 10px;
-    }
     .energy-overview-cards .dash-card-value {
-      font-size: 18px;
-      line-height: 1;
-      margin-top: 0.125rem;
-      flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      text-align: center;
-      width: 100%;
+      font-size: clamp(14px, 5.2cqi, 20px);
+      line-height: 1.05;
+      margin: 0;
+      flex: 0 0 auto;
+      display: block;
+      text-align: right;
+      width: auto;
+      max-width: 100%;
       min-height: 0;
+      font-variant-numeric: tabular-nums;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .energy-overview-cards [data-card-id]:not([data-card-id="energy-cost"]):not([data-card-id="service-cost"]) .dash-card-value {
       color: #374151;
@@ -2097,6 +2146,63 @@
       .energy-overview-cards {
         grid-template-rows: repeat(4, 1fr);
         align-content: stretch;
+      }
+      .energy-metric-card {
+        height: 100%;
+        min-height: 0;
+      }
+      .energy-metric-card-inner {
+        flex: 1 1 0;
+        align-items: stretch;
+      }
+      .eo-card-label {
+        height: 100%;
+        align-self: stretch;
+      }
+      .eo-card-metric {
+        height: 100%;
+        align-self: stretch;
+      }
+    }
+    @media (max-width: 767px) {
+      .energy-overview-cards {
+        grid-template-rows: none;
+        height: auto !important;
+      }
+      .energy-metric-card {
+        height: auto;
+        min-height: 3.5rem;
+        padding: 0.6rem 0.65rem;
+      }
+      .energy-metric-card-inner {
+        flex: 0 0 auto;
+        align-items: center;
+      }
+      .eo-card-label,
+      .eo-card-metric {
+        height: auto;
+        align-self: center;
+      }
+      .eo-card-title {
+        font-size: 10px;
+        line-height: 1.2;
+        -webkit-line-clamp: 2;
+      }
+      .eo-plan-value {
+        font-size: 9px;
+        line-height: 1.15;
+        white-space: nowrap;
+      }
+      .energy-overview-cards .dash-card-value {
+        font-size: clamp(15px, 7cqi, 18px);
+      }
+    }
+    @container eo-cards (max-width: 280px) {
+      .energy-overview-cards .dash-card-value {
+        font-size: clamp(13px, 6cqi, 17px);
+      }
+      .eo-card-title {
+        font-size: 9px;
       }
     }
     .energy-overview-chart {
@@ -2262,67 +2368,95 @@
           <div class="eo-plan-bg eo-plan-bg--amber" aria-hidden="true"></div>
           <div class="eo-plan-fill eo-plan-fill--amber" aria-hidden="true"></div>
           <div class="energy-metric-card-inner">
-            <div class="energy-metric-card-head">
-              <p class="text-xs text-gray-500">PV</p>
-              <span class="text-xs text-gray-500">kWh</span>
+            <div class="eo-card-label">
+              <p class="eo-card-title">PV</p>
+              <span class="eo-card-unit">kWh</span>
+              <span class="eo-plan-value is-empty" aria-hidden="true"></span>
             </div>
-            <p class="dash-card-value font-bold" id="m-pv-energy">—</p>
-            <span class="eo-plan-value" aria-hidden="true">—</span>
+            <div class="eo-card-metric">
+              <p class="dash-card-value font-bold" id="m-pv-energy">—</p>
+            </div>
           </div>
         </div>
         <div class="bg-white rounded-xl border border-gray-200 energy-metric-card" data-card-id="load">
           <div class="eo-plan-bg eo-plan-bg--blue" aria-hidden="true"></div>
           <div class="eo-plan-fill eo-plan-fill--blue" aria-hidden="true"></div>
           <div class="energy-metric-card-inner">
-            <div class="energy-metric-card-head">
-              <p class="text-xs text-gray-500">Consumption</p>
-              <span class="text-xs text-gray-500">kWh</span>
+            <div class="eo-card-label">
+              <p class="eo-card-title">Consumption</p>
+              <span class="eo-card-unit">kWh</span>
+              <span class="eo-plan-value is-empty" aria-hidden="true"></span>
             </div>
-            <p class="dash-card-value font-bold" id="m-load-energy">—</p>
-            <span class="eo-plan-value" aria-hidden="true">—</span>
+            <div class="eo-card-metric">
+              <p class="dash-card-value font-bold" id="m-load-energy">—</p>
+            </div>
           </div>
         </div>
         <div class="bg-white rounded-xl border border-gray-200 energy-metric-card" data-card-id="grid-buy">
-          <div class="energy-metric-card-head">
-            <p class="text-xs text-gray-500">Grid Used</p>
-            <span class="text-xs text-gray-500">kWh</span>
+          <div class="energy-metric-card-inner">
+            <div class="eo-card-label">
+              <p class="eo-card-title">Grid Used</p>
+              <span class="eo-card-unit">kWh</span>
+            </div>
+            <div class="eo-card-metric">
+              <p class="dash-card-value font-bold" id="m-grid-buy">—</p>
+            </div>
           </div>
-          <p class="dash-card-value font-bold" id="m-grid-buy">—</p>
         </div>
         <div class="bg-white rounded-xl border border-gray-200 energy-metric-card" data-card-id="grid-sell">
-          <div class="energy-metric-card-head">
-            <p class="text-xs text-gray-500">Grid export</p>
-            <span class="text-xs text-gray-500">kWh</span>
+          <div class="energy-metric-card-inner">
+            <div class="eo-card-label">
+              <p class="eo-card-title">Grid export</p>
+              <span class="eo-card-unit">kWh</span>
+            </div>
+            <div class="eo-card-metric">
+              <p class="dash-card-value font-bold" id="m-grid-sell">—</p>
+            </div>
           </div>
-          <p class="dash-card-value font-bold" id="m-grid-sell">—</p>
         </div>
         <div class="bg-white rounded-xl border border-gray-200 energy-metric-card" data-card-id="bat-charge">
-          <div class="energy-metric-card-head">
-            <p class="text-xs text-gray-500">Battery charged</p>
-            <span class="text-xs text-gray-500">kWh</span>
+          <div class="energy-metric-card-inner">
+            <div class="eo-card-label">
+              <p class="eo-card-title">Battery charged</p>
+              <span class="eo-card-unit">kWh</span>
+            </div>
+            <div class="eo-card-metric">
+              <p class="dash-card-value font-bold" id="m-bat-charged">—</p>
+            </div>
           </div>
-          <p class="dash-card-value font-bold" id="m-bat-charged">—</p>
         </div>
         <div class="bg-white rounded-xl border border-gray-200 energy-metric-card" data-card-id="bat-discharge">
-          <div class="energy-metric-card-head">
-            <p class="text-xs text-gray-500">Battery discharged</p>
-            <span class="text-xs text-gray-500">kWh</span>
+          <div class="energy-metric-card-inner">
+            <div class="eo-card-label">
+              <p class="eo-card-title">Battery discharged</p>
+              <span class="eo-card-unit">kWh</span>
+            </div>
+            <div class="eo-card-metric">
+              <p class="dash-card-value font-bold" id="m-bat-discharged">—</p>
+            </div>
           </div>
-          <p class="dash-card-value font-bold" id="m-bat-discharged">—</p>
         </div>
         <div class="bg-white rounded-xl border border-gray-200 energy-metric-card" data-card-id="energy-cost">
-          <div class="energy-metric-card-head">
-            <p class="text-xs text-gray-500">Energy Cost</p>
-            <span class="text-xs text-gray-500">PLN</span>
+          <div class="energy-metric-card-inner">
+            <div class="eo-card-label">
+              <p class="eo-card-title">Energy Cost</p>
+              <span class="eo-card-unit">PLN</span>
+            </div>
+            <div class="eo-card-metric">
+              <p class="dash-card-value font-bold text-gray-400 tabular-nums" id="m-energy-cost">—</p>
+            </div>
           </div>
-          <p class="dash-card-value font-bold text-gray-400 tabular-nums" id="m-energy-cost">—</p>
         </div>
         <div class="bg-white rounded-xl border border-gray-200 energy-metric-card" data-card-id="service-cost">
-          <div class="energy-metric-card-head">
-            <p class="text-xs text-gray-500">Service Cost</p>
-            <span class="text-xs text-gray-500">PLN</span>
+          <div class="energy-metric-card-inner">
+            <div class="eo-card-label">
+              <p class="eo-card-title">Service Cost</p>
+              <span class="eo-card-unit">PLN</span>
+            </div>
+            <div class="eo-card-metric">
+              <p class="dash-card-value font-bold text-gray-400 tabular-nums" id="m-service-cost">—</p>
+            </div>
           </div>
-          <p class="dash-card-value font-bold text-gray-400 tabular-nums" id="m-service-cost">—</p>
         </div>
       </div>
     </div>
@@ -2957,13 +3091,20 @@
   <section class="sim-history-grid">
     <div class="sim-history-block sim-history-block--ea">
     <div class="sim-history-head-row">
-      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider truncate min-w-0" id="sim-title">Energy arbitrage — minimize net bill</h2>
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider truncate min-w-0" id="sim-title" title="minimize net bill">Energy arbitrage</h2>
+      <label class="flex items-center gap-1.5 whitespace-nowrap text-xs text-gray-500 shrink-0" lang="pl-PL">
+        <span>Day</span>
+        <input type="date" id="sim-date"
+          class="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-800 tabular-nums"
+          onchange="loadSimulationForDate(this.value)" />
+      </label>
       <button type="button" id="sim-price-cols-toggle"
         class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0"
         title="Show or hide Buy Price and Sell Price columns">Buy/Sell ▶</button>
-      <button type="button" onclick="refreshQuarterCycle({ silent: false })"
+      <button type="button" id="sim-refresh-btn" onclick="refreshSimView()"
         class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0">Refresh</button>
     </div>
+    <p id="sim-history-hint" class="hidden text-[11px] text-amber-700 mt-1 mb-0"></p>
     <div class="sim-history-table-wrap sim-table-wrap bg-white rounded-xl border border-gray-200">
       <table class="sim-table sim-table-ea sim-ea-price-collapsed">
         <colgroup>
@@ -3829,14 +3970,90 @@ function showSimulationTab() {
 
 function renderSimulationBundle(data) {
   applyPlanPricesFromSimulation(data);
+  updateSimHistoryChrome(data);
   renderSimulationView(data);
   refreshEnergyOverviewPlanFill();
   refreshAcrPriceBgIfDashboard();
 }
 
+function simViewIsToday() {
+  return (document.getElementById('sim-date')?.value || DEBUG_TODAY) === DEBUG_TODAY;
+}
+
+function initSimDate() {
+  const el = document.getElementById('sim-date');
+  if (!el) return;
+  el.value = DEBUG_TODAY;
+  el.max = DEBUG_TODAY;
+}
+
+function updateSimHistoryChrome(data) {
+  const hint = document.getElementById('sim-history-hint');
+  const refreshBtn = document.getElementById('sim-refresh-btn');
+  if (!data) return;
+  const past = !!data.history_view;
+  if (refreshBtn) {
+    refreshBtn.title = past
+      ? 'Reload this day from archive / Influx'
+      : 'Refresh plan (quarter cycle)';
+  }
+  if (!hint) return;
+  if (!past) {
+    hint.classList.add('hidden');
+    hint.textContent = '';
+    return;
+  }
+  const src = data.history_source || '';
+  if (src === 'archive') {
+    hint.textContent = 'History day (archived plan — Timer Schedule preserved).';
+  } else {
+    hint.textContent = 'History day (Influx actuals — Timer Schedule not stored for this day).';
+  }
+  hint.classList.remove('hidden');
+}
+
+async function refreshSimView() {
+  const date = document.getElementById('sim-date')?.value || DEBUG_TODAY;
+  if (date === DEBUG_TODAY) {
+    await refreshQuarterCycle({ silent: false });
+    return;
+  }
+  await loadSimulationForDate(date, { force: true });
+}
+
+async function loadSimulationForDate(dateStr, options = {}) {
+  const date = dateStr || DEBUG_TODAY;
+  const el = document.getElementById('sim-date');
+  if (el && el.value !== date) el.value = date;
+  const bodyTotal = document.getElementById('sim-body-total');
+  if (bodyTotal) {
+    bodyTotal.innerHTML = `<tr><td colspan="${SIM_TABLE_COLS}" class="px-3 py-6 text-center text-gray-600">Loading…</td></tr>`;
+    simHistoryApplyCachedFont(document.querySelector('.sim-table-ea'));
+  }
+  try {
+    const q = new URLSearchParams();
+    if (date !== DEBUG_TODAY) q.set('date', date);
+    if (options.force && date === DEBUG_TODAY) q.set('refresh', '1');
+    const qs = q.toString() ? `?${q}` : '';
+    const res = await fetch('api/simulation' + qs);
+    simData = await res.json();
+    // Past days: expand hourly rows by default.
+    if (simData?.history_view) {
+      const planBody = document.getElementById('sim-body-plan');
+      if (planBody) planBody.classList.remove('hidden');
+    }
+    renderSimulationBundle(simData);
+    if (date === DEBUG_TODAY && forecastData) renderForecast();
+  } catch (e) {
+    if (bodyTotal) {
+      bodyTotal.innerHTML = `<tr><td colspan="${SIM_TABLE_COLS}" class="px-3 py-6 text-center text-red-500">Failed to load simulation.</td></tr>`;
+    }
+  }
+}
+
 /** RCE + G12 buy tariff from plan simulation (no separate price API). */
 function applyPlanPricesFromSimulation(data) {
-  if (!data) return;
+  if (!data || data.history_view) return;
   if (data.buy_tariff) {
     buyTariffData = data.buy_tariff;
     updateBuyTariffLabels(data.buy_tariff.tariff_name);
@@ -6820,9 +7037,9 @@ function updateEnergyPlanFillOne(metric, actual, plan) {
   const planVal = Number(plan);
 
   if (planEl) {
-    planEl.textContent = Number.isFinite(planVal) && planVal > 0
-      ? planVal.toFixed(2)
-      : '—';
+    const hasPlan = Number.isFinite(planVal) && planVal > 0;
+    planEl.textContent = hasPlan ? `Plan: ${planVal.toFixed(2)}` : '';
+    planEl.classList.toggle('is-empty', !hasPlan);
   }
   if (!fill) return;
 
@@ -6949,20 +7166,23 @@ function renderAccrualsChart(d) {
     el.setAttribute('points', linePtsZeroBaseline(data, yFn));
   }
 
-  /** Draw only positive energy samples; break segments across zeros/nulls. */
-  function setEnergyLineSkipZero(id, data, yFn, segClass, style) {
+  /** Positive samples only; break on null/~0. Never anchor to the zero baseline. */
+  function setPositiveLineSkipGaps(id, data, yFn, segClass, style) {
     const el = document.getElementById(id);
     if (!el) return;
     const parent = el.parentNode;
     parent.querySelectorAll('.' + segClass).forEach(n => n.remove());
+    const NEAR_ZERO_KW = 0.05;
     const yZero = yFn(0);
     let segment = [];
     const segments = [];
     for (let i = 0; i < data.length; i++) {
       const raw = data[i];
-      const n = raw == null ? null : Number(raw);
-      if (n != null && Number.isFinite(n) && n > 0) {
+      const n = raw == null || raw === '' ? null : Number(raw);
+      const usable = n != null && Number.isFinite(n) && n > NEAR_ZERO_KW;
+      if (usable) {
         const y = yFn(n);
+        // Skip values that round onto the zero axis (no zero pixels, no pull-to-zero).
         if (y != null && y !== yZero) segment.push(`${xPos(i)},${y}`);
         else if (segment.length) {
           segments.push(segment.join(' '));
@@ -6990,11 +7210,88 @@ function renderAccrualsChart(d) {
     });
   }
 
-  setLine('acr-line-load',      h.load, energyY);
-  setGridLine('acr-line-grid-buy',  h.grid_buy,  energyY, 'acr-grid-buy-seg');
-  setEnergyLineSkipZero('acr-line-pv', h.pv || [], energyY, 'acr-pv-seg', {
+  /** Grid export only: draw positive bursts; rise from / return to zero only when
+   *  the previous OR next two 10-min ticks are ~0 (null/missing does not count). */
+  function setEnergyLineSkipZero(id, data, yFn, segClass, style) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const parent = el.parentNode;
+    parent.querySelectorAll('.' + segClass).forEach(n => n.remove());
+    const yZero = yFn(0);
+    const NEAR_ZERO_KW = 0.05;
+    const isNearZero = (raw) => {
+      if (raw == null || raw === '') return false;
+      const n = Number(raw);
+      return Number.isFinite(n) && Math.abs(n) <= NEAR_ZERO_KW;
+    };
+    const pairNearZero = (startIdx) => (
+      startIdx >= 0
+      && startIdx + 1 < data.length
+      && isNearZero(data[startIdx])
+      && isNearZero(data[startIdx + 1])
+    );
+    // Boundary may anchor to zero only with a 2-tick ~0 plateau before or after it.
+    const canAnchorZero = (boundaryIdx) => (
+      pairNearZero(boundaryIdx - 2) || pairNearZero(boundaryIdx)
+    );
+
+    let segment = [];
+    const segments = [];
+    let inSeg = false;
+    let lastPosI = -1;
+    for (let i = 0; i < data.length; i++) {
+      const raw = data[i];
+      const n = raw == null || raw === '' ? null : Number(raw);
+      const usable = n != null && Number.isFinite(n) && n > NEAR_ZERO_KW;
+      const y = usable ? yFn(n) : null;
+      if (usable && y != null) {
+        if (!inSeg) {
+          if (yZero != null && canAnchorZero(i)) {
+            const i0 = i > 0 ? i - 1 : i;
+            segment.push(`${xPos(i0)},${yZero}`);
+          }
+          inSeg = true;
+        }
+        segment.push(`${xPos(i)},${y}`);
+        lastPosI = i;
+      } else if (inSeg) {
+        if (yZero != null && canAnchorZero(i)) {
+          segment.push(`${xPos(i)},${yZero}`);
+        }
+        segments.push(segment.join(' '));
+        segment = [];
+        inSeg = false;
+      }
+    }
+    if (inSeg && segment.length) {
+      if (yZero != null && lastPosI >= 0 && canAnchorZero(lastPosI + 1)) {
+        segment.push(`${xPos(lastPosI + 1)},${yZero}`);
+      }
+      segments.push(segment.join(' '));
+    }
+
+    el.setAttribute('points', segments[0] || '');
+    segments.slice(1).forEach(pts => {
+      const seg = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      seg.setAttribute('fill', 'none');
+      seg.setAttribute('stroke', style.stroke);
+      seg.setAttribute('stroke-width', DASH_CHART.lineWidth);
+      seg.setAttribute('vector-effect', 'non-scaling-stroke');
+      seg.setAttribute('opacity', style.opacity);
+      if (style.dasharray) seg.setAttribute('stroke-dasharray', style.dasharray);
+      seg.setAttribute('points', pts);
+      seg.classList.add(segClass);
+      parent.insertBefore(seg, el.nextSibling);
+    });
+  }
+
+  // PV: skip ~0 samples and gaps; do not pull the line down to the zero axis.
+  setPositiveLineSkipGaps('acr-line-pv', h.pv || [], energyY, 'acr-pv-seg', {
     stroke: '#f59e0b', opacity: '0.9',
   });
+  setLine('acr-line-load',      h.load, energyY);
+  setGridLine('acr-line-grid-buy',  h.grid_buy,  energyY, 'acr-grid-buy-seg');
+  // Only Grid export rises from / returns to zero between bursts.
   setEnergyLineSkipZero('acr-line-grid-sell', h.grid_sell || [], energyY, 'acr-grid-sell-seg', {
     stroke: '#4ade80', opacity: '0.85', dasharray: DASH_CHART.dashArray,
   });
@@ -7106,7 +7403,7 @@ async function refreshQuarterCycle(options = {}) {
   }
   await loadForecast(true, { syncSliders });
   await preloadSimulation(force);
-  if (currentTab === 'simulation' && simData) {
+  if (currentTab === 'simulation' && simData && simViewIsToday()) {
     renderSimulationBundle(simData);
   }
   if (currentTab === 'dashboard') {
@@ -7751,10 +8048,20 @@ function bindSimPriceColsToggle() {
 }
 
 function renderSimulationView(data) {
-  if (!data || data.cache_miss || !data.rows || !data.rows.length) {
+  if (!data || data.cache_miss) {
     const bodyTotal = document.getElementById('sim-body-total');
     if (bodyTotal) {
       bodyTotal.innerHTML = `<tr><td colspan="${SIM_TABLE_COLS}" class="px-3 py-6 text-center text-gray-500">Loading plan…</td></tr>`;
+    }
+    simHistoryApplyCachedFont(document.querySelector('.sim-table-ea'));
+    return;
+  }
+  const hasDetail = (data.rows && data.rows.length)
+    || (data.history_rows && data.history_rows.length);
+  if (!hasDetail) {
+    const bodyTotal = document.getElementById('sim-body-total');
+    if (bodyTotal) {
+      bodyTotal.innerHTML = `<tr><td colspan="${SIM_TABLE_COLS}" class="px-3 py-6 text-center text-gray-500">No plan rows.</td></tr>`;
     }
     simHistoryApplyCachedFont(document.querySelector('.sim-table-ea'));
     return;
@@ -7763,7 +8070,12 @@ function renderSimulationView(data) {
 }
 
 async function loadSimulation(forceRefresh = false, silent = false) {
-  if (!forceRefresh && simData && simData.rows && simData.rows.length && !simData.cache_miss) {
+  const date = document.getElementById('sim-date')?.value || DEBUG_TODAY;
+  if (date !== DEBUG_TODAY) {
+    await loadSimulationForDate(date, { force: forceRefresh });
+    return;
+  }
+  if (!forceRefresh && simData && simData.rows && simData.rows.length && !simData.cache_miss && !simData.history_view) {
     renderSimulationBundle(simData);
     return;
   }
@@ -7777,11 +8089,11 @@ async function loadSimulation(forceRefresh = false, silent = false) {
     simHistoryApplyCachedFont(document.querySelector('.sim-table-ea'));
   }
   try {
-    const q = forceRefresh ? '?refresh=1' : '';
-    const res = await fetch('api/simulation' + q);
-    simData = await res.json();
-    renderSimulationBundle(simData);
-    if (forecastData) renderForecast();
+  const q = forceRefresh ? '?refresh=1' : '';
+  const res = await fetch('api/simulation' + q);
+  simData = await res.json();
+  renderSimulationBundle(simData);
+  if (forecastData) renderForecast();
   } catch(e) {
     if (bodyTotal) {
       bodyTotal.innerHTML = `<tr><td colspan="${SIM_TABLE_COLS}" class="px-3 py-6 text-center text-red-500">Failed to load simulation.</td></tr>`;
@@ -7790,6 +8102,8 @@ async function loadSimulation(forceRefresh = false, silent = false) {
 }
 
 async function preloadSimulation(forceRefresh = false) {
+  // Don't clobber a past-day history view with today's live plan.
+  if (!simViewIsToday()) return;
   try {
     const q = forceRefresh ? '?refresh=1' : '';
     const res = await fetch('api/simulation' + q);
@@ -7843,14 +8157,16 @@ function renderSimulation(data) {
   const detailCount = historyRows.length + rows.length;
   if (detailCount && planToggle && planBody) {
     planToggle.classList.remove('hidden');
-    planBody.classList.toggle('hidden', !planExpanded);
+    const expandedNow = !!data.history_view || planExpanded;
+    planBody.classList.toggle('hidden', !expandedNow);
     appendSimPlanRows(planBody, historyRows, rows);
     const planBtn = document.getElementById('sim-plan-btn');
     if (planBtn) {
-      planBtn.dataset.label = 'Rolling Plan';
-      planBtn.textContent = planExpanded
-        ? 'Hide Rolling Plan ▲'
-        : planBtn.dataset.label + ' ▼';
+      const label = data.history_view ? 'Day hours' : 'Rolling Plan';
+      planBtn.dataset.label = label;
+      planBtn.textContent = expandedNow
+        ? `Hide ${label} ▲`
+        : label + ' ▼';
     }
   } else if (planToggle) {
     planToggle.classList.add('hidden');
@@ -9774,6 +10090,7 @@ function syncEnergyCardsToFlow() {
   if (!flow || !cards) return;
   if (window.innerWidth < 768) {
     cards.style.height = '';
+    cards.style.gridTemplateRows = '';
     return;
   }
   cards.style.height = `${flow.getBoundingClientRect().height}px`;
@@ -9886,6 +10203,7 @@ function initDatePickerClickTargets() {
 // Boot
 // ---------------------------------------------------------------------------
 initAccrualsDate();
+initSimDate();
 initDebugDate();
 initHistoryMonth();
 initDatePickerClickTargets();

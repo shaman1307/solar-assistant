@@ -21,7 +21,7 @@ _LEGACY_EV_JSON = BASE_DIR / "data" / "ev_charging.json"
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 # Monthly history totals mirrored from payload JSON (schema v2+).
 _MONTH_HISTORY_TOTAL_COLUMNS: tuple[tuple[str, str], ...] = (
@@ -106,6 +106,12 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS config_template_meta (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS plan_day_archive (
+            day TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );
         """
     )
@@ -308,11 +314,26 @@ def _apply_schema_migrations(conn: sqlite3.Connection, from_version: int) -> Non
         _migrate_to_v5(conn)
     if from_version < 6:
         _migrate_to_v6(conn)
+    if from_version < 7:
+        _migrate_to_v7(conn)
     conn.execute(
         "UPDATE meta SET value = ? WHERE key = 'schema_version'",
         (str(_SCHEMA_VERSION),),
     )
     conn.commit()
+
+
+def _migrate_to_v7(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS plan_day_archive (
+            day TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    log.info("SQLite schema migrated to v7 (plan_day_archive)")
 
 
 def _now_iso() -> str:
@@ -368,8 +389,12 @@ def write_plan(plan: dict[str, Any], *, now: datetime | None = None) -> None:
     Never deletes the plan. On the same Warsaw day, only future quarters are
     taken from *plan*; past hours and completed q15 slots stay from SQLite
     (see ``guard_future_quarters_on_write``).
+
+    When the calendar day rolls, the previous day's rows (with Timer Schedule)
+    are archived to ``plan_day_archive`` for history browsing.
     """
     from .plan_cache_merge import guard_future_quarters_on_write
+    from .plan_cost import compute_plan_totals
 
     now = now or now_warsaw()
     with _lock:
@@ -385,6 +410,11 @@ def write_plan(plan: dict[str, Any], *, now: datetime | None = None) -> None:
                 log.warning("plan_latest JSON corrupt before write: %s", exc)
                 existing = None
         guarded = guard_future_quarters_on_write(plan, existing, now=now)
+        new_day = str(guarded.get("today_date") or now.strftime("%Y-%m-%d"))
+        if existing:
+            old_day = str(existing.get("today_date") or "")
+            if old_day and old_day < new_day:
+                _archive_plan_day_locked(conn, existing, old_day, compute_plan_totals)
         payload = json.dumps(guarded, ensure_ascii=False, separators=(",", ":"))
         conn.execute(
             """
@@ -397,6 +427,112 @@ def write_plan(plan: dict[str, Any], *, now: datetime | None = None) -> None:
             (payload, _now_iso()),
         )
         conn.commit()
+
+
+def _archive_plan_day_locked(
+    conn: sqlite3.Connection,
+    plan: dict[str, Any],
+    day: str,
+    compute_plan_totals,
+) -> None:
+    """Persist one completed EA day (must hold ``_lock`` / open ``conn``)."""
+    hist = [
+        r for r in (plan.get("history_rows") or [])
+        if str(r.get("plan_date") or "") == day
+    ]
+    live = [
+        r for r in (plan.get("rows") or [])
+        if str(r.get("plan_date") or "") == day
+    ]
+    day_rows = hist + live
+    day_rows.sort(key=lambda r: (int(r.get("hour", 0)), str(r.get("start") or "")))
+    if not day_rows:
+        log.info("plan_day_archive skip %s — no rows", day)
+        return
+    archive = {
+        "today_date": day,
+        "history_rows": day_rows,
+        "rows": [],
+        "totals": compute_plan_totals(day_rows),
+        "g12_tariff_name": plan.get("g12_tariff_name"),
+        "proposed_schedule": plan.get("proposed_schedule"),
+        "computed_at": plan.get("computed_at"),
+        "plan_from_hour": 24,
+        "has_history_rows": True,
+        "history_view": True,
+        "history_source": "archive",
+    }
+    payload = json.dumps(archive, ensure_ascii=False, separators=(",", ":"))
+    conn.execute(
+        """
+        INSERT INTO plan_day_archive(day, payload_json, updated_at)
+        VALUES(?, ?, ?)
+        ON CONFLICT(day) DO UPDATE SET
+            payload_json = excluded.payload_json,
+            updated_at = excluded.updated_at
+        """,
+        (day, payload, _now_iso()),
+    )
+    log.info("plan_day_archive saved %s (%d hours)", day, len(day_rows))
+
+
+def save_plan_day_archive(day: str, payload: dict[str, Any]) -> None:
+    """Upsert a completed EA day archive (YYYY-MM-DD)."""
+    body = dict(payload)
+    body["today_date"] = day
+    body["history_view"] = True
+    body.setdefault("history_source", "archive")
+    body.setdefault("rows", [])
+    body.setdefault("plan_from_hour", 24)
+    text = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            """
+            INSERT INTO plan_day_archive(day, payload_json, updated_at)
+            VALUES(?, ?, ?)
+            ON CONFLICT(day) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                updated_at = excluded.updated_at
+            """,
+            (day, text, _now_iso()),
+        )
+        conn.commit()
+
+
+def load_plan_day_archive(day: str) -> dict[str, Any] | None:
+    """Load archived EA day (YYYY-MM-DD), or None."""
+    with _lock:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT payload_json FROM plan_day_archive WHERE day = ?",
+            (day,),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        data = json.loads(row["payload_json"])
+    except json.JSONDecodeError as exc:
+        log.warning("plan_day_archive JSON corrupt for %s: %s", day, exc)
+        return None
+    data["history_view"] = True
+    data.setdefault("history_source", "archive")
+    return data
+
+
+def list_plan_day_archives(limit: int = 90) -> list[str]:
+    """Newest-first list of archived EA days."""
+    with _lock:
+        conn = _connect()
+        rows = conn.execute(
+            """
+            SELECT day FROM plan_day_archive
+            ORDER BY day DESC
+            LIMIT ?
+            """,
+            (max(1, int(limit)),),
+        ).fetchall()
+    return [str(r["day"]) for r in rows]
 
 
 def delete_plan() -> None:

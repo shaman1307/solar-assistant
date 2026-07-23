@@ -5,7 +5,7 @@ Writes to SA from the current hour's Energy arbitrage Timer Schedule cell
 (e.g. Dis 19:30-20:00 6.51kW cap16%), not merged multi-hour proposed_schedule.
 
 Mode write order (SRNE):
-  Export start: Battery Grid export → Work mode On-grid → Timed discharge on
+  Export start: Work mode On-grid → Battery Grid export → Timed discharge on
   Export end:   Timed discharge off → Work mode Limit home → Battery UPS/home
   Charge start: Limit home + UPS/home → Timed charge on
 """
@@ -225,7 +225,7 @@ async def _peek_limit_home_due(
 
 
 async def run_hour_boundary_start() -> dict[str, Any]:
-    """:00 — export start modes (BDM→WM) then timer; or end: timed off → Limit modes."""
+    """:00 — export start modes (WM→BDM) then timer; or end: timed off → Limit modes."""
     global _last_hour_boundary_sync
 
     now = now_warsaw()
@@ -458,6 +458,6 @@ async def run_hour_boundary_limit_home() -> dict[str, Any]:
 def register_hour_boundary_jobs(scheduler: AsyncIOScheduler) -> None:
     """Limit-home at :15/:30/:45 runs from quarter_plan_refresh (after plan write)."""
     log.info(
-        "Hour boundary SA sync: :00 export start BDM→WM→timer; "
+        "Hour boundary SA sync: :00 export start WM→BDM→timer; "
         ":15/:30/:45 export end timed-off→Limit→UPS/home (after plan refresh).",
     )

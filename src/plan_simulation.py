@@ -27,9 +27,15 @@ from .simulation import (
     apply_locked_hour_labels_from_plan,
     run_simulation,
 )
-from .simulation_config import merge_simulation_defaults, plan_min_soc_pct
-from .sqlite_store import read_plan, write_plan
+from .simulation_config import (
+    get_simulation_params,
+    merge_simulation_defaults,
+    plan_min_soc_pct,
+)
+from .sqlite_store import load_plan_day_archive, read_plan, write_plan
 from .timer_plan import build_hourly_schedule
+from .plan_cost import compute_plan_totals
+from .plan_hourly_actuals import build_completed_history_rows
 
 log = logging.getLogger(__name__)
 
@@ -519,3 +525,97 @@ async def hourly_plan_refresh(
             result.get("plan_export_hours"),
         )
         return result
+
+
+async def build_past_day_simulation(cfg: dict, date_str: str) -> dict[str, Any]:
+    """Read-only EA day view for a past Warsaw date.
+
+    Prefer ``plan_day_archive`` (keeps Timer Schedule). Fallback: rebuild hourly
+    rows from Influx actuals (timers empty — not stored historically).
+    """
+    cfg = merge_simulation_defaults(cfg)
+    archived = load_plan_day_archive(date_str)
+    if archived and (archived.get("history_rows") or archived.get("rows")):
+        out = dict(archived)
+        out["today_date"] = date_str
+        out["history_view"] = True
+        out["history_source"] = "archive"
+        out.setdefault("rows", [])
+        out.setdefault("plan_from_hour", 24)
+        out["has_history_rows"] = bool(out.get("history_rows"))
+        return out
+
+    params = get_simulation_params(cfg)
+    try:
+        acc, quarters_by_date = await asyncio.gather(
+            influxdb_mod.get_accruals_for_date(date_str),
+            rce_mod.get_quarter_rce_for_dates(date_str),
+        )
+    except Exception as exc:
+        log.warning("Past day %s Influx/RCE fetch failed: %s", date_str, exc)
+        return {
+            "today_date": date_str,
+            "history_rows": [],
+            "rows": [],
+            "totals": None,
+            "history_view": True,
+            "history_source": "influx",
+            "plan_from_hour": 24,
+            "has_history_rows": False,
+            "error": str(exc),
+            "g12_tariff_name": cfg.get("grid", {}).get("g12", {}).get("tariff_name", "G12"),
+            "simulation_min_soc_pct": plan_min_soc_pct(cfg),
+        }
+    if not isinstance(acc, dict) or acc.get("error"):
+        return {
+            "today_date": date_str,
+            "history_rows": [],
+            "rows": [],
+            "totals": None,
+            "history_view": True,
+            "history_source": "influx",
+            "plan_from_hour": 24,
+            "has_history_rows": False,
+            "error": (acc or {}).get("error") if isinstance(acc, dict) else "no data",
+            "g12_tariff_name": cfg.get("grid", {}).get("g12", {}).get("tariff_name", "G12"),
+            "simulation_min_soc_pct": plan_min_soc_pct(cfg),
+        }
+    hourly = acc.get("hourly") or {}
+    history_rows = build_completed_history_rows(
+        date_str, 24, hourly, quarters_by_date, cfg, params,
+    )
+    totals = compute_plan_totals(history_rows) if history_rows else None
+    return {
+        "today_date": date_str,
+        "history_rows": history_rows,
+        "rows": [],
+        "totals": totals,
+        "history_view": True,
+        "history_source": "influx",
+        "plan_from_hour": 24,
+        "has_history_rows": bool(history_rows),
+        "g12_tariff_name": cfg.get("grid", {}).get("g12", {}).get("tariff_name", "G12"),
+        "simulation_min_soc_pct": plan_min_soc_pct(cfg),
+        "computed_at": now_warsaw().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+async def get_simulation_for_date(
+    cfg: dict,
+    date_str: str | None = None,
+    *,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """Today → live plan; past date → archive / Influx history view."""
+    now = now_warsaw()
+    today = now.strftime("%Y-%m-%d")
+    day = (date_str or today).strip()
+    if len(day) != 10:
+        day = today
+    if day > today:
+        day = today
+    if day == today:
+        if refresh:
+            return await hourly_plan_refresh(cfg)
+        return await build_plan_simulation(cfg, invalidate_inputs=False)
+    return await build_past_day_simulation(cfg, day)

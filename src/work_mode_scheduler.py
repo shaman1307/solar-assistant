@@ -106,14 +106,24 @@ async def _set_work_mode_if_needed(
         status["skipped"] = True
         status["skip_reason"] = "already_set"
         bdm_ok = await sa_client.ensure_paired_battery_discharge_mode(cfg, target_mode)
-        status["ok"] = bdm_ok
         rules_after = await sa_client.get_rules(cfg, fresh=True)
         status["battery_discharge_mode_after"] = rules_after.get("battery_discharge_mode")
-        if not bdm_ok:
-            status["error"] = (
-                "SA did not confirm paired battery discharge mode within "
-                f"{int(sa_client.BATTERY_DISCHARGE_VERIFY_TIMEOUT_S)}s"
-            )
+        # Soft-fail BDM when already On-grid so timer can still apply.
+        if target_mode == sa_client.WORK_MODE_ON_GRID:
+            status["ok"] = True
+            if not bdm_ok:
+                status["error"] = (
+                    "SA did not confirm paired battery discharge mode within "
+                    f"{int(sa_client.BATTERY_DISCHARGE_VERIFY_TIMEOUT_S)}s "
+                    "(soft-fail; On-grid already set)"
+                )
+        else:
+            status["ok"] = bdm_ok
+            if not bdm_ok:
+                status["error"] = (
+                    "SA did not confirm paired battery discharge mode within "
+                    f"{int(sa_client.BATTERY_DISCHARGE_VERIFY_TIMEOUT_S)}s"
+                )
         log.info(
             "Work mode %s skipped — already %s (hour %02d, timer=%s); "
             "battery discharge %s",
@@ -135,7 +145,7 @@ async def _set_work_mode_if_needed(
         target_mode,
     )
     # Ordered SA writes (timed flags are handled by hour_boundary_scheduler):
-    #   export start → Battery Grid export, then On-grid
+    #   export start → On-grid, then Battery Grid export (BDM soft-fail)
     #   export end / charge prepare → Limit home, then UPS and home
     if target_mode == sa_client.WORK_MODE_ON_GRID:
         ok = await sa_client.apply_export_start_modes(cfg)

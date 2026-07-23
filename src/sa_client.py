@@ -810,14 +810,26 @@ async def _set_battery_discharge_mode_only(
 
 
 async def apply_export_start_modes(cfg: dict) -> bool:
-    """Export window start: Battery Grid export → Work mode On-grid (then caller enables timed)."""
+    """Export window start: On-grid → Grid export (then caller enables timed).
+
+    On-grid opens the grid path (SRNE: Limit home blocks sell). Grid export lets
+    the battery participate. Soft-fail BDM: if On-grid confirms but Grid export
+    verify times out, still return True so the timer can apply; mid-quarter retries
+    can finish pairing.
+    """
     async with _get_enum_setting_lock():
+        wm_ok = await _set_work_mode_only(cfg, WORK_MODE_ON_GRID)
+        if not wm_ok:
+            return False
         bdm_ok = await _set_battery_discharge_mode_only(
             cfg, BATTERY_DISCHARGE_MODE_GRID_EXPORT,
         )
         if not bdm_ok:
-            return False
-        return await _set_work_mode_only(cfg, WORK_MODE_ON_GRID)
+            log.warning(
+                "Battery Grid export not confirmed after On-grid — "
+                "continuing (soft-fail); mid-quarter may retry",
+            )
+        return True
 
 
 async def apply_home_modes(cfg: dict) -> bool:

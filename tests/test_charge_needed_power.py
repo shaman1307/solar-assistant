@@ -30,8 +30,8 @@ def test_grid_charge_ac_clips_to_remaining_need():
     assert ac == 0.5
 
 
-def test_front_load_spreads_small_budget_over_min_block():
-    """2.7 kWh AC over q15 → 2 steps at 1.35, not one step at max 1.6225."""
+def test_front_load_packs_at_max_not_spread_over_min_block():
+    """2.7 kWh AC → max step rate (dense), not diluted 1.35 over min_block."""
     rate = _front_load_charge_step_ac(
         2.7,
         charge_ac_step=1.6225,
@@ -39,7 +39,7 @@ def test_front_load_spreads_small_budget_over_min_block():
         min_block_minutes=30,
         eps_step=0.001,
     )
-    assert rate == 1.35
+    assert rate == 1.6225
 
 
 def test_front_load_keeps_max_when_budget_needs_it():
@@ -53,8 +53,8 @@ def test_front_load_keeps_max_when_budget_needs_it():
     assert rate == 1.6225
 
 
-def test_front_load_offpeak_q15_uses_needed_step_rate():
-    """q15: 2.7 kWh budget → two 1.35 steps (30 min), not max 1.6225."""
+def test_front_load_offpeak_q15_packs_dense_in_one_hour():
+    """q15: 2.7 kWh budget → two max steps in the first fill hour, not diluted."""
     min_kwh = 7.68
     # 8 q15 steps before peak; skip first hour (4 slots).
     controls = [HourControl(0.0, 0.0, False) for _ in range(8)]
@@ -84,10 +84,55 @@ def test_front_load_offpeak_q15_uses_needed_step_rate():
         skip_leading_slots=4,
         min_block_minutes=30,
     )
-    assert out[4].grid_charge_kw == 1.35
-    assert out[5].grid_charge_kw == 1.35
+    assert out[4].grid_charge_kw == 1.6225
+    assert abs(out[5].grid_charge_kw - (2.7 - 1.6225)) < 1e-9
     assert out[6].grid_charge_kw == 0.0
-    assert sum(c.grid_charge_kw for c in out) == 2.7
+    assert out[7].grid_charge_kw == 0.0
+    assert abs(sum(c.grid_charge_kw for c in out) - 2.7) < 1e-9
+
+
+def test_front_load_four_kwh_stays_in_one_clock_hour():
+    """~4 kWh AC at 1.5 kWh/q15 packs into three quarters of one hour, not 30+30."""
+    min_kwh = 7.68
+    budget = 4.0
+    step_max = 1.5
+    controls = [HourControl(0.0, 0.0, False) for _ in range(12)]
+    # Seed DP budget in late slots; front-load must relocate early and dense.
+    controls[8] = HourControl(2.0, 0.0, False)
+    controls[9] = HourControl(2.0, 0.0, False)
+    buy = [OFF] * 12
+    out = _front_load_offpeak_grid_charge(
+        controls,
+        pv_series=[0.0] * 12,
+        load_series=[0.05] * 12,
+        buy_prices=buy,
+        offpeak_buy=OFF,
+        charge_targets=[0.0] * 12,
+        initial_soc_kwh=min_kwh + 2.0,
+        battery_cap=48.0,
+        min_kwh=min_kwh,
+        charge_ac_step=step_max,
+        discharge_ac_step=2.0,
+        eta_grid=1.0,
+        eta_out=1.0,
+        eta_pv_load=1.0,
+        eta_pv_grid=1.0,
+        eta_pv_battery=1.0,
+        eps_step=0.001,
+        reserves=[min_kwh] * 12,
+        step_scale=0.25,
+        skip_leading_slots=4,
+        min_block_minutes=30,
+    )
+    # Hour 01 = steps 4..7; all charge must land there (no spill to hour 02).
+    hour1 = [out[i].grid_charge_kw for i in range(4, 8)]
+    hour2 = [out[i].grid_charge_kw for i in range(8, 12)]
+    assert sum(hour1) == budget
+    assert all(x == 0.0 for x in hour2)
+    assert hour1[0] == step_max
+    assert hour1[1] == step_max
+    assert abs(hour1[2] - (budget - 2 * step_max)) < 1e-9
+    assert hour1[3] == 0.0
 
 
 def test_infer_charge_power_floors_at_min_hourly():

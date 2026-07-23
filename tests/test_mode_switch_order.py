@@ -77,7 +77,7 @@ def _clear_plan(tmp_path):
     sqlite_store._conn = None
 
 
-def test_apply_export_start_modes_battery_then_work_mode():
+def test_apply_export_start_modes_work_mode_then_battery():
     cfg = _cfg()
     order: list[str] = []
 
@@ -108,9 +108,84 @@ def test_apply_export_start_modes_battery_then_work_mode():
             ok = await sa_client.apply_export_start_modes(cfg)
         assert ok is True
         assert order == [
-            f"bdm:{BATTERY_DISCHARGE_MODE_GRID_EXPORT}",
             f"wm:{WORK_MODE_ON_GRID}",
+            f"bdm:{BATTERY_DISCHARGE_MODE_GRID_EXPORT}",
         ]
+
+    asyncio.run(run())
+
+
+def test_apply_export_start_modes_soft_fails_bdm():
+    """On-grid OK + BDM verify fail → still True so timer can apply."""
+    cfg = _cfg()
+    order: list[str] = []
+
+    async def bdm_only(cfg_arg, mode, **kwargs):
+        del cfg_arg, kwargs
+        order.append(f"bdm:{mode}")
+        return False
+
+    async def wm_only(cfg_arg, mode, **kwargs):
+        del cfg_arg, kwargs
+        order.append(f"wm:{mode}")
+        return True
+
+    async def run():
+        with (
+            patch("src.sa_client._get_enum_setting_lock") as lock_fn,
+            patch("src.sa_client._set_battery_discharge_mode_only", side_effect=bdm_only),
+            patch("src.sa_client._set_work_mode_only", side_effect=wm_only),
+        ):
+            class _Lock:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *args):
+                    return False
+
+            lock_fn.return_value = _Lock()
+            ok = await sa_client.apply_export_start_modes(cfg)
+        assert ok is True
+        assert order == [
+            f"wm:{WORK_MODE_ON_GRID}",
+            f"bdm:{BATTERY_DISCHARGE_MODE_GRID_EXPORT}",
+        ]
+
+    asyncio.run(run())
+
+
+def test_apply_export_start_modes_hard_fails_without_on_grid():
+    """If On-grid does not confirm, do not write BDM and return False."""
+    cfg = _cfg()
+    order: list[str] = []
+
+    async def bdm_only(cfg_arg, mode, **kwargs):
+        del cfg_arg, kwargs
+        order.append(f"bdm:{mode}")
+        return True
+
+    async def wm_only(cfg_arg, mode, **kwargs):
+        del cfg_arg, kwargs
+        order.append(f"wm:{mode}")
+        return False
+
+    async def run():
+        with (
+            patch("src.sa_client._get_enum_setting_lock") as lock_fn,
+            patch("src.sa_client._set_battery_discharge_mode_only", side_effect=bdm_only),
+            patch("src.sa_client._set_work_mode_only", side_effect=wm_only),
+        ):
+            class _Lock:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *args):
+                    return False
+
+            lock_fn.return_value = _Lock()
+            ok = await sa_client.apply_export_start_modes(cfg)
+        assert ok is False
+        assert order == [f"wm:{WORK_MODE_ON_GRID}"]
 
     asyncio.run(run())
 
@@ -214,7 +289,7 @@ def test_limit_home_boundary_clears_timed_before_home_modes():
 
 
 def test_start_boundary_export_modes_before_timer_write():
-    """Export start at :00 — BDM→WM (export start modes), then timed discharge on."""
+    """Export start at :00 — WM→BDM (export start modes), then timed discharge on."""
     write_plan(_plan(20, "Dis 20:00-20:45 6.5kW cap16%"))
     now = datetime(2026, 7, 20, 20, 0, tzinfo=ZoneInfo("Europe/Warsaw"))
     order: list[str] = []

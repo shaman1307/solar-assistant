@@ -1208,18 +1208,19 @@ def _front_load_charge_step_ac(
     min_block_minutes: int,
     eps_step: float,
 ) -> float:
-    """AC kWh per fill step: spread budget over ≥ min_block (needed rate, ≤ max).
+    """AC kWh per fill step: pack at hardware max (dense earliest offpeak).
 
-    Small budgets stretch across the SA min-block so timer kW = need/duration
-    instead of always hardware max. ``min_hourly_transfer_kwh`` is enforced later
-    by ``_correct_min_hourly_transfer_controls``.
+    Do not dilute power across extra quarters just to hit ``min_block`` — that
+    splits one budget into multiple half-hour Chg rows (e.g. 01:00-01:30 then
+    02:00-02:30). Fill consecutive steps at max until the budget is spent so
+    ~4 kWh fits in one clock hour when inverter/battery allow it. Timer
+    ``min_block`` / ``min_hourly_transfer_kwh`` stay enforced in timer_plan /
+    ``_correct_min_hourly_transfer_controls``.
     """
+    del step_scale, min_block_minutes  # kept for call-site compatibility
     if budget_ac <= eps_step or charge_ac_step <= eps_step:
         return 0.0
-    min_block_steps = max(1, int(math.ceil(min_block_minutes / max(1.0, 60.0 * step_scale))))
-    steps_at_max = max(1, int(math.ceil(budget_ac / charge_ac_step - 1e-12)))
-    n_fill = max(min_block_steps, steps_at_max)
-    return min(charge_ac_step, budget_ac / n_fill)
+    return float(charge_ac_step)
 
 
 def _front_load_offpeak_grid_charge(
@@ -1253,7 +1254,8 @@ def _front_load_offpeak_grid_charge(
     horizon already starts after a committed current hour (future-only replan).
 
     Relocates the optimizer AC budget into consecutive offpeak steps from
-    ``fill_from_step`` at the *needed* rate (spread over ≥ min block, ≤ max).
+    ``fill_from_step`` at hardware max so one budget packs into the earliest
+    clock hour(s) instead of diluted half-hour slots across neighbours.
 
     ``charge_targets`` kept for call-site compatibility (unused).
     House load stays on the battery during the relocated fill.
