@@ -187,8 +187,15 @@ def replay_day_plan_with_timer_overrides(
     tomorrow_pv: list[float] | None = None,
     tomorrow_load: list[float] | None = None,
     forecast: dict[str, Any] | None = None,
+    gap_mode: str = "optimize",
 ) -> dict[str, Any]:
-    """Replay *from_hour* onward applying manual timer cells; re-optimize open hours."""
+    """Replay *from_hour* onward applying manual timer cells.
+
+    *gap_mode*:
+      - ``optimize`` — re-run DP on hours without a manual cell (EA rolling plan)
+      - ``idle`` — HourControl(0,0): PV→battery / load from battery only (solid SOC
+        curve after a past-hour Chg patch; avoids DP dumping SOC after forced charge)
+    """
     if not overrides:
         return plan
 
@@ -204,6 +211,7 @@ def replay_day_plan_with_timer_overrides(
     eta_pv_load = float(params["eta_pv_load"])
     eta_pv_grid = float(params["eta_pv_grid"])
     eta_pv_battery = float(params["eta_pv_battery"])
+    idle_gaps = str(gap_mode or "optimize").strip().lower() == "idle"
 
     start_dt = datetime.strptime(date_str, "%Y-%m-%d")
     today_date = start_dt.date()
@@ -318,22 +326,25 @@ def replay_day_plan_with_timer_overrides(
             break
 
         off = global_step - start_step
-        block_controls = optimize_horizon(
-            steps=slice_len,
-            pv_series=pv_q[global_step:global_step + slice_len],
-            load_series=load_q[global_step:global_step + slice_len],
-            buy_prices=buy_q[global_step:global_step + slice_len],
-            rce_series=rce_q,
-            initial_soc_kwh=soc,
-            cfg=cfg,
-            params=params,
-            end_dt=end_dt,
-            today_date=today_date,
-            rce_map={},
-            forecast=forecast,
-            step_scale=STEP_SCALE,
-            rce_step_offset=global_step,
-        )
+        if idle_gaps:
+            block_controls = [HourControl(0.0, 0.0, False) for _ in range(slice_len)]
+        else:
+            block_controls = optimize_horizon(
+                steps=slice_len,
+                pv_series=pv_q[global_step:global_step + slice_len],
+                load_series=load_q[global_step:global_step + slice_len],
+                buy_prices=buy_q[global_step:global_step + slice_len],
+                rce_series=rce_q,
+                initial_soc_kwh=soc,
+                cfg=cfg,
+                params=params,
+                end_dt=end_dt,
+                today_date=today_date,
+                rce_map={},
+                forecast=forecast,
+                step_scale=STEP_SCALE,
+                rce_step_offset=global_step,
+            )
 
         for ctrl in block_controls:
             if global_step >= len(pv_q):
@@ -416,10 +427,18 @@ def apply_plan_timer_overrides_if_any(
     cfg: dict,
     from_hour: int,
     rce_quarters: list[float | None] | None = None,
+    gap_mode: str = "optimize",
 ) -> dict[str, Any] | None:
     """Apply saved manual Timer Schedule cells and replay from the earliest override hour."""
     overrides = get_timer_overrides_for_date(cfg, date_str)
     if not plan or not overrides:
+        return plan
+
+    # Rolling mid-day plan is seeded at from_hour (often plan_from_hour+1) and has
+    # empty q15 for earlier hours. Replaying past-only overrides from that seed
+    # loses committed/live SOC and falls back to min SOC (~16%). Those past cells
+    # only belong on the solid as-if-00:00 SOC curve (from_hour=0).
+    if max(overrides.keys()) < int(from_hour):
         return plan
 
     from .debug_smart_plan import _resolve_rce_quarters, _split_energy_hourly_to_q15
@@ -454,4 +473,5 @@ def apply_plan_timer_overrides_if_any(
         tomorrow_pv=tomorrow_pv,
         tomorrow_load=tomorrow_load,
         forecast=forecast,
+        gap_mode=gap_mode,
     )

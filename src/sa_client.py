@@ -60,6 +60,7 @@ BATTERY_DISCHARGE_WORK_MODE_PAIR: dict[str, str] = {
 }
 WORK_MODE_VERIFY_TIMEOUT_S = 90.0
 BATTERY_DISCHARGE_VERIFY_TIMEOUT_S = 90.0
+GRID_CHARGE_VERIFY_TIMEOUT_S = 90.0
 WORK_MODE_VERIFY_INTERVAL_S = 5.0
 ENUM_VERIFY_FIRST_PAUSE_S = 3.0
 _SA_CLIENT_TIMEOUT_S = 35.0
@@ -562,14 +563,16 @@ def _build_schedule_writes(
         discharge_slot_nums = (1, 2, 3)
     p = _INVERTER_PREFIX
     writes: list[tuple[str, str]] = []
-    # Enable grid-charge permission first so a later slot failure cannot skip it.
+    # Policy: Grid charge Enabled only while Timed charge is active; else Disabled.
     # Do NOT write max_grid_charge_current here — power is charge_power_slot only;
     # writing current (e.g. 125 A from 6 kW/48 V) 422-rejects the whole batch.
-    if settings and 1 in charge_slot_nums:
-        if schedule.get("timed_charge_enabled"):
-            writes.append((settings["grid_charge_switch"], _grid_charge_switch(True)))
-        elif any(int(s.get("slot", 0)) == 1 for s in schedule.get("charge_slots") or []):
-            writes.append((settings["grid_charge_switch"], _grid_charge_switch(False)))
+    if settings is not None and schedule.get("timed_charge_enabled") is not None:
+        writes.append(
+            (
+                settings["grid_charge_switch"],
+                _grid_charge_switch(bool(schedule["timed_charge_enabled"])),
+            )
+        )
     if schedule.get("timed_charge_enabled") is not None:
         writes.append((f"{p}/timed_charge", _sa_switch(bool(schedule["timed_charge_enabled"]))))
     if schedule.get("timed_discharge_enabled") is not None:
@@ -607,12 +610,19 @@ def _build_schedule_writes(
     return [(t, v) for t, v in writes if t not in _SRNE_UNSUPPORTED_TIMER_TOPICS]
 
 
-async def set_grid_charging(cfg: dict, *, enabled: bool, power_kw: float = 0.0) -> bool:
-    """Enable or disable SA grid-charging rule."""
+async def set_grid_charging(
+    cfg: dict,
+    *,
+    enabled: bool,
+    power_kw: float = 0.0,
+    verify: bool = True,
+    verify_timeout_s: float = GRID_CHARGE_VERIFY_TIMEOUT_S,
+) -> bool:
+    """Enable or disable SA grid-charging rule; optionally wait for SA confirm (30–90s)."""
     settings: dict[str, str] = cfg["sa"]["settings"]
-    writes: list[tuple[str, str]] = [
-        (settings["grid_charge_switch"], _grid_charge_switch(enabled)),
-    ]
+    topic = settings["grid_charge_switch"]
+    target = _grid_charge_switch(enabled)
+    writes: list[tuple[str, str]] = [(topic, target)]
     if enabled and power_kw > 0:
         writes.append(
             (settings["charge_current_limit"], str(_grid_charge_current_a(power_kw))),
@@ -620,7 +630,19 @@ async def set_grid_charging(cfg: dict, *, enabled: bool, power_kw: float = 0.0) 
     try:
         await _write_metrics(cfg, writes, lock_wait_s=90.0)
         log.info("Grid charging %s (%.1f kW)", "ON" if enabled else "OFF", power_kw)
-        return True
+        if not verify:
+            invalidate_rules_cache()
+            return True
+        ok = await _wait_inverter_setting_confirmed(
+            cfg,
+            topic=topic,
+            value=target,
+            label="Grid charge",
+            verify_timeout_s=verify_timeout_s,
+        )
+        if ok:
+            invalidate_rules_cache()
+        return ok
     except Exception as exc:
         log.error("Failed to set grid charging: %r", exc)
         return False
@@ -906,7 +928,7 @@ async def set_timed_power_flags(
     timed_charge_enabled: bool | None = None,
     timed_discharge_enabled: bool | None = None,
 ) -> bool:
-    """Write SA Power tab toggles (timed charge / timed discharge only)."""
+    """Write SA Power tab toggles; Timed charge also asserts Grid charge policy."""
     p = _INVERTER_PREFIX
     writes: list[tuple[str, str]] = []
     if timed_charge_enabled is not None:
@@ -923,6 +945,15 @@ async def set_timed_power_flags(
             timed_discharge_enabled,
         )
         invalidate_rules_cache()
+        if timed_charge_enabled is not None:
+            # Policy 1: Grid charge follows Timed charge (verify can take 30–90s).
+            ok_grid = await set_grid_charging(
+                cfg,
+                enabled=bool(timed_charge_enabled),
+                verify=True,
+            )
+            if not ok_grid:
+                return False
         return True
     except Exception as exc:
         log.error("Failed to set timed power flags: %r", exc)
@@ -966,6 +997,11 @@ async def apply_hourly_schedule_to_sa(cfg: dict, schedule: dict[str, Any]) -> bo
     if slim["timed_discharge_enabled"]:
         slim["discharge_slots"] = [schedule.get("discharge_slots", [{}])[0]]
     if not slim["charge_slots"] and not slim["discharge_slots"]:
+        # No active slots — still assert Grid charge off when Timed charge is off.
+        if not slim["timed_charge_enabled"]:
+            ok_grid = await set_grid_charging(cfg, enabled=False, verify=True)
+            if not ok_grid:
+                return False
         log.info("Hourly schedule apply skipped — no timed charge/discharge enabled")
         return True
     ok = await set_timer_schedule(cfg, slim)
@@ -993,12 +1029,13 @@ async def apply_plan_to_sa(
         (float(s.get("power_kw", 0)) for s in schedule.get("charge_slots", [])),
         default=0.0,
     )
-    await set_grid_charging(
+    # Policy 1: Grid charge Enabled only while Timed charge is active.
+    return await set_grid_charging(
         cfg,
-        enabled=bool(schedule.get("timed_charge_enabled")) and charge_pwr > 0,
+        enabled=bool(schedule.get("timed_charge_enabled")),
         power_kw=charge_pwr or 2.0,
+        verify=True,
     )
-    return True
 
 
 # ---------------------------------------------------------------------------

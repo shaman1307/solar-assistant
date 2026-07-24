@@ -789,6 +789,21 @@ def build_energy_arbitrage_plan(
         initial_soc_kwh=day_start_soc,
         from_hour=0,
     )
+    # Manual Timer Schedule overrides (incl. past-hour data patches) must feed
+    # the solid SOC curve, not only the rolling EA plan.
+    if today_timer_ov:
+        day_plan_for_soc = apply_plan_timer_overrides_if_any(
+            day_plan_for_soc,
+            date_str=today_str,
+            pv_hourly=pv_forecast_today,
+            load_hourly=load_forecast_today,
+            tomorrow_pv=[float(v) for v in pv_tomorrow],
+            tomorrow_load=[float(v) for v in load_tomorrow],
+            cfg=cfg,
+            from_hour=0,
+            rce_quarters=rce_today if len(rce_today) >= Q15_PER_HOUR * 24 else None,
+            gap_mode="idle",
+        )
     today_plan_soc = _soc_q15_from_q15_by_hour(day_plan_for_soc)
 
     schedule_from = (
