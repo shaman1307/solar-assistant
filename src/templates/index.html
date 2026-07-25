@@ -4017,6 +4017,7 @@ function renderSimulationBundle(data) {
   renderSimulationView(data);
   refreshEnergyOverviewPlanFill();
   refreshAcrPriceBgIfDashboard();
+  if (simViewIsToday()) void loadLiveMetrics();
 }
 
 function simViewIsToday() {
@@ -4243,6 +4244,7 @@ async function loadLiveMetrics() {
     const res = await fetch('api/live');
     const d = await res.json();
     updateLiveFlow(d);
+    updateSimCurrentHourLiveSoc(d.battery_soc ?? d.soc);
     updateSaStatusBadge(d);
     applySaDailyEnergyIfToday(d);
   } catch (e) { console.warn('live metrics error', e); }

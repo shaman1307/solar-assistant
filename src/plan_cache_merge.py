@@ -588,8 +588,12 @@ def merge_incremental_plan(
         existing_row = existing_by_key.get(key)
         if existing_row is None:
             new_row = copy.deepcopy(fresh_row)
-            if plan_date == today_str and hour == current_hour and now.minute == 0:
-                _lock_hour_labels(new_row, fresh_row)
+            if plan_date == today_str and hour == current_hour:
+                new_row["soc_blended"] = True
+                if now.minute == 0:
+                    _lock_hour_labels(new_row, fresh_row)
+            else:
+                new_row.pop("soc_blended", None)
             out_rows.append(new_row)
             continue
 
@@ -626,11 +630,8 @@ def merge_incremental_plan(
                     battery_cap=battery_cap,
                     live_soc_kwh=live_soc_kwh,
                 )
-            # Violet live-SOC highlight: only the in-progress hour (from fresh blend).
-            if now.minute != 0 and fresh_row.get("soc_blended"):
-                row["soc_blended"] = True
-            else:
-                row.pop("soc_blended", None)
+            # Violet live-SOC highlight: always the in-progress hour.
+            row["soc_blended"] = True
             # Locked timer_schedule / action stay as written at :00 for the whole
             # hour (and into history). Clip only when building SA write payloads —
             # never erase a started Dis/Chg window from SQLite.
@@ -639,6 +640,7 @@ def merge_incremental_plan(
 
         # Future hours (today after current, and tomorrow): live optimizer row.
         _copy_future_row(row, fresh_row)
+        row.pop("soc_blended", None)
         if _should_preserve_imminent_chg(
             existing_row,
             fresh_row,

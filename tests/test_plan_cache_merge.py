@@ -434,6 +434,32 @@ def test_promoted_history_rows_drop_blended_soc_flag():
     assert "soc_blended" not in hist8
 
 
+def test_merge_sets_soc_blended_on_current_hour_even_if_fresh_omits_it():
+    """Current-hour violet highlight must not depend on fresh remembering the flag."""
+    now = datetime(2026, 7, 7, 8, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
+    existing_cur = _row(8, timer="Dis 08:00-08:45", action="Discharging to Grid", locked=True)
+    existing_cur["soc_blended"] = True
+    fresh_cur = _row(8, timer="OPTIMIZER_WIPE", action="Idle")
+    fresh_cur.pop("soc_blended", None)
+    existing = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 8,
+        "history_rows": [],
+        "rows": [existing_cur, _row(9)],
+    }
+    fresh = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 8,
+        "delta_kwh": 0.0,
+        "history_rows": [],
+        "rows": [fresh_cur, _row(9, timer="FUTURE_9")],
+    }
+    merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
+    cur = next(r for r in merged["rows"] if r["hour"] == 8)
+    assert cur["soc_blended"] is True
+    assert "soc_blended" not in next(r for r in merged["rows"] if r["hour"] == 9)
+
+
 def test_merge_keeps_soc_blended_on_current_hour_from_fresh():
     """Mid-hour merge must keep violet SOC highlight from the fresh blended row."""
     now = datetime(2026, 7, 7, 8, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
@@ -467,8 +493,8 @@ def test_merge_keeps_soc_blended_on_current_hour_from_fresh():
     assert "soc_blended" not in next(r for r in merged["rows"] if r["hour"] == 9)
 
 
-def test_merge_clears_soc_blended_at_hour_start():
-    """At :00 the new current hour must not inherit a stale violet flag."""
+def test_merge_keeps_soc_blended_at_hour_start():
+    """At :00 the new current hour still gets the violet live-SOC highlight."""
     now = datetime(2026, 7, 7, 9, 0, 0, tzinfo=ZoneInfo("Europe/Warsaw"))
     existing = {
         "today_date": "2026-07-07",
@@ -487,7 +513,7 @@ def test_merge_clears_soc_blended_at_hour_start():
     }
     merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
     cur = next(r for r in merged["rows"] if r["hour"] == 9)
-    assert "soc_blended" not in cur
+    assert cur["soc_blended"] is True
 
 
 def test_stale_blended_flags_in_stored_history_are_healed():

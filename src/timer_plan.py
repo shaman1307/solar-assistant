@@ -476,7 +476,22 @@ def _hour_timer_segment(
     if target_action == ACTION_CHARGE_GRID:
         cap = _charge_timer_cap_pct(slots, cfg)
     else:
+        # Survive-until-morning floor from the last active Dis quarter.
         cap = min_soc
+        last = slots[last_q] if 0 <= last_q < len(slots) else {}
+        raw = last.get("reserve_soc_pct")
+        if raw is None and last.get("reserve_kwh") is not None:
+            try:
+                bat_cap = float(cfg["battery"]["capacity_kwh"])
+                if bat_cap > 0:
+                    raw = 100.0 * float(last["reserve_kwh"]) / bat_cap
+            except (TypeError, ValueError, KeyError):
+                raw = None
+        if raw is not None:
+            try:
+                cap = max(min_soc, int(round(float(raw))))
+            except (TypeError, ValueError):
+                pass
     return f"{prefix} {_min_to_hhmm(from_min)}-{_min_to_hhmm(to_min)} {power_kw}kW cap{cap}%"
 
 
@@ -618,6 +633,23 @@ def _minute_of_day_from_start(row: dict) -> int:
     return int(parts[0]) * 60 + int(parts[1])
 
 
+def _discharge_cap_pct_from_row(row: dict[str, Any], fallback: float) -> int:
+    """SA Dis stop %: overnight survive reserve at this slot, else planned SOC."""
+    raw = row.get("reserve_soc_pct")
+    if raw is None and row.get("reserve_kwh") is not None:
+        # Caller without battery_cap — keep prior block value.
+        raw = fallback
+    if raw is not None:
+        try:
+            return int(round(float(raw)))
+        except (TypeError, ValueError):
+            pass
+    try:
+        return int(round(float(row.get("soc", fallback))))
+    except (TypeError, ValueError):
+        return int(round(float(fallback)))
+
+
 def _merge_blocks_q15(rows: list[dict], target_action: str) -> list[dict[str, Any]]:
     """Merge consecutive 15-minute rows into timer blocks (HH:MM boundaries)."""
     blocks: list[dict[str, Any]] = []
@@ -654,16 +686,22 @@ def _merge_blocks_q15(rows: list[dict], target_action: str) -> list[dict[str, An
                 current["export_kwh"] = float(current.get("export_kwh", 0.0)) + export_kwh
                 current["load_kwh"] = float(current.get("load_kwh", 0.0)) + load_kwh
                 current["pv_kwh"] = float(current.get("pv_kwh", 0.0)) + pv_kwh
-            current["capacity_pct"] = round(float(row.get("soc", current["capacity_pct"])), 0)
+                current["capacity_pct"] = _discharge_cap_pct_from_row(row, current["capacity_pct"])
+            else:
+                current["capacity_pct"] = round(float(row.get("soc", current["capacity_pct"])), 0)
         else:
             if current:
                 blocks.append(current)
+            if target_action == ACTION_DISCHARGE_GRID:
+                cap = _discharge_cap_pct_from_row(row, 80)
+            else:
+                cap = round(float(row.get("soc", 80)), 0)
             current = {
                 "from_min": slot_min,
                 "to_min": slot_min + 15,
                 "_last_end_min": slot_min + 15,
                 "power_kw": power_kw,
-                "capacity_pct": round(float(row.get("soc", 80)), 0),
+                "capacity_pct": cap,
             }
             if target_action == ACTION_DISCHARGE_GRID:
                 current["export_kwh"] = export_kwh
@@ -793,7 +831,11 @@ def _blocks_q15_to_slots(
             "slot": i + 1,
             "from": _min_to_hhmm(blk["from_min"]),
             "to": _min_to_hhmm(blk["to_min"]),
-            "capacity_pct": int(blk["capacity_pct"]) if kind == "charge" else int(min_soc),
+            "capacity_pct": (
+                int(blk["capacity_pct"])
+                if kind == "charge"
+                else max(int(min_soc), int(round(float(blk.get("capacity_pct") or min_soc))))
+            ),
             "voltage_v": float(tpl.get("voltage_v", 58.0 if kind == "charge" else 42.0)),
             "power_kw": timer_kw,
         }
@@ -1432,7 +1474,11 @@ def _blocks_to_slots(
             "slot": i + 1,
             "from": f"{from_h:02d}:00",
             "to": f"{to_h:02d}:00",
-            "capacity_pct": int(blk["capacity_pct"]) if kind == "charge" else int(min_soc),
+            "capacity_pct": (
+                int(blk["capacity_pct"])
+                if kind == "charge"
+                else max(int(min_soc), int(round(float(blk.get("capacity_pct") or min_soc))))
+            ),
             "voltage_v": float(tpl.get("voltage_v", 58.0 if kind == "charge" else 42.0)),
             "power_kw": timer_kw,
         }
@@ -1525,11 +1571,12 @@ def build_hourly_schedule(
     elif action == ACTION_DISCHARGE_GRID and row:
         timed_discharge = True
         tpl = discharge_slots[0]
+        dis_cap = _discharge_cap_pct_from_row(row, min_soc)
         discharge_slots[0] = {
             "slot": 1,
             "from": f"{from_h:02d}:00",
             "to": f"{to_h:02d}:00",
-            "capacity_pct": min_soc,
+            "capacity_pct": max(min_soc, dis_cap),
             "voltage_v": float(tpl.get("voltage_v", 42.0)),
             "power_kw": _row_power_kw(row, action, cfg),
         }

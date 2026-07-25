@@ -674,7 +674,7 @@ def build_energy_arbitrage_plan(
                 # Keep the committed Timer/Action/SOC path — do not rebuild from fresh DP.
                 row = copy.deepcopy(committed_hour)
                 row["hour_labels_locked"] = True
-                if h == plan_from_hour and now.minute != 0:
+                if h == plan_from_hour:
                     slots_now = list(row.get("q15") or [])
                     fpv_h = float(pv_merged[h]) if h < len(pv_merged) else 0.0
                     flo_h = float(load_merged[h]) if h < len(load_merged) else 0.0
@@ -734,9 +734,6 @@ def build_energy_arbitrage_plan(
                         if committed_end_soc is not None
                         else (soc_blend / 100.0) * battery_cap
                     )
-                    blended_row_idx = len(all_rows)
-                elif committed_end_soc is not None:
-                    blended_anchor_kwh = committed_end_soc
                     blended_row_idx = len(all_rows)
                 all_rows.append(row)
                 if row.get("export_planned"):

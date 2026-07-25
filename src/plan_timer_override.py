@@ -159,9 +159,14 @@ def _append_q15_slot(
     h: int,
     quarter: int,
     slot: dict[str, Any],
+    battery_cap: float | None = None,
 ) -> None:
     q15_by_hour.setdefault(h, []).append(slot)
-    q15_plan_rows.append({
+    reserve_kwh = slot.get("reserve_kwh")
+    reserve_soc_pct = slot.get("reserve_soc_pct")
+    if reserve_soc_pct is None and reserve_kwh is not None and battery_cap:
+        reserve_soc_pct = (float(reserve_kwh) / float(battery_cap)) * 100.0
+    row: dict[str, Any] = {
         "start": (start_dt + timedelta(hours=h, minutes=quarter * 15)).strftime("%d-%m-%Y %H:%M"),
         "hour": h,
         "action": slot.get("action"),
@@ -169,7 +174,12 @@ def _append_q15_slot(
         "grid_import": round(float(slot.get("grid_import") or 0), 4),
         "grid_export": round(float(slot.get("grid_export") or 0), 4),
         "battery": round(float(slot.get("battery_delta") or 0), 4),
-    })
+    }
+    if reserve_kwh is not None:
+        row["reserve_kwh"] = round(float(reserve_kwh), 4)
+    if reserve_soc_pct is not None:
+        row["reserve_soc_pct"] = round(float(reserve_soc_pct), 2)
+    q15_plan_rows.append(row)
 
 
 def replay_day_plan_with_timer_overrides(
@@ -301,6 +311,9 @@ def replay_day_plan_with_timer_overrides(
                     "soc_pct": soc_pct,
                     "soc_end": phys.soc_end,
                     "reserve_kwh": reserve,
+                    "reserve_soc_pct": (
+                        (float(reserve) / battery_cap) * 100.0 if battery_cap else None
+                    ),
                     "rce": rce_q[global_step] if global_step < len(rce_q) else None,
                 }
                 _append_q15_slot(
@@ -310,6 +323,7 @@ def replay_day_plan_with_timer_overrides(
                     h=h,
                     quarter=q,
                     slot=slot,
+                    battery_cap=battery_cap,
                 )
                 soc = phys.soc_end
                 global_step += 1
@@ -391,6 +405,9 @@ def replay_day_plan_with_timer_overrides(
                 "soc_pct": soc_pct,
                 "soc_end": phys.soc_end,
                 "reserve_kwh": reserve,
+                "reserve_soc_pct": (
+                    (float(reserve) / battery_cap) * 100.0 if battery_cap else None
+                ),
                 "rce": rce_q[global_step] if global_step < len(rce_q) else None,
             }
             _append_q15_slot(
@@ -400,6 +417,7 @@ def replay_day_plan_with_timer_overrides(
                 h=hh,
                 quarter=qq,
                 slot=slot,
+                battery_cap=battery_cap,
             )
             soc = phys.soc_end
             global_step += 1

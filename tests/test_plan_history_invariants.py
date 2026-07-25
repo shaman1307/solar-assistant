@@ -12,6 +12,7 @@ hours silently disappeared from SQLite:
   I4. Once an hour is in history, its timer_schedule/action never change.
   I5. soc_blended (violet live-SOC highlight in the UI) is never present on
       history rows — otherwise two rows are highlighted at once.
+      The current-hour plan row always carries soc_blended (including at :00).
   I6. Once hour_labels_locked, timer_schedule and action on that hour never
       change for the rest of the day (current row and after promote to history),
       even when mid-hour fresh sims wipe the optimizer timer.
@@ -64,9 +65,6 @@ def _mk_row(hour: int, *, source: str) -> dict:
         "soc": 50.0,
         "timer_schedule": f"Dis {hour:02d}:00-{hour:02d}:45 5kW cap42%",
         "action": f"Plan@{source}",
-        # run_simulation marks the in-progress hour's SOC as blended (live);
-        # promotion to history must strip it (UI invariant I5).
-        "soc_blended": True,
         "q15": [
             {"quarter": q, "production": 0.25, "consumption": 0.125,
              "soc": 50.0, "battery": 0.0, "grid_import": 0.0,
@@ -94,6 +92,9 @@ def _mk_fresh(sim_now: datetime) -> dict:
     rows = []
     for h in range(from_hour, 24):
         row = _mk_row(h, source=label)
+        if h == from_hour:
+            # run_simulation marks only the in-progress hour as live SOC.
+            row["soc_blended"] = True
         if h == from_hour and sim_now.minute != 0:
             row["timer_schedule"] = ""
             row["action"] = f"WIPED@{label}"
@@ -236,6 +237,17 @@ def _assert_invariants(
     assert not blended_hist, (
         f"{context}: history hours {blended_hist} still carry soc_blended — "
         f"UI would highlight live SOC on more than one row"
+    )
+    cur_rows = [
+        r for r in plan.get("rows") or []
+        if str(r.get("plan_date") or "") == TODAY
+        and r.get("start") != "TOTAL"
+        and int(r.get("hour", -1)) == wall_hour
+    ]
+    assert cur_rows, f"{context}: missing current-hour row {wall_hour}"
+    assert cur_rows[0].get("soc_blended") is True, (
+        f"{context}: current hour {wall_hour} missing soc_blended — "
+        f"UI would not highlight live SOC"
     )
     ledger.check(plan, context)
     if labels is not None:

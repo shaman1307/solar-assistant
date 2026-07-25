@@ -113,18 +113,26 @@ def _pv_cover_ends_overnight_need(
     seen_insufficient: bool,
     cover_bound: int | None,
 ) -> bool:
-    """Whether a PV-cover hour ends the overnight need walk."""
+    """Whether a PV-cover hour ends the overnight need walk.
+
+    Evening-started walks (from noon onward) must reach the *next* calendar
+    day's first PV-cover hour — same-day afternoon/evening sun must not end
+    the survive-until-morning reserve.
+    """
+    started_evening = int(start_local_hour) >= _ALL_OFFPEAK_COVER_HOUR_END
     if seen_insufficient:
         if crossed_midnight:
             return True
+        # Still today: evening-started walks keep going through tonight.
+        if started_evening:
+            return False
         if cover_bound is not None:
             return int(local_hour) < int(cover_bound)
         # All-offpeak day: only a morning-started walk may stop before midnight.
-        return (
-            int(start_local_hour) < _ALL_OFFPEAK_COVER_HOUR_END
-            and int(local_hour) < _ALL_OFFPEAK_COVER_HOUR_END
-        )
+        return int(local_hour) < _ALL_OFFPEAK_COVER_HOUR_END
     # Already self-sufficient — no overnight gap ahead today.
+    if started_evening:
+        return False
     if cover_bound is not None:
         return (
             int(start_local_hour) < int(cover_bound)
@@ -945,10 +953,13 @@ def _reserve_soc_kwh_from_step(
     slots_per_hour: int = 4,
     global_step_offset: int = 0,
 ) -> float:
-    """Battery kWh to keep for self-use until morning PV covers house.
+    """Battery kWh to keep after *step* for self-use until morning PV covers house.
 
-    Walk ends when generation covers load within that calendar day's real
-    tariff morning horizon (from buy prices; weekends have no morning peak).
+    Sums load deficits from step+1 until the first next-day hour where PV covers
+    load (evening-started walks must cross midnight), then adds
+    *reserve_floor_kwh* (min SOC). At the end of today's last discharge hour this
+    is the SOC that must remain in the battery.
+
     Does **not** by itself justify grid→battery charging — see
     `_grid_charge_target_soc_kwh_from_step`.
     """
@@ -956,6 +967,98 @@ def _reserve_soc_kwh_from_step(
         step, pv_series, load_series, reserve_floor_kwh, eta_out, eta_pv_load, epsilon,
         buy_series=buy_series, offpeak_buy=offpeak_buy, peak_deficits_only=False,
         slots_per_hour=slots_per_hour, global_step_offset=global_step_offset,
+    )
+
+
+def apply_post_discharge_reserve_floor(
+    reserves: list[float],
+    controls: list[HourControl],
+    *,
+    pv_series: list[float],
+    load_series: list[float],
+    reserve_floor_kwh: float,
+    eta_out: float,
+    eta_pv_load: float,
+    epsilon: float,
+    rce_step_offset: int,
+    slots_per_hour: int,
+    buy_series: list[float] | None = None,
+    offpeak_buy: float | None = None,
+) -> tuple[list[float], float | None]:
+    """Raise reserves through today's last Dis hour to the post-Dis survive floor.
+
+    Floor = load deficits from the hour after last export until next-day PV cover
+    + min SOC. Returns (reserves, end_floor_kwh or None when no export).
+    """
+    if not controls or not reserves:
+        return list(reserves), None
+    eps = float(epsilon)
+    last_dis_hour: int | None = None
+    for i, c in enumerate(controls):
+        if i >= len(reserves):
+            break
+        if c.battery_export_kwh > eps:
+            last_dis_hour = (rce_step_offset + i) // max(1, slots_per_hour)
+    if last_dis_hour is None:
+        return list(reserves), None
+    end_floor = post_discharge_reserve_soc_kwh(
+        last_dis_hour,
+        pv_series,
+        load_series,
+        reserve_floor_kwh,
+        eta_out,
+        eta_pv_load,
+        eps,
+        buy_series=buy_series,
+        offpeak_buy=offpeak_buy,
+        slots_per_hour=slots_per_hour,
+        global_step_offset=rce_step_offset,
+    )
+    out = list(reserves)
+    for i in range(len(out)):
+        hour = (rce_step_offset + i) // max(1, slots_per_hour)
+        if hour <= last_dis_hour and out[i] < end_floor:
+            out[i] = end_floor
+    return out, end_floor
+
+
+def post_discharge_reserve_soc_kwh(
+    last_discharge_hour: int,
+    pv_series: list[float],
+    load_series: list[float],
+    reserve_floor_kwh: float,
+    eta_out: float,
+    eta_pv_load: float,
+    epsilon: float,
+    *,
+    buy_series: list[float] | None = None,
+    offpeak_buy: float | None = None,
+    slots_per_hour: int = 4,
+    global_step_offset: int = 0,
+) -> float:
+    """SOC to leave at end of today's last Dis hour (survive until next-day PV).
+
+    Counts house deficits from the first hour *after* *last_discharge_hour*
+    through the first next-day hour that covers load, then adds min-SOC floor.
+    """
+    slots = max(1, int(slots_per_hour))
+    # from_step = last q15 of last_discharge_hour → walk starts at next hour.
+    last_global = int(last_discharge_hour) * slots + (slots - 1)
+    from_step = last_global - int(global_step_offset)
+    if from_step < -1:
+        return float(reserve_floor_kwh)
+    return _reserve_soc_kwh_from_step(
+        max(-1, from_step),
+        pv_series,
+        load_series,
+        reserve_floor_kwh,
+        eta_out,
+        eta_pv_load,
+        epsilon,
+        buy_series=buy_series,
+        offpeak_buy=offpeak_buy,
+        slots_per_hour=slots,
+        global_step_offset=global_step_offset,
     )
 
 
@@ -1772,6 +1875,52 @@ def optimize_horizon(
         export_floor=export_floor,
         min_hourly_kwh=min_hourly_transfer,
     )
+
+    # End-of-Dis floor: load from the hour after today's last export hour until
+    # next-day PV cover + min SOC. Raise per-step reserves and re-claim export
+    # so the window cannot dump below that stock.
+    reserves_before = list(reserves)
+    reserves, end_floor = apply_post_discharge_reserve_floor(
+        reserves,
+        controls,
+        pv_series=pv_for_reserve,
+        load_series=load_for_reserve,
+        reserve_floor_kwh=reserve_floor_kwh,
+        eta_out=eta_out,
+        eta_pv_load=eta_pv_load,
+        epsilon=eps_step,
+        rce_step_offset=rce_step_offset,
+        slots_per_hour=slots_per_hour,
+        buy_series=buy_for_reserve,
+        offpeak_buy=offpeak_buy,
+    )
+    if end_floor is not None and reserves != reserves_before:
+        controls = assign_ranked_battery_export(
+            [
+                HourControl(c.grid_charge_kw, 0.0, c.load_from_grid)
+                for c in controls
+            ],
+            steps=steps,
+            pv_series=pv_series,
+            load_series=load_series,
+            rce_series=rce_series,
+            rce_step_offset=rce_step_offset,
+            step_scale=step_scale,
+            initial_soc_kwh=initial_soc_kwh,
+            battery_cap=battery_cap,
+            min_kwh=min_kwh,
+            discharge_ac_step=discharge_ac_step,
+            eta_grid=eta_grid,
+            eta_out=eta_out,
+            eta_pv_load=eta_pv_load,
+            eta_pv_grid=eta_pv_grid,
+            eta_pv_battery=eta_pv_battery,
+            eps_step=eps_step,
+            reserves=reserves,
+            export_floor=export_floor,
+            min_hourly_kwh=min_hourly_transfer,
+        )
+
     # Sub-pass per clock hour: sum battery↔grid flows across 15-min slots; zero if below floor.
     return _correct_min_hourly_transfer_controls(
         controls,

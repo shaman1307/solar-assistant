@@ -10,6 +10,7 @@ from .g12_pricing import get_buy_price
 from .plan_optimizer import (
     HourControl,
     eps_step_kwh,
+    apply_post_discharge_reserve_floor,
     optimize_horizon,
     reserve_soc_per_step,
     simulate_hour,
@@ -226,6 +227,8 @@ def _simulate_q15_controls(
             epsilon=eps_q,
         )
         dt = start_dt + timedelta(hours=h, minutes=quarter * 15)
+        reserve_kwh = float(reserves[step]) if step < len(reserves) else float(min_kwh)
+        reserve_soc_pct = (reserve_kwh / battery_cap) * 100.0 if battery_cap else 0.0
         slot = {
             "hour": h,
             "quarter": quarter,
@@ -241,7 +244,8 @@ def _simulate_q15_controls(
             "ctrl_battery_export_kwh": ctrl.battery_export_kwh,
             "soc_pct": soc_pct,
             "soc_end": phys.soc_end,
-            "reserve_kwh": reserves[step],
+            "reserve_kwh": reserve_kwh,
+            "reserve_soc_pct": reserve_soc_pct,
             "rce": rce_q[global_step] if global_step < len(rce_q) else None,
         }
         q15_by_hour[h] = [
@@ -257,6 +261,8 @@ def _simulate_q15_controls(
             "grid_import": round(phys.grid_import, 4),
             "grid_export": round(phys.grid_export, 4),
             "battery": round(phys.battery_delta, 4),
+            "reserve_kwh": round(reserve_kwh, 4),
+            "reserve_soc_pct": round(reserve_soc_pct, 2),
         })
         soc = phys.soc_end
 
@@ -358,14 +364,41 @@ def run_day_smart_q15_plan(
         front_load_skip_leading_slots=front_load_skip_leading_slots,
     )
 
+    from .plan_optimizer import build_extended_buy_for_reserve, build_extended_pv_load_for_reserve
+    from .plan_optimizer import g12_tariff_from_cfg
+
+    reserve_floor = plan_reserve_min_soc_kwh(cfg)
     reserves = reserve_soc_per_step(
         steps, pv_q, load_q,
-        reserve_floor_kwh=plan_reserve_min_soc_kwh(cfg),
+        reserve_floor_kwh=reserve_floor,
         eta_out=eta_out, eta_pv_load=eta_pv_load, epsilon=epsilon,
         step_scale=STEP_SCALE, end_dt=end_dt, today_date=today_date, forecast=forecast,
         global_step_offset=start_step,
         buy_prices=buy_q,
         cfg=cfg,
+    )
+    pv_r, load_r = build_extended_pv_load_for_reserve(
+        pv_q, load_q,
+        step_scale=STEP_SCALE, end_dt=end_dt, today_date=today_date, forecast=forecast,
+    )
+    buy_r = build_extended_buy_for_reserve(
+        buy_q,
+        step_scale=STEP_SCALE, end_dt=end_dt, today_date=today_date,
+        forecast=forecast, cfg=cfg,
+    )
+    reserves, _ = apply_post_discharge_reserve_floor(
+        reserves,
+        controls,
+        pv_series=pv_r,
+        load_series=load_r,
+        reserve_floor_kwh=reserve_floor,
+        eta_out=eta_out,
+        eta_pv_load=eta_pv_load,
+        epsilon=eps_q,
+        rce_step_offset=start_step,
+        slots_per_hour=Q15_PER_HOUR,
+        buy_series=buy_r,
+        offpeak_buy=g12_tariff_from_cfg(cfg).offpeak_full,
     )
 
     q15_by_hour, q15_plan_rows, soc = _simulate_q15_controls(
@@ -512,8 +545,14 @@ def build_history_hour_timer_schedule(
         if minutes >= 60:
             to_hh = hour + 1
             to_mm = 0
+        cap = min_soc
+        if row.get("reserve_soc_pct") is not None:
+            try:
+                cap = max(min_soc, int(round(float(row["reserve_soc_pct"]))))
+            except (TypeError, ValueError):
+                pass
         return (
-            f"Dis {hour:02d}:00-{to_hh:02d}:{to_mm:02d} {pwr}kW cap{min_soc}%"
+            f"Dis {hour:02d}:00-{to_hh:02d}:{to_mm:02d} {pwr}kW cap{cap}%"
         )
 
     return ""
