@@ -71,7 +71,10 @@ def build_baseline_history_rows(
 
     base = datetime.strptime(plan_date, "%Y-%m-%d")
     quarters = quarters_by_date.get(plan_date) or []
-    soc_kwh, _ = _initial_soc_kwh(hourly, battery_cap)
+    try:
+        soc_kwh, _ = _initial_soc_kwh(hourly, battery_cap)
+    except ValueError:
+        soc_kwh = min_kwh
     # Idle control: no grid charge, no intentional battery→grid export.
     idle = HourControl(0.0, 0.0, load_from_grid=False)
     rows: list[dict[str, Any]] = []

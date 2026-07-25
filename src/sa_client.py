@@ -168,7 +168,7 @@ def _empty_rules() -> dict[str, Any]:
     }
 
 _DEFAULTS: dict[str, Any] = {
-    "battery_soc": 50.0,
+    "battery_soc": None,
     "battery_power": 0.0,
     "pv_power": 0.0,
     "load_power": 0.0,

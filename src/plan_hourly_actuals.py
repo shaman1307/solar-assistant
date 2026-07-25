@@ -185,6 +185,23 @@ def hour_start_soc_kwh(
     return max(min_kwh, min(battery_cap, end_kwh - bc + bd))
 
 
+def last_available_soc_pct(
+    hourly: dict[str, list[float | None]] | None = None,
+    series_10min: dict[str, list[float | None]] | None = None,
+) -> float | None:
+    """Latest SOC % from 10-min series (prefer) or hourly buckets (H23→H0)."""
+    if series_10min:
+        for v in reversed(series_10min.get("soc") or []):
+            if v is not None:
+                return float(v)
+    if hourly:
+        soc_series = hourly.get("soc") or []
+        for h in range(len(soc_series) - 1, -1, -1):
+            if soc_series[h] is not None:
+                return float(soc_series[h])
+    return None
+
+
 def resolve_day_start_soc_kwh(
     *,
     battery_cap: float,
@@ -192,23 +209,22 @@ def resolve_day_start_soc_kwh(
     live_soc_kwh: float | None,
     today_hourly: dict[str, list[float | None]] | None,
     prev_day_hourly: dict[str, list[float | None]] | None,
+    prev_day_series_10min: dict[str, list[float | None]] | None = None,
 ) -> float:
     """Seed midnight SOC for the solid as-if-00:00 day-plan simulation.
 
     Priority:
-      1. Yesterday H23 end SOC (calendar midnight)
+      1. Last available SOC from yesterday (10-min series, else hourly H23→H0)
       2. Live MQTT SOC
       3. Today hour-0 Influx backtrack (when H0 reading exists)
-      4. Min SOC floor
     """
     min_kwh = (float(min_soc_pct) / 100.0) * battery_cap
     cap = float(battery_cap)
 
-    if prev_day_hourly:
-        soc_series = prev_day_hourly.get("soc") or []
-        if len(soc_series) > 23 and soc_series[23] is not None:
-            pct = max(float(min_soc_pct), min(100.0, float(soc_series[23])))
-            return max(min_kwh, min(cap, (pct / 100.0) * cap))
+    prev_pct = last_available_soc_pct(prev_day_hourly, prev_day_series_10min)
+    if prev_pct is not None:
+        pct = max(float(min_soc_pct), min(100.0, prev_pct))
+        return max(min_kwh, min(cap, (pct / 100.0) * cap))
 
     if live_soc_kwh is not None:
         return max(min_kwh, min(cap, float(live_soc_kwh)))
@@ -217,7 +233,17 @@ def resolve_day_start_soc_kwh(
     if backtrack is not None:
         return backtrack
 
+    # Live SOC is expected whenever meters are online; min floor only if callers
+    # pass no live and no Influx yet (startup race).
     return min_kwh
+
+
+def last_q15_soc_pct(slots: list[float | None] | None) -> float | None:
+    """Last non-null SOC % in a 96-slot day plan curve."""
+    for v in reversed(slots or []):
+        if v is not None:
+            return float(v)
+    return None
 
 
 def _hourly_slot_empty(hourly: dict[str, list[float | None]], h: int) -> bool:
@@ -1260,10 +1286,11 @@ def build_actual_hour_row(
 
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     min_soc_pct = float(params["min_soc_pct"])
-    live_soc_pct = max(
-        min_soc_pct,
-        min(100.0, float(live_metrics.get("battery_soc", 50.0))),
-    )
+    live_raw = live_metrics.get("battery_soc")
+    if live_raw is not None:
+        live_soc_pct = max(min_soc_pct, min(100.0, float(live_raw)))
+    else:
+        live_soc_pct = float(min_soc_pct)
     soc_kwh = (live_soc_pct / 100.0) * battery_cap
 
     if soc_h is not None:

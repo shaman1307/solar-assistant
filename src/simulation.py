@@ -28,6 +28,8 @@ from .plan_hourly_actuals import (
     hour_in_progress,
     hourly_profile_to_q15,
     interval_end_label,
+    last_available_soc_pct,
+    last_q15_soc_pct,
     replay_forward_soc_on_rows,
     resolve_day_start_soc_kwh,
     sync_blended_current_hour_row,
@@ -51,6 +53,112 @@ from .timer_plan import (
 Q15_PER_HOUR = 4
 STEP_SCALE = 1.0 / Q15_PER_HOUR
 
+
+def ea_today_end_soc_pct(plan: dict[str, Any] | None) -> float | None:
+    """End-of-day SOC % from Energy Arbitrage today (history + plan rows).
+
+    Prefers the latest hour of *today_date*; for the same hour, later rows win
+    so current-hour / plan rows override completed history.
+    """
+    if not plan:
+        return None
+    today = str(plan.get("today_date") or "")
+    best_h = -1
+    best: float | None = None
+    for r in list(plan.get("history_rows") or []) + list(plan.get("rows") or []):
+        if str(r.get("plan_date") or r.get("date") or "") != today:
+            continue
+        try:
+            h = int(r.get("hour")) if r.get("hour") is not None else -1
+        except (TypeError, ValueError):
+            continue
+        soc = None
+        q15 = r.get("q15") or []
+        if q15 and q15[-1].get("soc") is not None:
+            soc = float(q15[-1]["soc"])
+        elif r.get("soc") is not None:
+            soc = float(r["soc"])
+        if soc is None:
+            continue
+        if h >= best_h:
+            best_h = h
+            best = soc
+    return best
+
+
+def rebuild_tomorrow_plan_soc_from_ea_end(
+    plan_soc_q15: dict[str, list[float | None]],
+    *,
+    forecast: dict[str, Any],
+    cfg: dict,
+    today_date: str,
+    ea_end_soc_pct: float | None,
+) -> dict[str, list[float | None]]:
+    """Rebuild tomorrow chart SOC seeded from live EA end-of-today SOC.
+
+    Tomorrow stays unlocked and refreshes as EA end moves; once that calendar
+    day becomes *today*, compose freezes its solid curve.
+    """
+    today = plan_soc_q15.get("today") or []
+    if ea_end_soc_pct is None:
+        return plan_soc_q15
+
+    try:
+        base = datetime.strptime(str(today_date), "%Y-%m-%d")
+    except ValueError:
+        return plan_soc_q15
+    tomorrow_str = (base + timedelta(days=1)).strftime("%Y-%m-%d")
+    pv = [float(v) for v in (forecast.get("tomorrow") or {}).get("pv") or []]
+    load = [float(v) for v in (forecast.get("tomorrow") or {}).get("load") or []]
+    if len(pv) < 24 or len(load) < 24:
+        return plan_soc_q15
+
+    battery_cap = float(cfg["battery"]["capacity_kwh"])
+    min_soc_pct = plan_min_soc_pct(cfg)
+    end_pct = max(float(min_soc_pct), min(100.0, float(ea_end_soc_pct)))
+    seed_kwh = max(
+        (float(min_soc_pct) / 100.0) * battery_cap,
+        min(battery_cap, (end_pct / 100.0) * battery_cap),
+    )
+    quarters = quarter_rce_for_dates(tomorrow_str).get(tomorrow_str) or []
+    rce_q = quarters if len(quarters) >= Q15_PER_HOUR * 24 else None
+    day_plan = run_day_smart_q15_plan(
+        date_str=tomorrow_str,
+        pv_hourly=pv,
+        load_hourly=load,
+        tomorrow_pv=pv,
+        tomorrow_load=load,
+        cfg=cfg,
+        rce_quarters=rce_q,
+        initial_soc_kwh=seed_kwh,
+        from_hour=0,
+    )
+    tomorrow_timer_ov = get_timer_overrides_for_date(cfg, tomorrow_str)
+    if day_plan and tomorrow_timer_ov:
+        day_plan = apply_plan_timer_overrides_if_any(
+            day_plan,
+            date_str=tomorrow_str,
+            pv_hourly=pv,
+            load_hourly=load,
+            tomorrow_pv=pv,
+            tomorrow_load=load,
+            cfg=cfg,
+            from_hour=0,
+            rce_quarters=rce_q,
+            gap_mode="idle",
+        )
+    out: list[float | None] = [None] * 96
+    if day_plan:
+        q15_by_hour = day_plan.get("q15_by_hour") or {}
+        for h in range(24):
+            for slot in q15_by_hour.get(h) or []:
+                q = int(slot.get("quarter", 0))
+                if not (0 <= q < 4):
+                    continue
+                idx = h * 4 + q
+                v = slot.get("soc_pct")
+                out[idx] = round(float(v), 1) if v is not None else None
+    return {"today": list(today), "tomorrow": out}
 
 def _now_warsaw() -> datetime:
     from .influxdb import now_warsaw
@@ -338,9 +446,6 @@ def build_energy_arbitrage_plan(
     min_soc_pct = plan_min_soc_pct(cfg)
     epsilon = float(params["epsilon_kwh"])
 
-    initial_soc_pct = max(min_soc_pct, min(100.0, float(live_metrics.get("battery_soc", 50.0))))
-    soc_kwh = (initial_soc_pct / 100.0) * battery_cap
-
     pv_today = forecast["today"]["pv"]
     pv_tomorrow = forecast["tomorrow"]["pv"]
     load_today = forecast["today"]["load"]
@@ -375,6 +480,22 @@ def build_energy_arbitrage_plan(
     actual_step0 = hour_in_progress(now, start_dt)
     today_hourly = live_metrics.get("today_hourly")
     series_10min = live_metrics.get("series_10min")
+    prev_day_hourly = live_metrics.get("prev_day_hourly")
+    prev_day_series_10min = live_metrics.get("prev_day_series_10min")
+
+    live_raw = live_metrics.get("battery_soc")
+    if live_raw is not None:
+        initial_soc_pct = max(min_soc_pct, min(100.0, float(live_raw)))
+    else:
+        fallback_pct = last_available_soc_pct(today_hourly, series_10min)
+        if fallback_pct is None:
+            fallback_pct = last_available_soc_pct(prev_day_hourly, prev_day_series_10min)
+        initial_soc_pct = (
+            max(min_soc_pct, min(100.0, float(fallback_pct)))
+            if fallback_pct is not None
+            else float(min_soc_pct)
+        )
+    soc_kwh = (initial_soc_pct / 100.0) * battery_cap
 
     # Optimizer: Influx for completed hours only; current hour blended actual+forecast.
     pv_merged, load_merged = merge_today_hourly_profile(
@@ -385,13 +506,14 @@ def build_energy_arbitrage_plan(
     )
     forecast_pv_q15 = forecast["today"].get("pv_forecast_q15") or forecast["today"].get("pv_q15")
     forecast_load_q15 = forecast["today"].get("load_q15")
-    # Seed the solid day-plan SOC from calendar midnight (yesterday H23 / live).
+    # Solid day-plan SOC seeds from last available yesterday reading (not 50%).
     day_start_soc = resolve_day_start_soc_kwh(
         battery_cap=battery_cap,
         min_soc_pct=min_soc_pct,
-        live_soc_kwh=soc_kwh,
+        live_soc_kwh=soc_kwh if live_raw is not None else None,
         today_hourly=today_hourly,
-        prev_day_hourly=live_metrics.get("prev_day_hourly"),
+        prev_day_hourly=prev_day_hourly,
+        prev_day_series_10min=prev_day_series_10min,
     )
 
     rce_today = quarters_by_date.get(today_str) or []
@@ -809,6 +931,57 @@ def build_energy_arbitrage_plan(
         )
     today_plan_soc = _soc_q15_from_q15_by_hour(day_plan_for_soc)
 
+    # Tomorrow chart SOC seeds from EA end-of-today (table last hour), not from
+    # the solid as-if-00:00 day-plan curve (which diverges mid-day).
+    tom_seed_kwh: float | None = None
+    for r in reversed(all_rows):
+        if str(r.get("plan_date") or "") != today_str:
+            continue
+        soc_pct = None
+        q15 = r.get("q15") or []
+        if q15 and q15[-1].get("soc") is not None:
+            soc_pct = float(q15[-1]["soc"])
+        elif r.get("soc") is not None:
+            soc_pct = float(r["soc"])
+        if soc_pct is None:
+            continue
+        pct = max(float(min_soc_pct), min(100.0, soc_pct))
+        tom_seed_kwh = (pct / 100.0) * battery_cap
+        break
+    if tom_seed_kwh is None and smart_today and smart_today.get("end_soc_kwh") is not None:
+        tom_seed_kwh = float(smart_today["end_soc_kwh"])
+    if tom_seed_kwh is None:
+        tom_seed_kwh = float(day_start_soc)
+    tom_seed_kwh = max(
+        (float(min_soc_pct) / 100.0) * battery_cap,
+        min(battery_cap, float(tom_seed_kwh)),
+    )
+    day_plan_tomorrow_for_soc = run_day_smart_q15_plan(
+        date_str=tomorrow_str,
+        pv_hourly=[float(v) for v in pv_tomorrow],
+        load_hourly=[float(v) for v in load_tomorrow],
+        tomorrow_pv=[float(v) for v in pv_tomorrow],
+        tomorrow_load=[float(v) for v in load_tomorrow],
+        cfg=cfg,
+        rce_quarters=rce_tomorrow_full,
+        initial_soc_kwh=tom_seed_kwh,
+        from_hour=0,
+    )
+    if day_plan_tomorrow_for_soc and tomorrow_timer_ov:
+        day_plan_tomorrow_for_soc = apply_plan_timer_overrides_if_any(
+            day_plan_tomorrow_for_soc,
+            date_str=tomorrow_str,
+            pv_hourly=[float(v) for v in pv_tomorrow],
+            load_hourly=[float(v) for v in load_tomorrow],
+            tomorrow_pv=[float(v) for v in pv_tomorrow],
+            tomorrow_load=[float(v) for v in load_tomorrow],
+            cfg=cfg,
+            from_hour=0,
+            rce_quarters=rce_tomorrow_full,
+            gap_mode="idle",
+        )
+    tomorrow_plan_soc = _soc_q15_from_q15_by_hour(day_plan_tomorrow_for_soc)
+
     schedule_from = (
         now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
         if actual_step0 else start_dt
@@ -851,7 +1024,7 @@ def build_energy_arbitrage_plan(
         "today_date": today_str,
         "plan_soc_q15": {
             "today": today_plan_soc,
-            "tomorrow": _soc_q15_from_q15_by_hour(smart_tomorrow),
+            "tomorrow": tomorrow_plan_soc,
         },
         # Candidate for lock; plan_simulation freezes today once locked.
         "plan_soc_day_locked": False,

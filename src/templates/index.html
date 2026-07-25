@@ -101,15 +101,24 @@
       min-width: 0;
       text-align: right;
     }
+    /* Fixed-width slot so missing pencil does not shift timer text. */
+    .sim-timer-pencil-slot {
+      flex: 0 0 1.1em;
+      width: 1.1em;
+      height: 1.1em;
+      margin: 0;
+      margin-inline-start: -0.02em;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
     .sim-timer-pencil {
-      flex-shrink: 0;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       width: 1.1em;
       height: 1.1em;
       margin: 0;
-      margin-inline-start: -0.02em;
       padding: 0;
       border: none;
       border-radius: 0.15em;
@@ -1550,11 +1559,21 @@
       gap: 0.375rem;
       flex-shrink: 0;
     }
-    .ov-reset-btn {
+    .ov-reset-btn,
+    .ov-set-btn {
       min-width: 0;
       padding: 0.125rem 0.5rem;
       font-size: 10px;
       line-height: 1.25;
+    }
+    .ov-set-btn:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+    .fc-day-btn.fc-set-flash {
+      background-color: #22c55e;
+      color: #030712;
+      font-weight: 600;
     }
     .power-management-panel .forecast-overrides-sliders {
       margin-top: 0.25rem;
@@ -2935,10 +2954,12 @@
               <div class="ov-control-main">
               <div class="ov-head">
                 <div class="ov-head-main">
-                  <label class="ov-total-label text-sm font-semibold text-gray-500">Forecast PV total: <span class="ov-kwh tabular-nums text-amber-400">— kWh</span></label>
+                  <label class="ov-total-label text-sm font-semibold text-gray-500">PV Forecast: <span class="ov-kwh tabular-nums text-amber-400">— kWh</span></label>
                 </div>
                 <div class="ov-head-actions">
                   <span class="ov-formula">—</span>
+                  <button type="button" class="ov-set-btn fc-day-btn bg-gray-200 hover:bg-gray-300 text-gray-600"
+                    onclick="confirmOverrideControl(document.getElementById('ov-ctrl-pv'))" disabled>Set</button>
                   <button type="button" class="ov-reset-btn fc-day-btn bg-gray-200 hover:bg-gray-300 text-gray-600"
                     onclick="resetOverrideControl(document.getElementById('ov-ctrl-pv'))">Reset</button>
                 </div>
@@ -2967,10 +2988,12 @@
               <div class="ov-control-main">
               <div class="ov-head">
                 <div class="ov-head-main">
-                  <label class="ov-total-label text-sm font-semibold text-gray-500">Forecast Consumption total: <span class="ov-kwh tabular-nums text-blue-400">— kWh</span></label>
+                  <label class="ov-total-label text-sm font-semibold text-gray-500">Consumption Forecast: <span class="ov-kwh tabular-nums text-blue-400">— kWh</span></label>
                 </div>
                 <div class="ov-head-actions">
                   <span class="ov-formula">—</span>
+                  <button type="button" class="ov-set-btn fc-day-btn bg-gray-200 hover:bg-gray-300 text-gray-600"
+                    onclick="confirmOverrideControl(document.getElementById('ov-ctrl-load'))" disabled>Set</button>
                   <button type="button" class="ov-reset-btn fc-day-btn bg-gray-200 hover:bg-gray-300 text-gray-600"
                     onclick="resetOverrideControl(document.getElementById('ov-ctrl-load'))">Reset</button>
                 </div>
@@ -3279,7 +3302,7 @@ House load: battery while SOC &gt; min">Baseline<br><span class="font-normal">(P
           <tr class="border-b border-gray-200 text-gray-500 text-left">
             <th class="px-2 py-2 font-medium">Start - End</th>
             <th class="px-2 py-2 font-medium text-right">PV</th>
-            <th class="px-2 py-2 font-medium text-right">Forecast PV total<br><span class="font-normal">chart</span></th>
+            <th class="px-2 py-2 font-medium text-right">PV Forecast<br><span class="font-normal">chart</span></th>
             <th class="px-2 py-2 font-medium text-right">Load</th>
             <th class="px-2 py-2 font-medium text-right">Grid Used<br><span class="font-normal">act / sim</span></th>
             <th class="px-2 py-2 font-medium text-right">Grid Export<br><span class="font-normal">act / sim</span></th>
@@ -4342,9 +4365,12 @@ const OV_PCT_MIN = 1;
 const OV_PCT_MAX = 1000;
 const OV_PCT_BASE = 100;
 const OV_POS_SPLIT = 50; // 100% sits at centre of track
+const OV_REVERT_MS = 5000;
 
-let ovSaveTimer = null;
 let ovSaveInFlight = false;
+const ovRevertTimers = {};
+let fcSetFlashTimer = null;
+let fcResetFlashTimer = null;
 
 function evLoadKwhForDay(day) {
   if (!forecastData?.ev_charging) return 0;
@@ -4502,7 +4528,7 @@ function ovNudgeKwh(el, direction) {
   const step = OV_METRICS.find(m => m.metric === metric)?.stepKwh || 1;
   const next = ovCurrentKwh(el) + direction * step;
   ovSetKwhFromAbsolute(el, next);
-  scheduleOverrideSave();
+  noteOverrideDraft(el);
 }
 
 function applyOvKwhInput(el) {
@@ -4516,7 +4542,7 @@ function applyOvKwhInput(el) {
     return;
   }
   ovSetKwhFromAbsolute(el, raw);
-  scheduleOverrideSave();
+  noteOverrideDraft(el);
 }
 
 function bindOvRangeTouchGuard(range, el) {
@@ -4531,6 +4557,8 @@ function bindOvRangeTouchGuard(range, el) {
     if (guard.blocked) {
       range.value = guard.startValue;
       updateOvControl(el);
+      range.dataset.ovScrollBlocked = '1';
+      setTimeout(() => { delete range.dataset.ovScrollBlocked; }, 0);
     }
     guard = null;
   };
@@ -4566,7 +4594,10 @@ function bindOvRangeTouchGuard(range, el) {
   range.addEventListener('touchcancel', endGuard, { passive: true });
 
   range.addEventListener('input', () => {
-    if (guard?.blocked) range.value = guard.startValue;
+    if (guard?.blocked) {
+      range.value = guard.startValue;
+      range.dataset.ovScrollBlocked = '1';
+    }
   });
 }
 
@@ -4660,6 +4691,100 @@ function syncOvPendingFromExact(el, kwh) {
   }
 }
 
+function ovSavedValue(cfgKey) {
+  const saved = forecastData?.overrides_saved || {};
+  const v = saved[cfgKey];
+  return v == null || v === '' ? null : Number(v);
+}
+
+function overrideIsDirty(el) {
+  if (!el) return false;
+  const metric = el.dataset.metric;
+  const day = el.dataset.day || currentForecastDay;
+  const cfgKey = ovCfgKeyForMetric(metric, day);
+  const pending = ovPendingOverrides[cfgKey] ?? null;
+  const saved = ovSavedValue(cfgKey);
+  if (pending == null && saved == null) return false;
+  if (pending == null || saved == null) return true;
+  return Math.abs(Number(pending) - Number(saved)) >= 0.005;
+}
+
+function setOverrideSetEnabled(el, enabled) {
+  const btn = el?.querySelector('.ov-set-btn');
+  if (btn) btn.disabled = !enabled;
+}
+
+function refreshOverrideSetButtons() {
+  OV_METRICS.forEach(({ id }) => {
+    const el = document.getElementById('ov-ctrl-' + id);
+    if (!el) return;
+    setOverrideSetEnabled(el, overrideIsDirty(el));
+  });
+}
+
+function clearOverrideRevert(el) {
+  if (!el) return;
+  const cfgKey = ovCfgKeyForMetric(el.dataset.metric, el.dataset.day || currentForecastDay);
+  if (ovRevertTimers[cfgKey]) {
+    clearTimeout(ovRevertTimers[cfgKey]);
+    delete ovRevertTimers[cfgKey];
+  }
+}
+
+function clearAllOverrideReverts() {
+  Object.keys(ovRevertTimers).forEach((k) => {
+    clearTimeout(ovRevertTimers[k]);
+    delete ovRevertTimers[k];
+  });
+}
+
+function scheduleOverrideRevert(el) {
+  if (!el) return;
+  const cfgKey = ovCfgKeyForMetric(el.dataset.metric, el.dataset.day || currentForecastDay);
+  if (ovRevertTimers[cfgKey]) clearTimeout(ovRevertTimers[cfgKey]);
+  ovRevertTimers[cfgKey] = setTimeout(() => {
+    delete ovRevertTimers[cfgKey];
+    revertOverrideControl(el);
+  }, OV_REVERT_MS);
+}
+
+function noteOverrideDraft(el) {
+  if (!el) return;
+  syncOvPendingFromSliders();
+  if (overrideIsDirty(el)) {
+    scheduleOverrideRevert(el);
+    setOverrideSetEnabled(el, true);
+  } else {
+    clearOverrideRevert(el);
+    setOverrideSetEnabled(el, false);
+  }
+}
+
+function revertOverrideControl(el) {
+  if (!el) return;
+  const metric = el.dataset.metric;
+  const day = el.dataset.day || currentForecastDay;
+  const cfgKey = ovCfgKeyForMetric(metric, day);
+  clearOverrideRevert(el);
+  const saved = ovSavedValue(cfgKey);
+  ovPendingOverrides[cfgKey] = saved;
+  const base = parseFloat(el.dataset.baseline) || 0;
+  const pct = saved != null && base > 0 ? ovKwhToPct(base, saved) : OV_PCT_BASE;
+  el.querySelector('.ov-range').value = ovPctToPosValue(pct);
+  updateOvControl(el, saved != null ? { exactKwh: saved } : {});
+  setOverrideSetEnabled(el, false);
+  refreshEnergyOverviewPlanFill();
+}
+
+async function confirmOverrideControl(el) {
+  if (!el || !overrideIsDirty(el)) return;
+  clearOverrideRevert(el);
+  syncOvPendingFromSliders();
+  await saveOverrides();
+  flashSetButton(el.querySelector('.ov-set-btn'));
+  refreshOverrideSetButtons();
+}
+
 function applyOverrideSlidersForDay(day) {
   if (!forecastData?.baseline) return;
   OV_METRICS.forEach(({ id, metric }) => {
@@ -4675,6 +4800,7 @@ function applyOverrideSlidersForDay(day) {
     updateOvControl(el, saved != null ? { exactKwh: saved } : {});
   });
   refreshLoadOvDisplay();
+  refreshOverrideSetButtons();
 }
 
 /** Keep slider positions; refresh OM baseline labels after periodic forecast fetch. */
@@ -4690,6 +4816,7 @@ function refreshOverrideLabelsFromForecast() {
 
 function initOverrideSliders(baseline, savedOverrides) {
   if (!baseline) return;
+  clearAllOverrideReverts();
   ovPendingOverrides = { ...(savedOverrides || {}) };
   OV_METRICS.forEach(({ id }) => {
     const el = document.getElementById('ov-ctrl-' + id);
@@ -4699,9 +4826,13 @@ function initOverrideSliders(baseline, savedOverrides) {
     bindOvRangeTouchGuard(range, el);
     if (!range.dataset.bound) {
       range.addEventListener('input', () => {
+        if (range.dataset.ovScrollBlocked === '1') {
+          delete range.dataset.ovScrollBlocked;
+          updateOvControl(el);
+          return;
+        }
         updateOvControl(el);
-        syncOvPendingFromSliders();
-        scheduleOverrideSave();
+        noteOverrideDraft(el);
       });
       range.dataset.bound = '1';
     }
@@ -4719,12 +4850,15 @@ function readOverridePayload() {
   return body;
 }
 
-function scheduleOverrideSave() {
-  clearTimeout(ovSaveTimer);
-  ovSaveTimer = setTimeout(() => saveOverrides(), 1000);
+function flashSetButton(btn) {
+  if (!btn) return;
+  btn.classList.add('fc-set-flash');
+  clearTimeout(fcSetFlashTimer);
+  fcSetFlashTimer = setTimeout(() => {
+    btn.classList.remove('fc-set-flash');
+    fcSetFlashTimer = null;
+  }, 1000);
 }
-
-let fcResetFlashTimer = null;
 
 function flashResetButton(btn) {
   if (!btn) return;
@@ -4736,23 +4870,23 @@ function flashResetButton(btn) {
   }, 1000);
 }
 
-function resetOverrideControl(el) {
+async function resetOverrideControl(el) {
   if (!el) return;
   const metric = el.dataset.metric;
   if (!metric) return;
   const cfgKey = ovCfgKeyForMetric(metric, currentForecastDay);
+  clearOverrideRevert(el);
   ovPendingOverrides[cfgKey] = null;
   el.querySelector('.ov-range').value = ovPctToPosValue(OV_PCT_BASE);
   updateOvControl(el);
+  setOverrideSetEnabled(el, false);
   flashResetButton(el.querySelector('.ov-reset-btn'));
-  scheduleOverrideSave();
+  await saveOverrides();
+  refreshOverrideSetButtons();
 }
 
 async function saveOverrides() {
-  if (ovSaveInFlight) {
-    scheduleOverrideSave();
-    return;
-  }
+  if (ovSaveInFlight) return;
   ovSaveInFlight = true;
   try {
     const res = await fetch('api/overrides', {
@@ -4783,11 +4917,12 @@ async function refreshForecastOverridesPlan() {
     btn.textContent = 'Refreshing…';
   }
   try {
-    if (ovSaveTimer) {
-      clearTimeout(ovSaveTimer);
-      ovSaveTimer = null;
-      await saveOverrides();
-    }
+    clearAllOverrideReverts();
+    const dirty = OV_METRICS.some(({ id }) => {
+      const el = document.getElementById('ov-ctrl-' + id);
+      return overrideIsDirty(el);
+    });
+    if (dirty) await saveOverrides();
     if (evSaveTimer) {
       clearTimeout(evSaveTimer);
       evSaveTimer = null;
@@ -8994,19 +9129,20 @@ function simTimerCell(r, isHistory) {
   const timerText = r.timer_schedule || '';
   const esc = String(timerText).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const editable = simTimerRowEditable(r, isHistory);
-  if (!editable) {
-    if (!timerText) return '<td class="text-gray-300 sim-col-wrap">—</td>';
-    return `<td class="text-amber-800 leading-snug sim-col-wrap">${esc}</td>`;
-  }
-  const date = r.plan_date || simData.today_date;
   const manualCls = r.timer_schedule_manual ? ' sim-timer-manual' : '';
   const textHtml = timerText
     ? `<div class="sim-timer-cell-text${manualCls}">${esc}</div>`
     : '<div class="sim-timer-cell-text text-gray-300">—</div>';
-  return `<td class="text-amber-800 leading-snug sim-col-wrap sim-timer-cell"
-    data-sim-timer-date="${date}"
-    data-sim-timer-hour="${r.hour}"
-    data-sim-timer-manual="${r.timer_schedule_manual ? '1' : '0'}"><div class="sim-timer-cell-inner">${textHtml}<button type="button" class="sim-timer-pencil" data-sim-timer-edit="1" aria-label="Edit Timer Schedule" title="Edit Timer Schedule">${SIM_TIMER_PENCIL_SVG}</button></div></td>`;
+  const pencilHtml = editable
+    ? `<button type="button" class="sim-timer-pencil" data-sim-timer-edit="1" aria-label="Edit Timer Schedule" title="Edit Timer Schedule">${SIM_TIMER_PENCIL_SVG}</button>`
+    : '';
+  const date = r.plan_date || (simData && simData.today_date) || '';
+  const hourAttr = r.hour != null ? ` data-sim-timer-hour="${r.hour}"` : '';
+  const dateAttr = date ? ` data-sim-timer-date="${date}"` : '';
+  const editAttrs = editable
+    ? `${dateAttr}${hourAttr} data-sim-timer-manual="${r.timer_schedule_manual ? '1' : '0'}"`
+    : '';
+  return `<td class="text-amber-800 leading-snug sim-col-wrap sim-timer-cell"${editAttrs}><div class="sim-timer-cell-inner">${textHtml}<div class="sim-timer-pencil-slot">${pencilHtml}</div></div></td>`;
 }
 
 let _simTimerEditCtx = null;

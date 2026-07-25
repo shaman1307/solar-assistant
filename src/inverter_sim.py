@@ -60,8 +60,14 @@ def _initial_soc_kwh(
         start_kwh = max(0.0, min(battery_cap, end_kwh - bc + bd))
         return start_kwh, (start_kwh / battery_cap) * 100.0
 
-    start_kwh = battery_cap * 0.5
-    return start_kwh, 50.0
+    # No hour-0 reading: use the latest available hourly SOC as a stand-in start.
+    for h in range(len(soc_series) - 1, -1, -1):
+        if soc_series[h] is not None:
+            pct = float(soc_series[h])
+            start_kwh = max(0.0, min(battery_cap, (pct / 100.0) * battery_cap))
+            return start_kwh, pct
+
+    raise ValueError("No SOC reading available to seed hour-0 battery energy")
 
 
 def simulate_hour_load_priority(

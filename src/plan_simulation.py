@@ -25,6 +25,8 @@ from .plan_cache_merge import (
 )
 from .simulation import (
     apply_locked_hour_labels_from_plan,
+    ea_today_end_soc_pct,
+    rebuild_tomorrow_plan_soc_from_ea_end,
     run_simulation,
 )
 from .simulation_config import (
@@ -115,12 +117,12 @@ def compose_plan_soc_q15(
     *,
     refresh: bool = False,
 ) -> dict[str, list[float | None]]:
-    """Solid chart SOC plan: one as-if-00:00 day run, then freeze for the day.
+    """Solid chart SOC: freeze *today* once locked; keep *tomorrow* fresh.
 
-    Never copies EA actuals. Once *plan_soc_day_locked* for the same calendar
-    day, today's 96 slots stay unchanged across mid-day refresh — unless
-    *refresh* is True (Forecast Overrides / config replan), which takes the
-    fresh full-day simulator curve. Tomorrow always follows the fresh simulator.
+    Today: as-if-00:00 day run, frozen while *plan_soc_day_locked* for the same
+    calendar day (unless *refresh*). Tomorrow: always the fresh simulator curve
+    (seeded from live EA end-of-today); it keeps moving until that day becomes
+    today and then freezes under the today lock.
     """
     old_bundle = (existing or {}).get("plan_soc_q15") or {}
     new_bundle = (fresh or {}).get("plan_soc_q15") or {}
@@ -297,7 +299,7 @@ async def fetch_plan_inputs(
     def _safe(val: Any, default: Any) -> Any:
         return default if isinstance(val, Exception) else val
 
-    metrics = _safe(results[0], {"battery_soc": 50.0, "sa_online": False})
+    metrics = _safe(results[0], {"battery_soc": None, "sa_online": False})
     rules = _safe(results[1], {})
     rce_prices = _safe(results[2], {"current_price_pln_kwh": None, "today": [], "tomorrow": []})
     today_day = _safe(results[3], {})
@@ -308,13 +310,14 @@ async def fetch_plan_inputs(
         today_pv_actual = today_day["hourly"].get("pv")
         if today_day.get("series_10min"):
             metrics["series_10min"] = today_day["series_10min"]
-    # Always load yesterday hourly: solid plan_soc seeds from H23 (midnight),
-    # and H0 carryover still needs it at hour==0.
+    # Yesterday SOC: solid plan seeds from last available reading (10-min / hourly).
     yesterday_str = (now_warsaw() - timedelta(days=1)).strftime("%Y-%m-%d")
     prev_day = await influxdb_mod.get_accruals_for_date(yesterday_str)
     if isinstance(prev_day, dict) and prev_day.get("hourly"):
         metrics = dict(metrics)
         metrics["prev_day_hourly"] = prev_day["hourly"]
+        if prev_day.get("series_10min"):
+            metrics["prev_day_series_10min"] = prev_day["series_10min"]
     forecast = await forecast_mod.get_forecast(cfg, today_pv_actual=today_pv_actual)
     return forecast, metrics, rules, rce_prices
 
@@ -445,6 +448,13 @@ async def build_plan_simulation(
         # Chart: solid stays frozen across window-mismatch merge (unlock via
         # hourly_plan_refresh(unlock_plan_soc=True)).
         result["plan_soc_q15"] = compose_plan_soc_q15(existing, result)
+        result["plan_soc_q15"] = rebuild_tomorrow_plan_soc_from_ea_end(
+            result["plan_soc_q15"],
+            forecast=result.get("forecast") or forecast,
+            cfg=cfg,
+            today_date=str(result.get("today_date") or now.strftime("%Y-%m-%d")),
+            ea_end_soc_pct=ea_today_end_soc_pct(result),
+        )
         result["plan_soc_day_locked"] = any(
             v is not None for v in (result["plan_soc_q15"].get("today") or [])
         )
@@ -504,6 +514,13 @@ async def hourly_plan_refresh(
         # Solid = as-if-00:00 day plan (frozen once); dashed = EA actual.
         result["plan_soc_q15"] = compose_plan_soc_q15(
             existing, result, refresh=unlock_plan_soc,
+        )
+        result["plan_soc_q15"] = rebuild_tomorrow_plan_soc_from_ea_end(
+            result["plan_soc_q15"],
+            forecast=result.get("forecast") or forecast,
+            cfg=cfg,
+            today_date=str(result.get("today_date") or now.strftime("%Y-%m-%d")),
+            ea_end_soc_pct=ea_today_end_soc_pct(result),
         )
         result["plan_soc_day_locked"] = any(
             v is not None for v in (result["plan_soc_q15"].get("today") or [])
