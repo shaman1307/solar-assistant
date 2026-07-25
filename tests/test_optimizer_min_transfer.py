@@ -158,7 +158,7 @@ def test_no_grid_export_when_evening_soc_only_covers_night():
     """Evening sun must not collapse reserve — no Dis when SOC is night-critical."""
     pv = [0.0] * 24
     load = [0.9] * 24
-    # Hour 17–18 still sunny enough to cover house (old bug zeroed overnight reserve).
+    # Hour 17–18 still sunny enough to cover house; overnight reserve must remain.
     pv[17] = 1.2
     pv[18] = 1.0
     rce = [0.4] * 96

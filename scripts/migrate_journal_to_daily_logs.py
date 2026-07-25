@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Split smart.service journal into logs/YYYY/MM/YYYY-MM-DD.log (one-shot migration)."""
+"""Split smart.service journal into logs/YYYY/MM/YYYY-MM-DD.log."""
 
 from __future__ import annotations
 

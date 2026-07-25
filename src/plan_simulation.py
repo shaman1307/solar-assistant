@@ -216,7 +216,7 @@ def extract_actual_soc_q15(
     }
 
 
-# Backwards-compatible alias (old name mixed plan with EA actuals).
+# Alias for extract_actual_soc_q15.
 extract_plan_soc_q15 = extract_actual_soc_q15
 
 
@@ -308,12 +308,13 @@ async def fetch_plan_inputs(
         today_pv_actual = today_day["hourly"].get("pv")
         if today_day.get("series_10min"):
             metrics["series_10min"] = today_day["series_10min"]
-    if now_warsaw().hour == 0:
-        yesterday_str = (now_warsaw() - timedelta(days=1)).strftime("%Y-%m-%d")
-        prev_day = await influxdb_mod.get_accruals_for_date(yesterday_str)
-        if isinstance(prev_day, dict) and prev_day.get("hourly"):
-            metrics = dict(metrics)
-            metrics["prev_day_hourly"] = prev_day["hourly"]
+    # Always load yesterday hourly: solid plan_soc seeds from H23 (midnight),
+    # and H0 carryover still needs it at hour==0.
+    yesterday_str = (now_warsaw() - timedelta(days=1)).strftime("%Y-%m-%d")
+    prev_day = await influxdb_mod.get_accruals_for_date(yesterday_str)
+    if isinstance(prev_day, dict) and prev_day.get("hourly"):
+        metrics = dict(metrics)
+        metrics["prev_day_hourly"] = prev_day["hourly"]
     forecast = await forecast_mod.get_forecast(cfg, today_pv_actual=today_pv_actual)
     return forecast, metrics, rules, rce_prices
 

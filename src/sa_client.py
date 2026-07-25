@@ -7,7 +7,7 @@ Uses py_solar_assistant.DeviceClient which connects via HTTP Basic Auth:
 SA must have a web password configured (Configuration → Security).
 Set the password in sa-config.yaml under sa.password.
 The host should include the port if SA is not on port 80:
-  sa.host: "localhost:8080"   (legacy nginx install; default is "localhost" on port 80)
+  sa.host: "localhost:8080"   (non-default port example; default host is "localhost" on port 80)
   sa.password: "your_password"
 
 All public functions return safe defaults when SA is unreachable,
@@ -37,7 +37,7 @@ _BATTERY_DISCHARGE_MODE_DEFAULT_OPTIONS = (
     "UPS and home loads",
     "Grid export enabled",
 )
-# Legacy Smart labels → exact SA enum strings (SRNE / current SA UI).
+# Map alternate discharge-mode labels to exact SA enum strings.
 _BATTERY_DISCHARGE_MODE_WRITE_ALIASES: dict[str, str] = {
     "UPS loads only": "UPS load only",
     "Grid sell": "Grid export enabled",
@@ -281,9 +281,8 @@ def _grid_power_w_from_sa(
 ) -> float:
     """Live grid power (W): import negative, export positive.
 
-    New SA builds expose signed ``total/grid_power`` (negative = export) and
-    separate ``total/grid_energy_in/out`` daily meters. Legacy SRNE builds
-    reported gross positive W only — sign from PV/load/battery balance.
+    Prefer signed ``total/grid_power`` when sa_grid_meter; otherwise sign
+    gross-positive W from PV/load/battery balance.
     """
     raw = float(raw_w)
     if sa_grid_meter:
@@ -301,7 +300,7 @@ def _signed_grid_power_w(
     *,
     epsilon: float = 40.0,
 ) -> float:
-    """Sign live grid power from PV/load/battery balance (legacy SA / SRNE gross W)."""
+    """Sign gross-positive grid power from PV/load/battery balance."""
     gross = abs(float(grid_gross_w))
     if gross < epsilon:
         return 0.0

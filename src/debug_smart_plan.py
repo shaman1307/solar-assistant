@@ -533,7 +533,7 @@ def run_today_smart_q15_plan(
     live_soc_kwh: float,
 ) -> dict[str, Any] | None:
     """Live EA plan from *plan_from_hour* (timers / rows). Chart SOC plan is separate."""
-    del day_start_soc_kwh  # kept for call-site compatibility
+    del day_start_soc_kwh  # unused here; callers may still pass it
     plan_from_hour = max(0, min(23, int(plan_from_hour)))
     return run_day_smart_q15_plan(
         date_str=date_str,
@@ -798,7 +798,7 @@ def apply_smart_plan_day1(
     cfg: dict | None = None,
     rce_quarters: list[float | None] | None = None,
 ) -> float | None:
-    """Backward-compatible wrapper for day-1 smart plan."""
+    """Run the day-1 smart plan via apply_smart_plan_for_day."""
     return apply_smart_plan_for_day(
         day, day2_rows, date_str, cfg=cfg, rce_quarters=rce_quarters,
     )

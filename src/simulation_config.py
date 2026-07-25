@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-# Optimizer / simulation always plan a full calendar day (config horizon removed).
+# Plan a full calendar day (24 hours).
 PLAN_HORIZON_HOURS = 24
 
 DEFAULT_SIMULATION: dict[str, Any] = {

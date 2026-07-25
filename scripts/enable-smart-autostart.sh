@@ -29,7 +29,7 @@ if [ -f "${PROJECT_DIR}/${GUARD}.service" ]; then
 fi
 
 if [ -f "${LEGACY_PATH}" ]; then
-  echo "[enable-smart-autostart] removing legacy ${LEGACY} ..."
+  echo "[enable-smart-autostart] removing ${LEGACY} ..."
   sudo systemctl disable --now "${LEGACY}" 2>/dev/null || true
   sudo rm -f "${LEGACY_PATH}"
 fi

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""One-shot: patch overnight grid-charge windows into plan + unlock solid SOC.
+"""Patch overnight grid-charge windows into the plan and unlock solid SOC.
 
-Matches 2026-07-24 actuals (~03:00-04:20 and ~04:40-05:15 at ~5 kW, SOC 17→36%).
-Writes plan_overrides timer cells, refreshes plan with unlock_plan_soc, and
-updates EA history/row Timer Schedule text for those hours.
+Target date 2026-07-24 (~03:00–05:15 at ~5 kW, SOC 17→36%).
+Write plan_overrides timer cells, refresh with unlock_plan_soc, and update
+EA history/row Timer Schedule text for those hours.
 """
 from __future__ import annotations
 
@@ -16,8 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Plan cells: continuous Chg windows (one segment per hour). Actual had a
-# 04:20–04:40 pause; plan ignores that dip so the hour still reaches target SOC.
+# Continuous Chg windows (one segment per hour) so each hour reaches target SOC.
 DEFAULT_DATE = "2026-07-24"
 DEFAULT_OVERRIDES: dict[int, str] = {
     3: "Chg 03:00-04:00 5kW cap36%",
@@ -75,8 +74,8 @@ async def _run(*, date_str: str, overrides: dict[int, str], dry_run: bool) -> in
 
     plan = await hourly_plan_refresh(cfg, unlock_plan_soc=True)
 
-    # write_plan() protects past hours — patch timer text via SQLite like
-    # datafix_plan_timer_schedule.py so EA history cells show the Chg windows.
+    # write_plan() protects past hours — patch timer text in SQLite so EA
+    # history cells show the Chg windows (same approach as datafix_plan_timer_schedule).
     db = Path(__file__).resolve().parents[1] / "data" / "solar_smart.db"
     conn = sqlite3.connect(db)
     row = conn.execute("SELECT payload_json FROM plan_latest WHERE id = 1").fetchone()

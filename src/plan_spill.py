@@ -84,7 +84,8 @@ def build_tail_hour_arrays(
     """PV/load/buy/export-credit for calendar hours after the optimized horizon.
 
   *tail_start_hour* is the first calendar hour not covered by DP steps (e.g. 24 when
-    the plan ends at 23:45). Defaults to *end_dt.hour* for legacy hourly horizons.
+    the plan ends at 23:45). Defaults to *end_dt.hour* when *tail_start_hour* is
+    omitted (hourly horizon).
     """
     day_key = _forecast_day_key(end_dt, today_date)
     pv_day = forecast[day_key]["pv"]

@@ -18,7 +18,7 @@ BASELINE_HEADER_TITLE = (
     "House load: battery while SOC > min"
 )
 
-# Back-compat alias for older imports/tests.
+# Alias for BASELINE_HEADER_TITLE.
 BASELINE_SA_HEADER_TITLE = BASELINE_HEADER_TITLE
 
 

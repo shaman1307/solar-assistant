@@ -126,7 +126,7 @@ async def api_forecast() -> dict[str, Any]:
     ):
         forecast["plan_soc_q15"] = plan_soc
     else:
-        # Legacy plans stored EA-blended SOC under plan_soc_q15 — treat as actual only.
+        # Empty plan_soc_q15: leave blanks; EA-blended SOC lives in actual_soc_q15.
         forecast["plan_soc_q15"] = {"today": [None] * 96, "tomorrow": [None] * 96}
     forecast["actual_soc_q15"] = extract_actual_soc_q15(plan)
     return forecast

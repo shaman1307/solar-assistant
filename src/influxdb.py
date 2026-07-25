@@ -582,8 +582,7 @@ def _query_day(date_str: str) -> dict[str, Any]:
                     pass
         totals[key] = round(total_wh / 1000.0, 3)
 
-    # Grid: use SA Influx grid in/out hourly when both series exist. Fall back to
-    # gross-meter split or energy-balance derivation on older SA builds.
+    # Prefer signed grid in/out series; else split gross meters or derive from energy balance.
     has_grid_in_series = any(v is not None for v in hourly["grid_in"])
     has_grid_out_series = any(v is not None for v in hourly["grid_out"])
     if has_grid_in_series and has_grid_out_series:

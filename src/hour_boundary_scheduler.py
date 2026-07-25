@@ -325,8 +325,8 @@ async def run_hour_boundary_start() -> dict[str, Any]:
 async def run_hour_boundary_limit_home() -> dict[str, Any]:
     """:15/:30/:45 — end export: Timed off → Limit home → UPS/home battery.
 
-    Also recovers a missed :00 timer write while a Chg/Dis window is still open
-    (front-load wipe / empty sync must not leave the inverter idle until :00+1h).
+    Also write the open Chg/Dis timer if the :00 sync was missed, so the inverter
+    is not idle until the next :00.
     """
     global _last_hour_boundary_sync
 

@@ -159,7 +159,7 @@ def _calendar_pair(now: datetime | None = None) -> tuple[str, str]:
 
 
 def _migrate_v1_to_v2(data: dict[str, Any], today_str: str) -> None:
-    """Legacy per-date sessions → relative today/tomorrow + history."""
+    """Migrate per-date sessions dict into relative today/tomorrow + history."""
     old = data.pop("sessions", {}) or {}
     tomorrow_str = (
         datetime.strptime(today_str, "%Y-%m-%d").date() + timedelta(days=1)

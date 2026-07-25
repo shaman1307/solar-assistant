@@ -358,8 +358,7 @@ def refresh_effective_metrics(cfg: dict, dates: list[str]) -> dict[str, Any]:
         if date_str not in days:
             continue
         load_metric = days[date_str]["load"]
-        # One-time migration: older caches used plain mean and can be skewed by outliers.
-        # Rebuild today's base load profile once after deployment.
+        # Rebuild today's base load profile when base_source is not weekday_samples_trimmed_v1.
         if date_str == today_str and load_metric.get("base_source") != "weekday_samples_trimmed_v1":
             load_q15, load_hourly = compute_weekday_load_profile(date_str, cfg)
             _set_metric_effective(load_metric, load_hourly, load_q15)

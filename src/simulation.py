@@ -20,7 +20,6 @@ from .debug_smart_plan import (
     run_day_smart_q15_plan,
     run_today_smart_q15_plan,
 )
-from .inverter_sim import _initial_soc_kwh
 from .plan_hourly_actuals import (
     apply_current_hour_blend,
     build_blended_current_hour_q15,
@@ -30,6 +29,7 @@ from .plan_hourly_actuals import (
     hourly_profile_to_q15,
     interval_end_label,
     replay_forward_soc_on_rows,
+    resolve_day_start_soc_kwh,
     sync_blended_current_hour_row,
 )
 from .plan_optimizer import (
@@ -231,18 +231,17 @@ def _plan_start_soc_kwh(
 ) -> float:
     """SOC at the start of plan_from_hour (end of the last completed hour).
 
-    At hour 0 always use live SOC. ``day_start_soc`` from ``_initial_soc_kwh``
-    falls back to 50% of capacity when today's hour-0 Influx SOC is still
-    missing (typical just after midnight) and must not seed the blended row.
+    At hour 0 use live SOC. Solid chart midnight seed is separate
+    (``resolve_day_start_soc_kwh``).
     """
-    del day_start_soc  # unused at hour 0; kept for call-site compatibility
+    del day_start_soc  # unused at hour 0; callers may still pass it
     if plan_from_hour > 0 and today_hourly:
         anchor = _hourly_soc_kwh(
             today_hourly, plan_from_hour - 1, battery_cap, min_soc_pct,
         )
         if anchor is not None:
             return anchor
-    # Hour 0, or no prior-hour Influx anchor: live meter is the source of truth.
+    # Hour 0, or no prior-hour Influx anchor: use live meter SOC.
     return live_soc_kwh
 
 
@@ -254,9 +253,8 @@ def apply_locked_hour_labels_from_plan(
 ) -> None:
     """After any rebuild: keep locked timer/action for current hour from SQLite.
 
-    At :00: if SQLite already has a non-empty Timer for this hour (planned while
-    it was still future), keep that timer/action and the row energy/SOC — do not
-    adopt a fresh empty Chg wipe from front-load. Otherwise lock fresh labels.
+    At :00: if SQLite already has a non-empty Timer for this hour, keep that
+    timer/action and the row energy/SOC; otherwise lock fresh labels.
     Mid-hour: keep locked labels from SQLite.
     Once locked, timer_schedule and action are never clipped or rewritten.
     """
@@ -291,7 +289,7 @@ def apply_locked_hour_labels_from_plan(
                 else ""
             )
             if existing_row is not None and existing_timer:
-                # Commit the already-planned current hour; do not take fresh wipe.
+                # Commit the already-planned current hour from SQLite.
                 for key, val in existing_row.items():
                     row[key] = copy.deepcopy(val)
                 row["hour_labels_locked"] = True
@@ -387,9 +385,14 @@ def build_energy_arbitrage_plan(
     )
     forecast_pv_q15 = forecast["today"].get("pv_forecast_q15") or forecast["today"].get("pv_q15")
     forecast_load_q15 = forecast["today"].get("load_q15")
-    day_start_soc, _ = _initial_soc_kwh(today_hourly or {}, battery_cap)
-    if not today_hourly:
-        day_start_soc = soc_kwh
+    # Seed the solid day-plan SOC from calendar midnight (yesterday H23 / live).
+    day_start_soc = resolve_day_start_soc_kwh(
+        battery_cap=battery_cap,
+        min_soc_pct=min_soc_pct,
+        live_soc_kwh=soc_kwh,
+        today_hourly=today_hourly,
+        prev_day_hourly=live_metrics.get("prev_day_hourly"),
+    )
 
     rce_today = quarters_by_date.get(today_str) or []
     committed_hour = _committed_current_hour_row(today_str, plan_from_hour)

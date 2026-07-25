@@ -193,8 +193,8 @@ def replay_day_plan_with_timer_overrides(
 
     *gap_mode*:
       - ``optimize`` — re-run DP on hours without a manual cell (EA rolling plan)
-      - ``idle`` — HourControl(0,0): PV→battery / load from battery only (solid SOC
-        curve after a past-hour Chg patch; avoids DP dumping SOC after forced charge)
+      - ``idle`` — HourControl(0,0): PV→battery / load from battery only on hours
+        without a manual cell (solid SOC curve after a past-hour Chg patch)
     """
     if not overrides:
         return plan
@@ -434,10 +434,8 @@ def apply_plan_timer_overrides_if_any(
     if not plan or not overrides:
         return plan
 
-    # Rolling mid-day plan is seeded at from_hour (often plan_from_hour+1) and has
-    # empty q15 for earlier hours. Replaying past-only overrides from that seed
-    # loses committed/live SOC and falls back to min SOC (~16%). Those past cells
-    # only belong on the solid as-if-00:00 SOC curve (from_hour=0).
+    # Skip past-only timer overrides on a mid-day rolling plan (from_hour > 0).
+    # Those cells belong on the solid as-if-00:00 SOC curve (from_hour=0).
     if max(overrides.keys()) < int(from_hour):
         return plan
 

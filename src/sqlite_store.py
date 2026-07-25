@@ -234,7 +234,7 @@ def _migrate_to_v4(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_to_v6(conn: sqlite3.Connection) -> None:
-    """One-time backfill: June 2026 closed-month deposit + fix corrupted month_history stubs."""
+    """Backfill June 2026 closed-month deposit and rewrite incomplete month_history stubs."""
     row = conn.execute(
         "SELECT value FROM meta WHERE key = 'deposits_june_backfill_v1'",
     ).fetchone()
@@ -565,7 +565,7 @@ def read_plan_buy_tariff() -> dict[str, Any] | None:
 
 
 def save_plan_snapshot(plan: dict[str, Any], *, now: datetime | None = None) -> None:
-    """Alias for write_plan — keep a single persistence entry point."""
+    """Delegate to write_plan (single persistence entry point)."""
     write_plan(plan, now=now)
 
 

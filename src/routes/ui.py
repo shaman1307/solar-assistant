@@ -69,7 +69,7 @@ def _render_index(request: Request, initial_tab: str = "dashboard") -> HTMLRespo
         "battery_discharge_mode_options": _battery_discharge_mode_options_for_template(),
         "solar_power_priority_options": _solar_power_priority_options_for_template(),
     }
-    # Starlette 0.36+ new signature; fall back to old signature if needed.
+    # Try TemplateResponse(request, name, context); on TypeError use (name, context).
     try:
         response = templates.TemplateResponse(request, "index.html", context)
     except TypeError:

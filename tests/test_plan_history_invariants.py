@@ -79,9 +79,8 @@ def _mk_row(hour: int, *, source: str) -> dict:
 def _mk_fresh(sim_now: datetime) -> dict:
     """Fresh sim payload: rows from sim_now.hour, meter history for earlier hours.
 
-    Mid-hour optimizer intentionally wipes the current hour's Timer Schedule /
-    Action and rewrites q15 — the same wipe that used to erase started Dis/Chg
-    windows from SQLite. Merge must keep locked labels and from_actual slots.
+    Mid-hour optimizer clears the current hour's Timer Schedule / Action and
+    rewrites q15. Merge must keep locked labels and from_actual slots.
     """
     from_hour = sim_now.hour
     label = sim_now.strftime("%H:%M:%S")

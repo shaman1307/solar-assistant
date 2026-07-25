@@ -153,9 +153,8 @@ def run_deposit_cascade(
         totals = payload.setdefault("totals", _empty_totals())
         export = float(totals.get("export_revenue") or 0.0)
         import_tariff = float(totals.get("import_energy_cost") or 0.0)
-        # Seed month (2026-05) has no prior deposits: May import is not drawn from
-        # the 174 PLN seed — that month was still on a different tariff. Import
-        # draws start from June onward against older deposit_current balances.
+        # Seed month (2026-05): May import does not draw from the 174 PLN seed
+        # (different tariff). Import draws start from June against older balances.
         prior_ids = [m for m in months if m < month_id]
         energy_total = compute_energy_deposit_total(
             export,

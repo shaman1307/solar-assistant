@@ -1,4 +1,4 @@
-"""Plan-start SOC must not use the 50% midnight placeholder."""
+"""Resolve plan-start SOC from live meter (hour 0) or prior Influx hour end."""
 
 from __future__ import annotations
 
@@ -7,16 +7,16 @@ import pytest
 from src.simulation import _plan_start_soc_kwh
 
 
-def test_plan_start_hour0_uses_live_not_half_capacity_placeholder():
+def test_plan_start_hour0_uses_live():
     battery_cap = 48.0
     live = 0.22 * battery_cap
-    placeholder = 0.5 * battery_cap
+    unused_day_start = 0.5 * battery_cap
     got = _plan_start_soc_kwh(
         0,
         {"soc": [None] * 24},
         battery_cap,
         16.0,
-        placeholder,
+        unused_day_start,
         live,
     )
     assert got == live

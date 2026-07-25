@@ -838,7 +838,7 @@
       flex-direction: column;
       min-width: 0;
       padding-left: 1rem;
-      /* Room for next-day X label past midnight (hour 23 stays readable). */
+      /* Reserve right padding for the next-day X label after hour 23. */
       padding-right: 2.25rem;
     }
     #tariff-rce-wrap {
@@ -8787,8 +8787,7 @@ function simEnergyRoundedCents(n) {
 }
 
 function simEnergyIsNegligible(n) {
-  // Hourly noise: ±0.01 PLN (e.g. 0.01 kWh import) must show as dash, not "-0.01".
-  // Only |rounded| === 0 used to dash; 0.005…0.01 rounded to ±0.01 and leaked through.
+  // Treat |rounded| ≤ 0.01 PLN as negligible (show dash).
   return Math.abs(simEnergyRoundedCents(n)) <= 0.01;
 }
 

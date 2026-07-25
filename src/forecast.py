@@ -111,7 +111,7 @@ def _pv_cache_key(cfg: dict) -> tuple:
 
 
 def _get_pv_profiles_sync(cfg: dict) -> dict[str, list[float]]:
-    """Legacy Open-Meteo rolling cache (horizon / fallback only)."""
+    """Open-Meteo rolling PV cache for horizon / fallback only."""
     global _pv_cache
     key = _pv_cache_key(cfg)
     now = time.time()

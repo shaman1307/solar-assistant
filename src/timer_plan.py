@@ -228,7 +228,10 @@ def _hour_export_debug_action(
     *,
     epsilon: float = 0.001,
 ) -> str | None:
-    """Legacy export label helper; prefer classify_action via summarize_hour_actions_debug."""
+    """Hour export label from q15 slots (tests/debug).
+
+    Prefer ``summarize_hour_actions_debug`` / ``classify_action`` at call sites.
+    """
     del hour, cfg
     pv_total = sum(float(s.get("pv") or 0) for s in slots)
     grid_export = sum(float(s.get("grid_export") or 0) for s in slots)
@@ -444,8 +447,8 @@ def _hour_timer_segment(
     to_min = hour_start + (last_q + 1) * 15
     from_min = max(natural_from, floor_min)
     # Extend toward min_block only into the *future* within this hour — never into the past.
-    # For a leftover last-hour export (one full quarter of energy), padding to 30 min
-    # correctly yields a lower timer kW (e.g. Dis 23:00-23:30 4kW) instead of dropping it.
+    # Pad a short leftover export window forward to min_block within the hour
+    # (lower kW over a longer span).
     if to_min - from_min < min_block:
         to_min = min(hour_end, from_min + min_block)
     if to_min - from_min < min_block:
@@ -990,7 +993,7 @@ def clip_timer_schedule_not_before(
 
     Fully past segments (end <= earliest) are dropped. A still-running segment is
     truncated at *earliest_from_min*; remaining duration may be shorter than
-    min_block (in-progress discharge must not vanish mid-window).
+    min_block so an in-progress discharge stays visible mid-window.
     Unparseable text is left unchanged.
     """
     del cfg  # reserved for callers; min_block does not apply to clip remainders

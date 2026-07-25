@@ -56,11 +56,10 @@ def _should_preserve_imminent_chg(
     today_str: str,
     current_hour: int,
 ) -> bool:
-    """Keep next-hour Chg when front-load clears it in the fresh sim.
+    """Keep SQLite next-hour Chg when the fresh sim clears that timer before :00.
 
-    Before :00 the target hour is still "future". Fresh often empties it and
-    slips charge to hour+1 — overwriting would wipe the committed Chg so the
-    :00 SA sync sees an empty timer (tonight: Chg 02:00 vanished → H03 slip).
+    Front-load often slips charge to hour+1; keep the committed Chg so the :00
+    SA sync still sees the planned timer.
     """
     if plan_date != today_str or hour != current_hour + 1:
         return False
@@ -70,7 +69,7 @@ def _should_preserve_imminent_chg(
     fresh_timer = str(fresh_row.get("timer_schedule") or "").strip()
     if not _timer_has_chg(existing_timer):
         return False
-    # Fresh cleared the timer (classic front-load wipe) — keep planned Chg.
+    # Fresh cleared the timer — keep the planned Chg.
     return not fresh_timer
 
 
@@ -211,8 +210,8 @@ def _apply_actual_quarter_if_needed(
 ) -> bool:
     """Write one actual q15 slot when not yet frozen. Returns True if row changed.
 
-    *force*: one-shot datafix — rewrite an already-frozen completed quarter
-    (energy from Influx, SOC chained from live / prior actuals). Past hours stay locked.
+    *force*: rewrite an already-frozen completed quarter (energy from Influx,
+    SOC chained from live / prior actuals). Past hours stay locked.
     """
     q15 = _ensure_q15_length(list(row.get("q15") or []))
     if _q15_slot_actual(q15[quarter]) and not force:
@@ -223,8 +222,7 @@ def _apply_actual_quarter_if_needed(
     if soc_start is None and live_soc_kwh is not None:
         soc_start = float(live_soc_kwh)
     if soc_start is None:
-        # Prior actual end-SOC, else implied start from the :00 plan slot —
-        # never invent a flat 50% of capacity.
+        # Use prior actual end-SOC, else implied start from the :00 plan slot.
         for q in range(quarter - 1, -1, -1):
             if _q15_slot_actual(q15[q]):
                 soc_start = (float(q15[q].get("soc") or 0) / 100.0) * battery_cap
@@ -275,11 +273,10 @@ def datafix_completed_quarters_from_live(
     battery_cap: float,
     live_soc_kwh: float,
 ) -> bool:
-    """One-shot data fix for the *current* hour only (never past hours).
+    """Rewrite completed quarters of the *current* hour from Influx; rechain SOC from *live*.
 
-    - Completed quarters: force-rewrite from Influx; SOC chain starts at *live*.
-    - Later quarters: keep energy/timer; only rechain SOC from that live start.
-    Timer/action labels are never changed here.
+    Later quarters keep energy/timer; only SOC is rechained from that live start.
+    Past hours stay locked. Timer/action labels are not changed here.
     """
     min_soc_pct = plan_min_soc_pct(cfg)
     min_kwh = plan_min_soc_kwh(cfg)
@@ -332,7 +329,7 @@ def _live_soc_kwh_from_metrics(
     battery_cap: float,
     live_soc_pct: float | None = None,
 ) -> float | None:
-    """Live inverter SOC in kWh when SA is online; never the offline 50% default."""
+    """Return live inverter SOC in kWh when SA is online; otherwise None."""
     if not metrics or not metrics.get("sa_online"):
         return None
     raw = live_soc_pct if live_soc_pct is not None else metrics.get("battery_soc")
@@ -390,12 +387,10 @@ def _merge_current_hour_q15(
 
 
 def _lock_hour_labels(row: dict[str, Any], fresh_row: dict[str, Any]) -> None:
-    """Freeze Timer Schedule / Action for the current hour at :00.
+    """At :00 lock Timer Schedule / Action for the current hour.
 
-    If SQLite already has a non-empty timer for this hour (planned while it was
-    still a future hour), keep it. Fresh sim often clears current-hour Chg
-    because front-load skips hour 0 of the rolling horizon — overwriting would
-    wipe a started charge window (e.g. Chg 01:00-01:30 vanishes at 01:00).
+    Keep a non-empty SQLite timer already planned for this hour; do not replace
+    it with an empty fresh timer.
     """
     if row.get("timer_schedule_manual"):
         row["hour_labels_locked"] = True
@@ -429,7 +424,7 @@ def _as_history_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _strip_blended_flags(history: list[dict]) -> None:
-    """Self-heal rows promoted by older code with the live-SOC flag still set."""
+    """Clear ``soc_blended`` on history rows."""
     for row in history:
         row.pop("soc_blended", None)
 
@@ -449,8 +444,8 @@ def _backfill_history_from_meters(
 ) -> int:
     """Append meters-based rows for past hours absent from history (append-only).
 
-    Existing history entries are never touched — this only heals holes left by
-    a missed :00 promote (restart/race at the hour boundary).
+    Existing history entries stay unchanged. Fill missing past hours after a
+    missed :00 promote (restart/race at the hour boundary).
     """
     added = 0
     for row in meter_rows or []:
@@ -559,8 +554,8 @@ def merge_incremental_plan(
                         )
                         break
 
-    # Any older completed hour still sitting in existing.rows (missed :00 tick
-    # after a restart/delayed refresh) — promote as-is, never drop.
+    # Promote any completed hour still sitting in existing.rows (missed :00 tick
+    # after a restart/delayed refresh).
     for key, row in existing_by_key.items():
         plan_date, hour = key
         if plan_date != today_str or hour >= current_hour:
@@ -573,7 +568,7 @@ def merge_incremental_plan(
             hour,
         )
 
-    # Holes left by older code/restarts: heal from the fresh sim's meter rows.
+    # Fill missing past-hour history from the fresh sim meter rows.
     _backfill_history_from_meters(
         history,
         fresh.get("history_rows"),
@@ -605,8 +600,7 @@ def merge_incremental_plan(
                 if now.minute == 0:
                     _lock_hour_labels(row, fresh_row)
                 else:
-                    # Missed :00 — freeze whatever timer/action SQLite already has
-                    # for this hour (do not take mid-hour optimizer wipe).
+                    # Missed :00 — lock the timer/action already in SQLite for this hour.
                     row["hour_labels_locked"] = True
             # Remaining q15 from fresh (weather/plan), then completed → fact and
             # SOC rechain from live so mid-hour stays continuous.
@@ -873,10 +867,10 @@ def _merge_hour_from_quarter(
     """Keep completed/from_actual (and optionally q < from_q); rest from incoming.
 
     Meter actuals: prefer *incoming* when it also marks ``from_actual`` (Influx
-    refresh / datafix). Otherwise keep existing actuals (I7 — sim must not
-    wipe meters). Locked timer/action stay once a Chg/Dis window exists; an empty
-    locked timer may still take incoming labels so an early offpeak Chg is not
-    dropped when the current hour was seeded empty.
+    refresh / datafix). Otherwise keep existing actuals (I7). Locked
+    timer/action stay once a Chg/Dis window exists; an empty locked timer may
+    still take incoming labels so an early offpeak Chg is kept when the current
+    hour was seeded empty.
     """
     merged = copy.deepcopy(incoming_row)
     existing_timer = str(existing_row.get("timer_schedule") or "")
@@ -930,7 +924,7 @@ def _merge_current_hour_future_quarters(
 
 
 def _in_progress_quarter(now: datetime) -> int:
-    """0..3 index of the quarter that is currently in progress (legacy helper)."""
+    """Return 0..3 index of the quarter currently in progress."""
     return min(Q15_PER_HOUR - 1, max(0, now.minute // 15))
 
 
@@ -1039,7 +1033,7 @@ def guard_future_quarters_on_write(
     return result
 
 
-# Back-compat alias used by older tests/imports.
+# Alias for guard_future_quarters_on_write.
 guard_past_hours_on_write = guard_future_quarters_on_write
 
 
@@ -1063,7 +1057,7 @@ def attach_immutable_history(
     current_hour = now.hour
     # The fresh sim may have crossed an hour boundary while it was computed
     # (rows already start at now.hour+1). Use the later boundary so the hour
-    # in between is promoted to history instead of silently dropped.
+    # in between is promoted into history.
     try:
         sim_from_hour = int(result.get("plan_from_hour"))
     except (TypeError, ValueError):

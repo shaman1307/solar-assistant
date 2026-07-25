@@ -191,10 +191,10 @@ def battery_export_step_allowed(
     step_scale: float = 0.25,
     epsilon: float = 0.0,
 ) -> bool:
-    """Legacy q15 neighbour gate (kept for unit tests / docs).
+    """Q15 neighbour RCE gate used by unit tests.
 
-    Live export assignment uses ranked hourly average RCE instead
-    (see assign_ranked_battery_export).
+    Production export assignment uses ranked hourly average RCE
+    (``assign_ranked_battery_export``).
     """
     if not _rce_at_or_above(rce_series, step, floor, epsilon=epsilon):
         return False
@@ -913,7 +913,7 @@ def simulate_hour(
             epsilon=epsilon,
         )
 
-    # Cap at full only — never raise SOC to min_kwh (that invents energy).
+    # Cap SOC at capacity; leave below-min SOC unchanged (no lift to min_kwh).
     soc = min(battery_cap, max(0.0, soc))
     return HourPhysics(
         soc_end=soc,
@@ -1217,7 +1217,7 @@ def _front_load_charge_step_ac(
     ``min_block`` / ``min_hourly_transfer_kwh`` stay enforced in timer_plan /
     ``_correct_min_hourly_transfer_controls``.
     """
-    del step_scale, min_block_minutes  # kept for call-site compatibility
+    del step_scale, min_block_minutes  # unused here; callers may still pass them
     if budget_ac <= eps_step or charge_ac_step <= eps_step:
         return 0.0
     return float(charge_ac_step)
@@ -1249,15 +1249,15 @@ def _front_load_offpeak_grid_charge(
 ) -> list[HourControl]:
     """Move DP pre-peak grid charge to the earliest allowed offpeak steps.
 
-    Default: skip the first clock hour of the horizon (current hour) so a fresh
-    plan does not invent Chg there. Pass ``skip_leading_slots=0`` when the
+    Default: skip the first clock hour of the horizon (current hour) so Chg is
+    not placed in the in-progress hour. Pass ``skip_leading_slots=0`` when the
     horizon already starts after a committed current hour (future-only replan).
 
-    Relocates the optimizer AC budget into consecutive offpeak steps from
+    Relocate the optimizer AC budget into consecutive offpeak steps from
     ``fill_from_step`` at hardware max so one budget packs into the earliest
-    clock hour(s) instead of diluted half-hour slots across neighbours.
+    clock hour(s).
 
-    ``charge_targets`` kept for call-site compatibility (unused).
+    ``charge_targets`` is unused; callers may still pass it.
     House load stays on the battery during the relocated fill.
     """
     del charge_targets

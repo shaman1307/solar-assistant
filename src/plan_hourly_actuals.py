@@ -156,16 +156,16 @@ def hour_start_soc_kwh(
     battery_cap: float,
     min_soc_pct: float,
 ) -> float | None:
-    """SOC at the start of *hour* from Influx (end of previous hour, or backtrack at h=0).
+    """SOC at the start of *hour* from Influx (previous hour end, or hour-0 backtrack).
 
-    Returns None when Influx has no reading — callers must use live SOC, never invent 50%.
+    Return None when Influx has no reading; callers fall back to live SOC.
     """
     if not hourly or not (0 <= hour < 24):
         return None
     min_kwh = (float(min_soc_pct) / 100.0) * battery_cap
     soc_series = hourly.get("soc") or [None] * 24
     if hour == 0:
-        # Only backtrack when hour-0 SOC exists; do not use _initial_soc_kwh's 50% placeholder.
+        # Backtrack only when hour-0 SOC exists; otherwise return None.
         if not soc_series or soc_series[0] is None:
             return None
         start_kwh, _ = _initial_soc_kwh(hourly, battery_cap)
@@ -183,6 +183,41 @@ def hour_start_soc_kwh(
     bc = float((hourly.get("bat_charge") or [None] * 24)[hour] or 0.0)
     bd = float((hourly.get("bat_discharge") or [None] * 24)[hour] or 0.0)
     return max(min_kwh, min(battery_cap, end_kwh - bc + bd))
+
+
+def resolve_day_start_soc_kwh(
+    *,
+    battery_cap: float,
+    min_soc_pct: float,
+    live_soc_kwh: float | None,
+    today_hourly: dict[str, list[float | None]] | None,
+    prev_day_hourly: dict[str, list[float | None]] | None,
+) -> float:
+    """Seed midnight SOC for the solid as-if-00:00 day-plan simulation.
+
+    Priority:
+      1. Yesterday H23 end SOC (calendar midnight)
+      2. Live MQTT SOC
+      3. Today hour-0 Influx backtrack (when H0 reading exists)
+      4. Min SOC floor
+    """
+    min_kwh = (float(min_soc_pct) / 100.0) * battery_cap
+    cap = float(battery_cap)
+
+    if prev_day_hourly:
+        soc_series = prev_day_hourly.get("soc") or []
+        if len(soc_series) > 23 and soc_series[23] is not None:
+            pct = max(float(min_soc_pct), min(100.0, float(soc_series[23])))
+            return max(min_kwh, min(cap, (pct / 100.0) * cap))
+
+    if live_soc_kwh is not None:
+        return max(min_kwh, min(cap, float(live_soc_kwh)))
+
+    backtrack = hour_start_soc_kwh(today_hourly, 0, cap, float(min_soc_pct))
+    if backtrack is not None:
+        return backtrack
+
+    return min_kwh
 
 
 def _hourly_slot_empty(hourly: dict[str, list[float | None]], h: int) -> bool:
@@ -367,10 +402,8 @@ def _elapsed_to_quarter_boundary_kwh(
 ) -> float:
     """Cumulative kWh from hour start through :15/:30/:45 (boundary 1/2/3).
 
-    When the next 10-min sample after a :15/:45 mark is already present, use a
-    true half-slot split (slot0 + 0.5·slot1) instead of extrapolating only the
-    first bucket ×1.5 — otherwise a charge that starts at :10 is invisible in
-    completed q0 and the current-hour SOC chain collapses.
+    When the next 10-min sample after a :15/:45 mark is present, accumulate with
+    a half-slot split (slot0 + 0.5·slot1) so mid-bucket charge enters completed q0.
     """
     if boundary <= 0:
         return 0.0

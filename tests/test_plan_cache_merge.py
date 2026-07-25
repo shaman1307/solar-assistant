@@ -769,7 +769,7 @@ def test_merge_incremental_at_30_quarter_pattern():
 
 
 def test_datafix_rechains_current_hour_soc_from_live_without_unlocking_past():
-    """Poisoned :00 50% seed is fixed from live; past hours and timers stay locked."""
+    """Rechain current-hour SOC from live; keep past hours and timers locked."""
     cfg = _cfg()
     now = datetime(2026, 7, 7, 8, 5, tzinfo=ZoneInfo("Europe/Warsaw"))
     hist = _row(7, timer="Dis 07:00-07:45", locked=True)
@@ -777,7 +777,7 @@ def test_datafix_rechains_current_hour_soc_from_live_without_unlocking_past():
     hist["soc"] = 40.0
 
     cur = _row(8, timer="Dis 08:00-08:45", action="Discharging to Grid", locked=True)
-    # Midnight placeholder seed (~50%) while live is 22%.
+    # Stale :00 plan slots near 50% while live meter is 22%.
     for q, slot in enumerate(cur["q15"]):
         slot["soc"] = 50.0 - q * 0.4
         slot["battery"] = -0.08
@@ -807,7 +807,7 @@ def test_datafix_rechains_current_hour_soc_from_live_without_unlocking_past():
     assert out["timer_schedule"] == "Dis 08:00-08:45"
     assert out["action"] == "Discharging to Grid"
     assert all(not s.get("from_actual") for s in out["q15"])
-    # SOC chain starts near live 22%, not the 50% placeholder.
+    # SOC chain starts near live 22%.
     assert out["q15"][0]["soc"] == pytest.approx(22.0, abs=0.5)
     assert out["soc"] < 25.0
 
