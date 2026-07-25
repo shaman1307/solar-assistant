@@ -3193,7 +3193,7 @@
       </label>
       <button type="button" id="history-month-import-cols-toggle"
         class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0"
-        title="Show or hide Energy Import. Tariff and Baseline Energy Import. columns">Import ▶</button>
+        title="Show or hide Energy Export RCE, Energy Import tariff/service/total, and Baseline Export/Import">Details ▶</button>
       <button type="button" id="history-month-dis-cols-toggle"
         class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0"
         title="Show or hide evening Dis baseline (Export, Import, Cost Total, Saved vs Dis)">Dis ▶</button>
@@ -3203,10 +3203,11 @@
         <colgroup>
           <col class="sim-col-day">
           <col class="sim-col-kwh" span="4">
-          <col class="sim-col-cost">
           <col class="sim-col-cost mh-col-import-detail">
-          <col class="sim-col-cost" span="4">
+          <col class="sim-col-cost mh-col-import-detail">
           <col class="sim-col-cost">
+          <col class="sim-col-cost mh-col-import-detail" span="3">
+          <col class="sim-col-cost mh-col-import-detail">
           <col class="sim-col-cost mh-col-import-detail">
           <col class="sim-col-cost" span="2">
           <col class="sim-col-cost mh-col-dis-baseline" span="4">
@@ -3218,13 +3219,13 @@
             <th class="font-medium text-right mh-bg-import-part">Consumption<br><span class="font-normal">(kWh)</span></th>
             <th class="font-medium text-right mh-bg-import-part">Grid import<br><span class="font-normal">(kWh)</span></th>
             <th class="font-medium text-right mh-bg-import-part">Grid export<br><span class="font-normal">(kWh)</span></th>
-            <th class="font-medium text-right mh-bg-export">Energy Export.<br><span class="font-normal">RCE Cost</span><br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-export mh-col-import-detail">Energy Export.<br><span class="font-normal">RCE Cost</span><br><span class="font-normal">(PLN)</span></th>
             <th class="font-medium text-right mh-bg-import-tariff mh-col-import-detail">Energy Import.<br><span class="font-normal">Tariff Cost</span><br><span class="font-normal">(PLN)</span></th>
             <th class="font-medium text-right mh-bg-energy-total">Energy Cost Total<br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-import-part mh-bg-import-part--first">Energy Import.<br><span class="font-normal">Service Cost</span><br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-import-part">Energy Import.<br><span class="font-normal">Service Fee</span><br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-import-total">Energy Import<br><span class="font-normal">Cost Total (To be paid)</span><br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-export" title="Physics baseline (no timer control)
+            <th class="font-medium text-right mh-bg-import-part mh-bg-import-part--first mh-col-import-detail">Energy Import.<br><span class="font-normal">Service Cost</span><br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-import-part mh-col-import-detail">Energy Import.<br><span class="font-normal">Service Fee</span><br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-import-total mh-col-import-detail">Energy Import<br><span class="font-normal">Cost Total (To be paid)</span><br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-export mh-col-import-detail" title="Physics baseline (no timer control)
 Charge: PV only
 Discharge to grid: battery overflow only
 House load: battery while SOC &gt; min
@@ -8231,7 +8232,7 @@ function setHistoryMonthImportColsExpanded(expanded) {
   const btn = document.getElementById('history-month-import-cols-toggle');
   if (!table) return;
   table.classList.toggle('sim-month-import-collapsed', !expanded);
-  if (btn) btn.textContent = expanded ? 'Import ▼' : 'Import ▶';
+  if (btn) btn.textContent = expanded ? 'Details ▼' : 'Details ▶';
   try { sessionStorage.setItem(HISTORY_MONTH_IMPORT_COLS_KEY, expanded ? '1' : '0'); } catch (_) {}
   table.style.removeProperty('--sim-table-font-size');
   table.style.removeProperty('--sim-table-pad-x');
@@ -8732,13 +8733,13 @@ function makeHistoryMonthRow(r, isTotal) {
     <td class="text-right text-gray-600 tabular-nums mh-bg-import-part">${fmt(r.consumption, 2)}</td>
     <td class="text-right text-gray-600 tabular-nums mh-bg-import-part">${fmt(r.grid_import, 2)}</td>
     <td class="text-right text-gray-600 tabular-nums mh-bg-import-part">${fmt(r.grid_export, 2)}</td>
-    <td class="text-right tabular-nums mh-bg-export ${exportCls}" title="${exportTitle}">${simEnergyFmt(exportVal)}</td>
+    <td class="text-right tabular-nums mh-bg-export mh-col-import-detail ${exportCls}" title="${exportTitle}">${simEnergyFmt(exportVal)}</td>
     <td class="text-right tabular-nums mh-bg-import-tariff mh-col-import-detail ${importCls}" title="${importTitle}">${simCashFmt(importVal)}</td>
     <td class="text-right tabular-nums mh-bg-energy-total ${costTotalCls}" title="${costTotalTitle}">${simCashFmt(costTotalVal)}</td>
-    <td class="text-right tabular-nums mh-bg-import-part mh-bg-import-part--first ${serviceCls}" title="${serviceTitle}">${simServiceFmt(serviceVal)}</td>
-    <td class="text-right tabular-nums mh-bg-import-part ${serviceFeeCls}" title="${serviceFeeTitle}">${simServiceFmt(serviceFeeVal)}</td>
-    <td class="text-right tabular-nums mh-bg-import-total ${importTotalCls}" title="${importTotalTitle}">${simServiceFmt(importTotalVal)}</td>
-    <td class="text-right tabular-nums mh-bg-export ${baselineExpCls}" title="${baselineExpTitle}">${simEnergyFmt(baselineExpVal)}</td>
+    <td class="text-right tabular-nums mh-bg-import-part mh-bg-import-part--first mh-col-import-detail ${serviceCls}" title="${serviceTitle}">${simServiceFmt(serviceVal)}</td>
+    <td class="text-right tabular-nums mh-bg-import-part mh-col-import-detail ${serviceFeeCls}" title="${serviceFeeTitle}">${simServiceFmt(serviceFeeVal)}</td>
+    <td class="text-right tabular-nums mh-bg-import-total mh-col-import-detail ${importTotalCls}" title="${importTotalTitle}">${simServiceFmt(importTotalVal)}</td>
+    <td class="text-right tabular-nums mh-bg-export mh-col-import-detail ${baselineExpCls}" title="${baselineExpTitle}">${simEnergyFmt(baselineExpVal)}</td>
     <td class="text-right tabular-nums mh-bg-import-tariff mh-col-import-detail ${baselineImpCls}" title="${baselineImpTitle}">${simCashFmt(baselineImpVal)}</td>
     <td class="text-right tabular-nums mh-bg-energy-total ${baselineCostCls}" title="${baselineCostTitle}">${simCashFmt(baselineCostVal)}</td>
     <td class="text-right tabular-nums mh-bg-import-total ${savingsCls}" title="${savingsTitle}">${simCashFmt(savingsVal)}</td>
