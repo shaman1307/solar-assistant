@@ -1,25 +1,42 @@
-"""Physics-only baseline costs for monthly history comparison."""
+"""Physics-only and hardcoded evening-Dis baselines for monthly history."""
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from .g12_pricing import get_buy_price
 from .inverter_sim import _initial_soc_kwh
 from .plan_cost import hour_meter_cash_pln
 from .plan_optimizer import HourControl, simulate_hour
 
+BaselineMode = Literal["physics", "evening_dis"]
+
 # Hover text for Monthly history Baseline column header.
 BASELINE_HEADER_TITLE = (
     "Physics baseline (no timer control)\n"
     "Charge: PV only\n"
     "Discharge to grid: battery overflow only\n"
-    "House load: battery while SOC > min"
+    "House load: battery while SOC > min\n"
+    "SOC chains day-to-day within the month"
 )
 
 # Alias for BASELINE_HEADER_TITLE.
 BASELINE_SA_HEADER_TITLE = BASELINE_HEADER_TITLE
+
+# Hardcoded evening dump rule: Dis 8 kW from 19:00 to 22:00 down to SOC 30%.
+EVENING_DIS_START_HOUR = 19  # inclusive
+EVENING_DIS_END_HOUR = 22  # exclusive → hours 19, 20, 21
+EVENING_DIS_POWER_KW = 8.0
+EVENING_DIS_FLOOR_SOC_PCT = 30.0
+
+DIS_BASELINE_HEADER_TITLE = (
+    "Evening Dis baseline (hardcoded)\n"
+    f"Dis {EVENING_DIS_POWER_KW:.0f} kW {EVENING_DIS_START_HOUR}:00–"
+    f"{EVENING_DIS_END_HOUR}:00 down to SOC {EVENING_DIS_FLOOR_SOC_PCT:.0f}%\n"
+    "Other hours: physics only (PV charge, overflow export)\n"
+    "SOC chains day-to-day within the month"
+)
 
 
 def _hourly_slot(
@@ -47,6 +64,26 @@ def _hour_rce_price(
     return round(sum(hour_rce_vals) / len(hour_rce_vals), 4)
 
 
+def _control_for_hour(
+    hour: int,
+    mode: BaselineMode,
+    *,
+    battery_cap: float,
+    min_kwh: float,
+) -> tuple[HourControl, float]:
+    """Return (control, reserve_soc_kwh) for this hour."""
+    if (
+        mode == "evening_dis"
+        and EVENING_DIS_START_HOUR <= hour < EVENING_DIS_END_HOUR
+    ):
+        floor = (EVENING_DIS_FLOOR_SOC_PCT / 100.0) * battery_cap
+        return (
+            HourControl(0.0, EVENING_DIS_POWER_KW, load_from_grid=False),
+            max(min_kwh, floor),
+        )
+    return HourControl(0.0, 0.0, load_from_grid=False), min_kwh
+
+
 def build_baseline_history_rows(
     plan_date: str,
     until_hour: int,
@@ -54,13 +91,24 @@ def build_baseline_history_rows(
     quarters_by_date: dict[str, list[float | None]],
     cfg: dict,
     params: dict[str, float | int],
-) -> list[dict[str, Any]]:
-    """Replay IHDB PV/load with no timer Chg/Dis — load priority + PV physics only."""
-    if until_hour <= 0 or not hourly:
-        return []
+    *,
+    initial_soc_kwh: float | None = None,
+    mode: BaselineMode = "physics",
+) -> tuple[list[dict[str, Any]], float]:
+    """Replay IHDB PV/load for a baseline mode.
 
+    *physics*: no timer Chg/Dis — load priority + PV overflow only.
+    *evening_dis*: same, plus hardcoded Dis 8 kW 19–22 until SOC 30%.
+
+    *initial_soc_kwh*: when set (month carry from the previous baseline day), use
+    that seed instead of Influx hour-0 SOC. Returns (hour rows, end-of-day SOC kWh).
+    """
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     min_kwh = (float(params["min_soc_pct"]) / 100.0) * battery_cap
+    if until_hour <= 0 or not hourly:
+        seed = min_kwh if initial_soc_kwh is None else float(initial_soc_kwh)
+        return [], max(min_kwh, min(battery_cap, seed))
+
     ac_cap_kw = float(cfg["inverter"]["ac_capacity_kw"])
     epsilon = float(params["epsilon_kwh"])
     eta_grid = float(params["eta_grid_battery"])
@@ -71,12 +119,14 @@ def build_baseline_history_rows(
 
     base = datetime.strptime(plan_date, "%Y-%m-%d")
     quarters = quarters_by_date.get(plan_date) or []
-    try:
-        soc_kwh, _ = _initial_soc_kwh(hourly, battery_cap)
-    except ValueError:
-        soc_kwh = min_kwh
-    # Idle control: no grid charge, no intentional battery→grid export.
-    idle = HourControl(0.0, 0.0, load_from_grid=False)
+    if initial_soc_kwh is not None:
+        soc_kwh = max(min_kwh, min(battery_cap, float(initial_soc_kwh)))
+    else:
+        try:
+            soc_kwh, _ = _initial_soc_kwh(hourly, battery_cap)
+        except ValueError:
+            soc_kwh = min_kwh
+        soc_kwh = max(min_kwh, min(battery_cap, soc_kwh))
     rows: list[dict[str, Any]] = []
 
     for h in range(0, until_hour):
@@ -87,12 +137,15 @@ def build_baseline_history_rows(
 
         pv = float(pv_h) if pv_h is not None else 0.0
         load = float(load_h) if load_h is not None else 0.0
+        control, reserve = _control_for_hour(
+            h, mode, battery_cap=battery_cap, min_kwh=min_kwh,
+        )
 
         phys = simulate_hour(
             soc_kwh,
             pv,
             load,
-            idle,
+            control,
             battery_cap=battery_cap,
             min_kwh=min_kwh,
             ac_cap_kw=ac_cap_kw,
@@ -102,7 +155,7 @@ def build_baseline_history_rows(
             eta_pv_grid=eta_pv_grid,
             eta_pv_battery=eta_pv_battery,
             epsilon=epsilon,
-            reserve_soc_kwh=min_kwh,
+            reserve_soc_kwh=reserve,
         )
         soc_kwh = phys.soc_end
 
@@ -128,12 +181,17 @@ def build_baseline_history_rows(
                 "energy_cost": cash["energy_cost"],
                 "service_cost": cash["service_cost"],
                 "cost": cash["cost"],
+                "soc_end_kwh": round(soc_kwh, 4),
             }
         )
-    return rows
+    return rows, float(soc_kwh)
 
 
-def summarize_baseline_rows(rows: list[dict[str, Any]]) -> dict[str, float]:
+def summarize_baseline_rows(
+    rows: list[dict[str, Any]],
+    *,
+    key_prefix: str = "baseline",
+) -> dict[str, float]:
     export_revenue = sum(float(r.get("export_revenue") or 0.0) for r in rows)
     import_tariff = sum(float(r.get("import_energy_cost") or 0.0) for r in rows)
     service_cost = sum(float(r.get("service_cost") or 0.0) for r in rows)
@@ -147,25 +205,27 @@ def summarize_baseline_rows(rows: list[dict[str, Any]]) -> dict[str, float]:
         for r in rows
         if r.get("g12_zone") == "offpeak"
     )
-    # Baseline (1) = export RCE − import tariff (same signed net as MH energy columns).
+    # Net = export RCE − import tariff (same signed net as MH energy columns).
     baseline_net = round(export_revenue - import_tariff, 4)
     return {
-        "baseline_export_revenue": round(export_revenue, 4),
-        "baseline_import_energy_cost": round(import_tariff, 4),
-        "baseline_energy_cost": round(import_tariff - export_revenue, 4),
-        "baseline_service_cost": round(service_cost, 4),
-        "baseline_cost": baseline_net,
-        "baseline_grid_import_peak": round(peak_import, 4),
-        "baseline_grid_import_offpeak": round(offpeak_import, 4),
-        "baseline_grid_import": round(peak_import + offpeak_import, 4),
+        f"{key_prefix}_export_revenue": round(export_revenue, 4),
+        f"{key_prefix}_import_energy_cost": round(import_tariff, 4),
+        f"{key_prefix}_energy_cost": round(import_tariff - export_revenue, 4),
+        f"{key_prefix}_service_cost": round(service_cost, 4),
+        f"{key_prefix}_cost": baseline_net,
+        f"{key_prefix}_grid_import_peak": round(peak_import, 4),
+        f"{key_prefix}_grid_import_offpeak": round(offpeak_import, 4),
+        f"{key_prefix}_grid_import": round(peak_import + offpeak_import, 4),
     }
 
 
 def attach_baseline_savings(
     summary: dict[str, Any],
     baseline_rows: list[dict[str, Any]],
+    *,
+    dis_baseline_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Add baseline energy net and Saved = actual energy net − baseline energy net."""
+    """Add physics (+ optional evening-Dis) baseline nets and Saved vs each."""
     from .plan_cost import month_energy_cost_total, month_import_cost_total, month_savings_pln
 
     baseline = summarize_baseline_rows(baseline_rows)
@@ -183,4 +243,13 @@ def attach_baseline_savings(
         float(baseline["baseline_export_revenue"]),
         float(baseline["baseline_import_energy_cost"]),
     )
+    if dis_baseline_rows is not None:
+        dis = summarize_baseline_rows(dis_baseline_rows, key_prefix="dis_baseline")
+        summary.update(dis)
+        summary["dis_savings_pln"] = month_savings_pln(
+            export_revenue,
+            import_energy,
+            float(dis["dis_baseline_export_revenue"]),
+            float(dis["dis_baseline_import_energy_cost"]),
+        )
     return summary

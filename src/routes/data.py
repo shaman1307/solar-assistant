@@ -76,8 +76,16 @@ async def api_history_rebuild() -> dict[str, Any]:
     return await rebuild_all_month_history(cfg)
 
 
+@router.get("/api/live")
+async def api_live() -> dict[str, Any]:
+    """Live System powers / SOC from SA only (no Influx wait)."""
+    cfg = load_config()
+    return await sa_client.get_live_metrics(cfg)
+
+
 @router.get("/api/metrics")
 async def api_metrics() -> dict[str, Any]:
+    """Combined live + today accruals (compat). Prefer /api/live + /api/accruals for UI."""
     cfg = load_config()
     live, accruals = await asyncio.gather(
         sa_client.get_live_metrics(cfg),

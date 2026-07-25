@@ -47,6 +47,10 @@ def _empty_month_totals() -> dict[str, Any]:
         "baseline_import_energy_cost": 0.0,
         "baseline_cost": 0.0,
         "savings_pln": 0.0,
+        "dis_baseline_export_revenue": 0.0,
+        "dis_baseline_import_energy_cost": 0.0,
+        "dis_baseline_cost": 0.0,
+        "dis_savings_pln": 0.0,
     }
 
 
@@ -132,6 +136,15 @@ def _attach_month_service_fees(
         base_exp,
         base_tariff,
     )
+    dis_exp = float(totals.get("dis_baseline_export_revenue") or 0.0)
+    dis_tariff = float(totals.get("dis_baseline_import_energy_cost") or 0.0)
+    totals["dis_baseline_cost"] = round(dis_exp - dis_tariff, 4)
+    totals["dis_savings_pln"] = month_savings_pln(
+        export_revenue,
+        import_energy,
+        dis_exp,
+        dis_tariff,
+    )
     return totals
 
 
@@ -172,6 +185,18 @@ def _summarize_period(rows: list[dict[str, Any]], cfg: dict) -> dict[str, Any]:
         ),
         "baseline_cost": round(sum(float(r.get("baseline_cost") or 0.0) for r in rows), 4),
         "savings_pln": round(sum(float(r.get("savings_pln") or 0.0) for r in rows), 4),
+        "dis_baseline_export_revenue": round(
+            sum(float(r.get("dis_baseline_export_revenue") or 0.0) for r in rows), 4,
+        ),
+        "dis_baseline_import_energy_cost": round(
+            sum(float(r.get("dis_baseline_import_energy_cost") or 0.0) for r in rows), 4,
+        ),
+        "dis_baseline_cost": round(
+            sum(float(r.get("dis_baseline_cost") or 0.0) for r in rows), 4,
+        ),
+        "dis_savings_pln": round(
+            sum(float(r.get("dis_savings_pln") or 0.0) for r in rows), 4,
+        ),
     }
     return _attach_month_service_fees(totals, rows, cfg)
 
@@ -221,6 +246,7 @@ async def build_month_history(month: str, cfg: dict) -> dict[str, Any]:
         }
 
     params = get_simulation_params(cfg)
+    battery_cap = float(cfg["battery"]["capacity_kwh"])
     accruals, quarters_by_date = await asyncio.gather(
         asyncio.gather(*[influxdb_mod.get_accruals_for_date(d) for d in dates]),
         rce_mod.get_quarter_rce_for_dates(*dates),
@@ -229,6 +255,9 @@ async def build_month_history(month: str, cfg: dict) -> dict[str, Any]:
     now = now_warsaw()
     today_str = now.strftime("%Y-%m-%d")
     rows: list[dict[str, Any]] = []
+    # Continuous baseline SOC: day N starts where day N-1 ended (not Influx midnight).
+    carry_soc_kwh: float | None = None
+    carry_dis_soc_kwh: float | None = None
 
     for date_str, acc in zip(dates, accruals):
         if not isinstance(acc, dict) or acc.get("error"):
@@ -247,22 +276,45 @@ async def build_month_history(month: str, cfg: dict) -> dict[str, Any]:
             cfg,
             params,
         )
-        if not day_rows:
-            continue
-        baseline_rows = build_baseline_history_rows(
+        baseline_rows, end_soc_kwh = build_baseline_history_rows(
             date_str,
             until_hour,
             hourly,
             quarters_by_date,
             cfg,
             params,
+            initial_soc_kwh=carry_soc_kwh,
+            mode="physics",
         )
+        carry_soc_kwh = end_soc_kwh
+        dis_rows, end_dis_soc_kwh = build_baseline_history_rows(
+            date_str,
+            until_hour,
+            hourly,
+            quarters_by_date,
+            cfg,
+            params,
+            initial_soc_kwh=carry_dis_soc_kwh,
+            mode="evening_dis",
+        )
+        carry_dis_soc_kwh = end_dis_soc_kwh
+        if not day_rows:
+            continue
         summary = _summarize_day_rows(day_rows, date_str)
-        baseline_summary = attach_baseline_savings(summary, baseline_rows)
+        baseline_summary = attach_baseline_savings(
+            summary, baseline_rows, dis_baseline_rows=dis_rows,
+        )
         peak_import, offpeak_import, baseline_total = _import_by_zone(baseline_rows)
         baseline_summary["baseline_grid_import_peak"] = round(peak_import, 4)
         baseline_summary["baseline_grid_import_offpeak"] = round(offpeak_import, 4)
         baseline_summary["baseline_grid_import"] = round(baseline_total, 4)
+        if battery_cap > 0:
+            baseline_summary["baseline_end_soc_pct"] = round(
+                100.0 * float(end_soc_kwh) / battery_cap, 1,
+            )
+            baseline_summary["dis_baseline_end_soc_pct"] = round(
+                100.0 * float(end_dis_soc_kwh) / battery_cap, 1,
+            )
         rows.append(baseline_summary)
 
     totals = _summarize_period(rows, cfg)

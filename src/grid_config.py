@@ -7,7 +7,7 @@ from typing import Any
 VAT_BRUTTO_MULTIPLIER = 1.23
 
 # Bump when billing formulas change (invalidates cached month_history).
-BILLING_MODEL_VERSION = "15"
+BILLING_MODEL_VERSION = "16"
 
 # Official Energa G12 distribution tariff (invoice table 2 — ROZLICZENIE DYSTRYBUCJI).
 # All values netto from invoice × VAT_BRUTTO_MULTIPLIER, PLN brutto, 4 dp.

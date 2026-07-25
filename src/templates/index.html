@@ -285,6 +285,20 @@
     .sim-table-month .sim-col-day { width: 14%; }
     .sim-table-month .sim-col-kwh { width: 10%; }
     .sim-table-month .sim-col-cost { width: 11%; }
+    .sim-table-month.sim-month-import-collapsed col.mh-col-import-detail {
+      width: 0;
+      visibility: collapse;
+    }
+    .sim-table-month.sim-month-import-collapsed .mh-col-import-detail {
+      visibility: collapse;
+    }
+    .sim-table-month.sim-month-dis-collapsed col.mh-col-dis-baseline {
+      width: 0;
+      visibility: collapse;
+    }
+    .sim-table-month.sim-month-dis-collapsed .mh-col-dis-baseline {
+      visibility: collapse;
+    }
     /* Monthly history — two neutral column groups (energy balance | import distribution) */
     .sim-table-month .mh-bg-export,
     .sim-table-month .mh-bg-import-tariff,
@@ -1511,7 +1525,8 @@
       .flow-soc {
         font-size: clamp(13px, 3.6cqi, 17px);
       }
-      .dashboard-col-live .dashboard-col-head h2 {
+      .dashboard-col-live .dashboard-col-head h2,
+      .dashboard-col-energy .dashboard-col-head h2 {
         font-size: 18px;
       }
       .energy-overview-cards .dash-card-value {
@@ -2093,10 +2108,10 @@
       min-width: 0;
       max-width: none;
     }
-    .dashboard-col-live .dashboard-col-head h2 {
+    .dashboard-col-live .dashboard-col-head h2,
+    .dashboard-col-energy .dashboard-col-head h2 {
       font-size: 14px;
     }
-    .dashboard-col-energy .dashboard-col-head h2,
     .dashboard-col-energy #accruals-date {
       font-size: 10px;
     }
@@ -3161,7 +3176,8 @@
       <div class="min-w-0">
         <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider truncate">Monthly history</h2>
         <p class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
-          <label class="ov-total-label text-sm font-semibold text-gray-500">
+          <label class="ov-total-label text-sm font-semibold text-gray-500 cursor-help"
+            title="Sum of remaining deposit balances across months. Each month credits export RCE into the pool; import tariff is paid from older months first (not subtracted from that month credit).">
             Energy Deposit Total: <span id="history-deposit-total" class="tabular-nums font-semibold text-green-600">— PLN</span>
           </label>
           <button type="button" id="history-rebuild-btn" onclick="rebuildHistoryFromSqlite()"
@@ -3175,13 +3191,25 @@
           class="rounded-lg border border-gray-300 px-2 py-1 text-xs text-gray-900"
           onchange="loadHistoryMonth()" />
       </label>
+      <button type="button" id="history-month-import-cols-toggle"
+        class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0"
+        title="Show or hide Energy Import. Tariff and Baseline Energy Import. columns">Import ▶</button>
+      <button type="button" id="history-month-dis-cols-toggle"
+        class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0"
+        title="Show or hide evening Dis baseline (Export, Import, Cost Total, Saved vs Dis)">Dis ▶</button>
     </div>
     <div class="sim-history-table-wrap sim-table-wrap bg-white rounded-xl border border-gray-200">
-      <table class="sim-table sim-table-month">
+      <table class="sim-table sim-table-month sim-month-import-collapsed sim-month-dis-collapsed">
         <colgroup>
           <col class="sim-col-day">
           <col class="sim-col-kwh" span="4">
-          <col class="sim-col-cost" span="8">
+          <col class="sim-col-cost">
+          <col class="sim-col-cost mh-col-import-detail">
+          <col class="sim-col-cost" span="4">
+          <col class="sim-col-cost">
+          <col class="sim-col-cost mh-col-import-detail">
+          <col class="sim-col-cost" span="2">
+          <col class="sim-col-cost mh-col-dis-baseline" span="4">
         </colgroup>
         <thead>
           <tr class="border-b border-gray-200 text-gray-500 text-left">
@@ -3191,24 +3219,41 @@
             <th class="font-medium text-right mh-bg-import-part">Grid import<br><span class="font-normal">(kWh)</span></th>
             <th class="font-medium text-right mh-bg-import-part">Grid export<br><span class="font-normal">(kWh)</span></th>
             <th class="font-medium text-right mh-bg-export">Energy Export.<br><span class="font-normal">RCE Cost</span><br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-import-tariff">Energy Import.<br><span class="font-normal">Tariff Cost</span><br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-energy-total">Energy Cost Total<br><span class="font-normal">(Deposit)</span><br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-import-tariff mh-col-import-detail">Energy Import.<br><span class="font-normal">Tariff Cost</span><br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-energy-total">Energy Cost Total<br><span class="font-normal">(PLN)</span></th>
             <th class="font-medium text-right mh-bg-import-part mh-bg-import-part--first">Energy Import.<br><span class="font-normal">Service Cost</span><br><span class="font-normal">(PLN)</span></th>
             <th class="font-medium text-right mh-bg-import-part">Energy Import.<br><span class="font-normal">Service Fee</span><br><span class="font-normal">(PLN)</span></th>
             <th class="font-medium text-right mh-bg-import-total">Energy Import<br><span class="font-normal">Cost Total (To be paid)</span><br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-import-part" title="Physics baseline (no timer control)
+            <th class="font-medium text-right mh-bg-export" title="Physics baseline (no timer control)
 Charge: PV only
 Discharge to grid: battery overflow only
-House load: battery while SOC &gt; min">Baseline<br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-import-total">Saved<br><span class="font-normal">(PLN)</span></th>
+House load: battery while SOC &gt; min
+SOC chains day-to-day within the month">Baseline Export<br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-import-tariff mh-col-import-detail" title="Physics baseline (no timer control)
+Charge: PV only
+Discharge to grid: battery overflow only
+House load: battery while SOC &gt; min
+SOC chains day-to-day within the month">Baseline Import<br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-energy-total" title="Baseline Export − Baseline Import">Baseline Cost<br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-import-total" title="Actual Energy Cost Total − Baseline Cost">Saved<br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-export mh-col-dis-baseline" title="Evening Dis baseline (hardcoded)
+Dis 8 kW 19:00–22:00 down to SOC 30%
+Other hours: physics only (PV charge, overflow export)
+SOC chains day-to-day within the month">Dis Export<br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-import-tariff mh-col-dis-baseline" title="Evening Dis baseline (hardcoded)
+Dis 8 kW 19:00–22:00 down to SOC 30%
+Other hours: physics only (PV charge, overflow export)
+SOC chains day-to-day within the month">Dis Import<br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-energy-total mh-col-dis-baseline" title="Dis Export − Dis Import">Dis Cost<br><span class="font-normal">(PLN)</span></th>
+            <th class="font-medium text-right mh-bg-import-total mh-col-dis-baseline" title="Actual Energy Cost Total − Dis Cost">Saved vs Dis<br><span class="font-normal">(PLN)</span></th>
           </tr>
         </thead>
         <tbody id="history-month-body-total">
-          <tr><td colspan="13" class="px-3 py-6 text-center text-gray-500">Loading monthly history…</td></tr>
+          <tr><td colspan="19" class="px-3 py-6 text-center text-gray-500">Loading monthly history…</td></tr>
         </tbody>
         <tbody id="history-month-toggle" class="hidden">
           <tr class="border-b border-gray-200 bg-slate-50">
-            <td colspan="13" class="px-3 py-2">
+            <td colspan="19" class="px-3 py-2">
               <button type="button" id="history-month-btn" onclick="toggleHistoryMonthDays()"
                 class="text-xs font-medium text-slate-700 hover:text-slate-900">Daily breakdown ▼</button>
             </td>
@@ -4176,26 +4221,36 @@ function updateLiveFlow(d) {
 }
 
 // ---------------------------------------------------------------------------
-// Metrics polling
+// Metrics polling — Live System and Energy Overview paint independently
 // ---------------------------------------------------------------------------
-async function loadMetrics() {
+function applySaDailyEnergyIfToday(d) {
+  // Paint EO kWh from SA daily totals when viewing today (before Influx).
+  const datePicker = document.getElementById('accruals-date');
+  if (!datePicker || datePicker.value !== DEBUG_TODAY || !d) return;
+  if (d.pv_energy_today == null && d.load_energy_today == null) return;
+  if (d.pv_energy_today != null) set('m-pv-energy', fmt(d.pv_energy_today, 2));
+  if (d.load_energy_today != null) set('m-load-energy', fmt(d.load_energy_today, 2));
+  if (d.grid_buy_energy != null) set('m-grid-buy', fmt(-Math.abs(d.grid_buy_energy), 2));
+  if (d.grid_sell_energy != null) set('m-grid-sell', fmt(Math.abs(d.grid_sell_energy), 2));
+  if (d.battery_charged_today != null) set('m-bat-charged', fmt(d.battery_charged_today, 2));
+  if (d.battery_discharged_today != null) {
+    set('m-bat-discharged', fmt(-Math.abs(d.battery_discharged_today), 2));
+  }
+}
+
+async function loadLiveMetrics() {
   try {
-    const res = await fetch('api/metrics');
+    const res = await fetch('api/live');
     const d = await res.json();
-    // kWh accruals — updated by loadAccruals() separately (so date picker works)
-    // Only refresh today's totals if showing today's date.
-    const datePicker = document.getElementById('accruals-date');
-    if (!datePicker || datePicker.value === DEBUG_TODAY) {
-      set('m-pv-energy',      fmt(d.pv_energy_today, 2));
-      set('m-load-energy',    fmt(d.load_energy_today, 2));
-      set('m-grid-buy',       d.grid_buy_energy != null ? fmt(-Math.abs(d.grid_buy_energy), 2) : '—');
-      set('m-grid-sell',      d.grid_sell_energy != null ? fmt(Math.abs(d.grid_sell_energy), 2) : '—');
-      set('m-bat-charged',    fmt(d.battery_charged_today, 2));
-      set('m-bat-discharged', d.battery_discharged_today != null ? fmt(-Math.abs(d.battery_discharged_today), 2) : '—');
-    }
     updateLiveFlow(d);
     updateSaStatusBadge(d);
-  } catch(e) { console.warn('metrics error', e); }
+    applySaDailyEnergyIfToday(d);
+  } catch (e) { console.warn('live metrics error', e); }
+}
+
+/** Compat alias — Live System only; Energy Overview uses loadAccruals. */
+async function loadMetrics() {
+  return loadLiveMetrics();
 }
 
 // ---------------------------------------------------------------------------
@@ -8162,6 +8217,82 @@ function initSimEaPriceCols() {
   setSimEaPriceColsExpanded(expanded);
 }
 
+const HISTORY_MONTH_IMPORT_COLS_KEY = 'sa_history_month_import_cols_expanded';
+
+function historyMonthImportColsExpanded() {
+  const table = document.querySelector('.sim-table-month');
+  return table != null && !table.classList.contains('sim-month-import-collapsed');
+}
+
+function setHistoryMonthImportColsExpanded(expanded) {
+  const table = document.querySelector('.sim-table-month');
+  const btn = document.getElementById('history-month-import-cols-toggle');
+  if (!table) return;
+  table.classList.toggle('sim-month-import-collapsed', !expanded);
+  if (btn) btn.textContent = expanded ? 'Import ▼' : 'Import ▶';
+  try { sessionStorage.setItem(HISTORY_MONTH_IMPORT_COLS_KEY, expanded ? '1' : '0'); } catch (_) {}
+  table.style.removeProperty('--sim-table-font-size');
+  table.style.removeProperty('--sim-table-pad-x');
+  table.style.removeProperty('--sim-table-pad-y');
+  delete table.dataset.simFontPx;
+  requestAnimationFrame(fitSimHistoryTables);
+}
+
+function toggleHistoryMonthImportCols() {
+  setHistoryMonthImportColsExpanded(!historyMonthImportColsExpanded());
+}
+
+function initHistoryMonthImportCols() {
+  let expanded = false;
+  try { expanded = sessionStorage.getItem(HISTORY_MONTH_IMPORT_COLS_KEY) === '1'; } catch (_) {}
+  setHistoryMonthImportColsExpanded(expanded);
+}
+
+function bindHistoryMonthImportColsToggle() {
+  const btn = document.getElementById('history-month-import-cols-toggle');
+  if (!btn || btn.dataset.bound === '1') return;
+  btn.dataset.bound = '1';
+  btn.addEventListener('click', toggleHistoryMonthImportCols);
+}
+
+const HISTORY_MONTH_DIS_COLS_KEY = 'sa_history_month_dis_cols_expanded';
+
+function historyMonthDisColsExpanded() {
+  const table = document.querySelector('.sim-table-month');
+  return table != null && !table.classList.contains('sim-month-dis-collapsed');
+}
+
+function setHistoryMonthDisColsExpanded(expanded) {
+  const table = document.querySelector('.sim-table-month');
+  const btn = document.getElementById('history-month-dis-cols-toggle');
+  if (!table) return;
+  table.classList.toggle('sim-month-dis-collapsed', !expanded);
+  if (btn) btn.textContent = expanded ? 'Dis ▼' : 'Dis ▶';
+  try { sessionStorage.setItem(HISTORY_MONTH_DIS_COLS_KEY, expanded ? '1' : '0'); } catch (_) {}
+  table.style.removeProperty('--sim-table-font-size');
+  table.style.removeProperty('--sim-table-pad-x');
+  table.style.removeProperty('--sim-table-pad-y');
+  delete table.dataset.simFontPx;
+  requestAnimationFrame(fitSimHistoryTables);
+}
+
+function toggleHistoryMonthDisCols() {
+  setHistoryMonthDisColsExpanded(!historyMonthDisColsExpanded());
+}
+
+function initHistoryMonthDisCols() {
+  let expanded = false;
+  try { expanded = sessionStorage.getItem(HISTORY_MONTH_DIS_COLS_KEY) === '1'; } catch (_) {}
+  setHistoryMonthDisColsExpanded(expanded);
+}
+
+function bindHistoryMonthDisColsToggle() {
+  const btn = document.getElementById('history-month-dis-cols-toggle');
+  if (!btn || btn.dataset.bound === '1') return;
+  btn.dataset.bound = '1';
+  btn.addEventListener('click', toggleHistoryMonthDisCols);
+}
+
 function bindSimPriceColsToggle() {
   const btn = document.getElementById('sim-price-cols-toggle');
   if (!btn || btn.dataset.bound === '1') return;
@@ -8356,32 +8487,22 @@ function historyMonthImportTitle(r) {
 }
 
 function historyMonthCostTotalDisplayValue(r, isTotal) {
-  if (r.energy_cost_total != null) {
-    const n = Number(r.energy_cost_total);
-    if (!Number.isFinite(n)) return null;
-    if (!isTotal && Math.abs(n) < 0.005) return null;
-    return n;
-  }
+  // Always show energy net (export RCE − import tariff), including month TOTAL.
+  // Deposit pool accrual stays in Energy Deposit Total / backend cascade — not this cell.
   const exp = Number(r.export_revenue);
-  if (!Number.isFinite(exp)) return null;
-  if (!isTotal && Math.abs(exp) < 0.005) return null;
-  return exp;
+  const imp = Number(r.import_energy_cost);
+  if (!Number.isFinite(exp) || !Number.isFinite(imp)) return null;
+  const n = exp - imp;
+  if (!isTotal && Math.abs(n) < 0.005) return null;
+  return n;
 }
 
 function historyMonthCostTotalTitle(r, isTotal) {
   const total = historyMonthCostTotalDisplayValue(r, isTotal);
-  if (total == null) return 'Export RCE (import paid from deposit pool)';
-  const exp = historyMonthExportDisplayValue(r, isTotal);
-  const imp = historyMonthImportDisplayValue(r, isTotal);
+  if (total == null) return 'Export RCE − import tariff (energy net)';
   const expNum = Number(r.export_revenue);
   const impNum = Number(r.import_energy_cost);
-  if (Number.isFinite(expNum) && Number.isFinite(impNum) && impNum > 0.005) {
-    if (Number(total) + 0.005 < Number(expNum)) {
-      return `Import ${fmt(Math.abs(impNum), 2)} zł from deposit pool; shortfall in deposit column: export ${simEnergyFmt(exp)} → ${fmt(Number(total), 2)} zł`;
-    }
-    return `Import ${fmt(Math.abs(impNum), 2)} zł from deposit pool; deposit credit = export ${simEnergyFmt(exp)}`;
-  }
-  return `Deposit credit = export RCE ${simEnergyFmt(exp)}`;
+  return `Energy net = export ${fmt(expNum, 2)} − tariff ${fmt(impNum, 2)} = ${fmt(Number(total), 2)} zł (deposit pool is Energy Deposit Total)`;
 }
 
 function historyMonthImportCostTotalDisplayValue(r, isTotal) {
@@ -8410,22 +8531,111 @@ function historyMonthImportCostTotalTitle(r, isTotal) {
   return `${title} = ${fmt(Math.abs(Number(total)), 2)} zł to pay`;
 }
 
-function historyMonthBaselineDisplayValue(r, isTotal) {
-  // Baseline = sim export RCE − sim import tariff (same signed net as energy columns).
-  const v = Number(r.baseline_cost);
-  if (!Number.isFinite(v)) return null;
-  if (!isTotal && Math.abs(v) < 0.005) return null;
+function historyMonthBaselineExportDisplayValue(r, isTotal) {
+  const v = Number(r.baseline_export_revenue);
+  if (!Number.isFinite(v) || Math.abs(v) < 0.005) return isTotal ? 0 : null;
   return v;
 }
 
-function historyMonthBaselineTitle(r) {
+function historyMonthBaselineExportTitle(r) {
+  const v = Number(r.baseline_export_revenue);
+  if (!Number.isFinite(v)) return 'Baseline overflow export at RCE (battery full, PV > load)';
+  return `Baseline overflow export (RCE): +${fmt(v, 2)} zł`;
+}
+
+function historyMonthBaselineImportDisplayValue(r, isTotal) {
+  const v = Number(r.baseline_import_energy_cost);
+  if (!Number.isFinite(v) || Math.abs(v) < 0.005) return isTotal ? 0 : null;
+  return -Math.abs(v);
+}
+
+function historyMonthBaselineImportTitle(r) {
+  const v = Number(r.baseline_import_energy_cost);
+  if (!Number.isFinite(v)) return 'Baseline G12 import when battery at min and load > PV';
+  return `Baseline import tariff: −${fmt(v, 2)} zł`;
+}
+
+function historyMonthBaselineCostTotalDisplayValue(r, isTotal) {
   const exp = Number(r.baseline_export_revenue);
-  const tariff = Number(r.baseline_import_energy_cost);
-  const net = Number(r.baseline_cost);
-  if (!Number.isFinite(exp) || !Number.isFinite(tariff)) {
-    return 'SA rules: export RCE − import tariff';
+  const imp = Number(r.baseline_import_energy_cost);
+  if (!Number.isFinite(exp) || !Number.isFinite(imp)) return null;
+  const n = exp - imp;
+  if (!isTotal && Math.abs(n) < 0.005) return null;
+  return n;
+}
+
+function historyMonthBaselineCostTotalTitle(r, isTotal) {
+  const total = historyMonthBaselineCostTotalDisplayValue(r, isTotal);
+  if (total == null) return 'Baseline Energy Export − Baseline Energy Import';
+  const exp = Number(r.baseline_export_revenue);
+  const imp = Number(r.baseline_import_energy_cost);
+  return `Baseline energy net = export ${fmt(exp, 2)} − tariff ${fmt(imp, 2)} = ${fmt(Number(total), 2)} zł`;
+}
+
+function historyMonthDisBaselineExportDisplayValue(r, isTotal) {
+  const v = Number(r.dis_baseline_export_revenue);
+  if (!Number.isFinite(v) || Math.abs(v) < 0.005) return isTotal ? 0 : null;
+  return v;
+}
+
+function historyMonthDisBaselineExportTitle(r) {
+  const v = Number(r.dis_baseline_export_revenue);
+  if (!Number.isFinite(v)) return 'Dis baseline export at RCE (overflow + Dis 8 kW 19–22 to SOC 30%)';
+  return `Dis baseline export (RCE): +${fmt(v, 2)} zł`;
+}
+
+function historyMonthDisBaselineImportDisplayValue(r, isTotal) {
+  const v = Number(r.dis_baseline_import_energy_cost);
+  if (!Number.isFinite(v) || Math.abs(v) < 0.005) return isTotal ? 0 : null;
+  return -Math.abs(v);
+}
+
+function historyMonthDisBaselineImportTitle(r) {
+  const v = Number(r.dis_baseline_import_energy_cost);
+  if (!Number.isFinite(v)) return 'Dis baseline G12 import when battery at min and load > PV';
+  return `Dis baseline import tariff: −${fmt(v, 2)} zł`;
+}
+
+function historyMonthDisBaselineCostTotalDisplayValue(r, isTotal) {
+  const exp = Number(r.dis_baseline_export_revenue);
+  const imp = Number(r.dis_baseline_import_energy_cost);
+  if (!Number.isFinite(exp) || !Number.isFinite(imp)) return null;
+  const n = exp - imp;
+  if (!isTotal && Math.abs(n) < 0.005) return null;
+  return n;
+}
+
+function historyMonthDisBaselineCostTotalTitle(r, isTotal) {
+  const total = historyMonthDisBaselineCostTotalDisplayValue(r, isTotal);
+  if (total == null) return 'Dis Baseline Energy Export − Dis Baseline Energy Import';
+  const exp = Number(r.dis_baseline_export_revenue);
+  const imp = Number(r.dis_baseline_import_energy_cost);
+  return `Dis baseline energy net = export ${fmt(exp, 2)} − tariff ${fmt(imp, 2)} = ${fmt(Number(total), 2)} zł`;
+}
+
+function historyMonthDisSavingsDisplayValue(r, isTotal) {
+  if (r.dis_savings_pln == null) return null;
+  const n = Number(r.dis_savings_pln);
+  if (!Number.isFinite(n)) return null;
+  if (!isTotal && Math.abs(n) < 0.005) return null;
+  return n;
+}
+
+function historyMonthDisSavingsTitle(r) {
+  const actualExp = Number(r.export_revenue);
+  const actualTariff = Number(r.import_energy_cost);
+  const baseExp = Number(r.dis_baseline_export_revenue);
+  const baseTariff = Number(r.dis_baseline_import_energy_cost);
+  const saved = Number(r.dis_savings_pln);
+  if (
+    Number.isFinite(actualExp) && Number.isFinite(actualTariff)
+    && Number.isFinite(baseExp) && Number.isFinite(baseTariff)
+  ) {
+    const actualNet = actualExp - actualTariff;
+    const baseNet = baseExp - baseTariff;
+    return `Saved vs Dis = Energy Cost Total ${fmt(actualNet, 2)} − Dis Baseline Energy Cost Total ${fmt(baseNet, 2)} = ${fmt(saved, 2)} zł`;
   }
-  return `SA baseline: export ${fmt(exp, 2)} zł − tariff ${fmt(tariff, 2)} zł = ${fmt(net, 2)} zł`;
+  return 'Actual energy net minus evening-Dis baseline energy net';
 }
 
 function historyMonthServiceFeeDisplayValue(r, isTotal) {
@@ -8464,9 +8674,9 @@ function historyMonthSavingsTitle(r) {
   ) {
     const actualNet = actualExp - actualTariff;
     const baseNet = baseExp - baseTariff;
-    return `Saved = (export ${fmt(actualExp, 2)} − tariff ${fmt(actualTariff, 2)} = ${fmt(actualNet, 2)}) − baseline ${fmt(baseNet, 2)} = ${fmt(saved, 2)} zł`;
+    return `Saved = Energy Cost Total ${fmt(actualNet, 2)} − Baseline Energy Cost Total ${fmt(baseNet, 2)} = ${fmt(saved, 2)} zł`;
   }
-  return 'Actual energy net minus SA baseline energy net';
+  return 'Actual energy net minus baseline energy net';
 }
 
 function makeHistoryMonthRow(r, isTotal) {
@@ -8490,12 +8700,30 @@ function makeHistoryMonthRow(r, isTotal) {
   const importTotalVal = historyMonthImportCostTotalDisplayValue(r, isTotal);
   const importTotalTitle = historyMonthImportCostTotalTitle(r, isTotal);
   const importTotalCls = simServiceClass(importTotalVal);
-  const baselineVal = historyMonthBaselineDisplayValue(r, isTotal);
-  const baselineTitle = historyMonthBaselineTitle(r);
-  const baselineCls = simCashClass(baselineVal);
+  const baselineExpVal = historyMonthBaselineExportDisplayValue(r, isTotal);
+  const baselineExpTitle = historyMonthBaselineExportTitle(r);
+  const baselineExpCls = simCashClass(baselineExpVal);
+  const baselineImpVal = historyMonthBaselineImportDisplayValue(r, isTotal);
+  const baselineImpTitle = historyMonthBaselineImportTitle(r);
+  const baselineImpCls = simCashClass(baselineImpVal);
+  const baselineCostVal = historyMonthBaselineCostTotalDisplayValue(r, isTotal);
+  const baselineCostTitle = historyMonthBaselineCostTotalTitle(r, isTotal);
+  const baselineCostCls = simCashClass(baselineCostVal);
   const savingsVal = historyMonthSavingsDisplayValue(r, isTotal);
   const savingsTitle = historyMonthSavingsTitle(r);
   const savingsCls = simCashClass(savingsVal);
+  const disExpVal = historyMonthDisBaselineExportDisplayValue(r, isTotal);
+  const disExpTitle = historyMonthDisBaselineExportTitle(r);
+  const disExpCls = simCashClass(disExpVal);
+  const disImpVal = historyMonthDisBaselineImportDisplayValue(r, isTotal);
+  const disImpTitle = historyMonthDisBaselineImportTitle(r);
+  const disImpCls = simCashClass(disImpVal);
+  const disCostVal = historyMonthDisBaselineCostTotalDisplayValue(r, isTotal);
+  const disCostTitle = historyMonthDisBaselineCostTotalTitle(r, isTotal);
+  const disCostCls = simCashClass(disCostVal);
+  const disSavingsVal = historyMonthDisSavingsDisplayValue(r, isTotal);
+  const disSavingsTitle = historyMonthDisSavingsTitle(r);
+  const disSavingsCls = simCashClass(disSavingsVal);
   tr.innerHTML = `
     <td class="text-gray-600 whitespace-nowrap mh-bg-import-part">${r.start || r.date || ''}</td>
     <td class="text-right text-gray-600 tabular-nums mh-bg-import-part">${fmt(r.production, 2)}</td>
@@ -8503,13 +8731,19 @@ function makeHistoryMonthRow(r, isTotal) {
     <td class="text-right text-gray-600 tabular-nums mh-bg-import-part">${fmt(r.grid_import, 2)}</td>
     <td class="text-right text-gray-600 tabular-nums mh-bg-import-part">${fmt(r.grid_export, 2)}</td>
     <td class="text-right tabular-nums mh-bg-export ${exportCls}" title="${exportTitle}">${simEnergyFmt(exportVal)}</td>
-    <td class="text-right tabular-nums mh-bg-import-tariff ${importCls}" title="${importTitle}">${simCashFmt(importVal)}</td>
+    <td class="text-right tabular-nums mh-bg-import-tariff mh-col-import-detail ${importCls}" title="${importTitle}">${simCashFmt(importVal)}</td>
     <td class="text-right tabular-nums mh-bg-energy-total ${costTotalCls}" title="${costTotalTitle}">${simCashFmt(costTotalVal)}</td>
     <td class="text-right tabular-nums mh-bg-import-part mh-bg-import-part--first ${serviceCls}" title="${serviceTitle}">${simServiceFmt(serviceVal)}</td>
     <td class="text-right tabular-nums mh-bg-import-part ${serviceFeeCls}" title="${serviceFeeTitle}">${simServiceFmt(serviceFeeVal)}</td>
     <td class="text-right tabular-nums mh-bg-import-total ${importTotalCls}" title="${importTotalTitle}">${simServiceFmt(importTotalVal)}</td>
-    <td class="text-right tabular-nums mh-bg-import-part ${baselineCls}" title="${baselineTitle}">${simCashFmt(baselineVal)}</td>
-    <td class="text-right tabular-nums mh-bg-import-total ${savingsCls}" title="${savingsTitle}">${simCashFmt(savingsVal)}</td>`;
+    <td class="text-right tabular-nums mh-bg-export ${baselineExpCls}" title="${baselineExpTitle}">${simEnergyFmt(baselineExpVal)}</td>
+    <td class="text-right tabular-nums mh-bg-import-tariff mh-col-import-detail ${baselineImpCls}" title="${baselineImpTitle}">${simCashFmt(baselineImpVal)}</td>
+    <td class="text-right tabular-nums mh-bg-energy-total ${baselineCostCls}" title="${baselineCostTitle}">${simCashFmt(baselineCostVal)}</td>
+    <td class="text-right tabular-nums mh-bg-import-total ${savingsCls}" title="${savingsTitle}">${simCashFmt(savingsVal)}</td>
+    <td class="text-right tabular-nums mh-bg-export mh-col-dis-baseline ${disExpCls}" title="${disExpTitle}">${simEnergyFmt(disExpVal)}</td>
+    <td class="text-right tabular-nums mh-bg-import-tariff mh-col-dis-baseline ${disImpCls}" title="${disImpTitle}">${simCashFmt(disImpVal)}</td>
+    <td class="text-right tabular-nums mh-bg-energy-total mh-col-dis-baseline ${disCostCls}" title="${disCostTitle}">${simCashFmt(disCostVal)}</td>
+    <td class="text-right tabular-nums mh-bg-import-total mh-col-dis-baseline ${disSavingsCls}" title="${disSavingsTitle}">${simCashFmt(disSavingsVal)}</td>`;
   return tr;
 }
 
@@ -8547,11 +8781,11 @@ function renderHistoryMonthTable(data) {
   }
 
   if (data.error) {
-    bodyTotal.innerHTML = `<tr><td colspan="13" class="px-3 py-6 text-center text-red-500">${String(data.error)}</td></tr>`;
+    bodyTotal.innerHTML = `<tr><td colspan="19" class="px-3 py-6 text-center text-red-500">${String(data.error)}</td></tr>`;
     return;
   }
   if (!data.rows || !data.rows.length) {
-    bodyTotal.innerHTML = '<tr><td colspan="13" class="px-3 py-6 text-center text-gray-500">No history for this month.</td></tr>';
+    bodyTotal.innerHTML = '<tr><td colspan="19" class="px-3 py-6 text-center text-gray-500">No history for this month.</td></tr>';
     return;
   }
 
@@ -8578,7 +8812,7 @@ function toggleHistoryMonthDays() {
 }
 
 const HISTORY_MONTH_CACHE_KEY = 'sa_history_month_v13';
-const HISTORY_MONTH_BILLING_MODEL = '15';
+const HISTORY_MONTH_BILLING_MODEL = '16';
 
 function historyMonthCacheDay() {
   return DEBUG_TODAY;
@@ -8693,7 +8927,7 @@ async function loadHistoryMonth() {
       bodyDays.classList.add('hidden');
     }
     if (toggleEl) toggleEl.classList.add('hidden');
-    bodyTotal.innerHTML = '<tr><td colspan="13" class="px-3 py-6 text-center text-gray-500">Select a month to load daily totals.</td></tr>';
+    bodyTotal.innerHTML = '<tr><td colspan="19" class="px-3 py-6 text-center text-gray-500">Select a month to load daily totals.</td></tr>';
     return;
   }
   const cached = getCachedHistoryMonth(month);
@@ -8701,12 +8935,12 @@ async function loadHistoryMonth() {
     renderHistoryMonthTable(cached);
     return;
   }
-  bodyTotal.innerHTML = '<tr><td colspan="13" class="px-3 py-6 text-center text-gray-600">Loading…</td></tr>';
+  bodyTotal.innerHTML = '<tr><td colspan="19" class="px-3 py-6 text-center text-gray-600">Loading…</td></tr>';
   try {
     const data = await fetchHistoryMonthCached(month);
     renderHistoryMonthTable(data);
   } catch (e) {
-    bodyTotal.innerHTML = '<tr><td colspan="13" class="px-3 py-6 text-center text-red-500">Failed to load month.</td></tr>';
+    bodyTotal.innerHTML = '<tr><td colspan="19" class="px-3 py-6 text-center text-red-500">Failed to load month.</td></tr>';
   }
 }
 
@@ -10270,9 +10504,12 @@ function bindEnergyCardsHeightSync() {
 
 async function refreshDashboard() {
   if (currentTab !== 'dashboard') return;
-  await loadMetrics();
   const dateStr = document.getElementById('accruals-date')?.value || DEBUG_TODAY;
-  await loadAccruals(dateStr);
+  // Paint Live System and Energy Overview as each source becomes ready.
+  await Promise.all([
+    loadLiveMetrics(),
+    loadAccruals(dateStr),
+  ]);
 }
 
 function startDashboardRefresh() {
@@ -10282,16 +10519,17 @@ function startDashboardRefresh() {
 }
 
 function bootForCurrentTab() {
-  void (async () => {
-    await loadSmartMode();
-    await refreshQuarterCycle({ syncSliders: true });
-    scheduleQuarterRefresh();
-  })();
-
+  // Dashboard metrics first — do not wait for smart-mode / forecast / plan.
   if (currentTab === 'dashboard') {
     startDashboardRefresh();
-    return;
   }
+
+  void (async () => {
+    await loadSmartMode();
+    // Cached plan on boot (no ?refresh=1); quarter jobs keep SQLite fresh.
+    await refreshQuarterCycle({ syncSliders: true, force: false });
+    scheduleQuarterRefresh();
+  })();
 
   if (currentTab === 'simulation') {
     return;
@@ -10338,6 +10576,10 @@ bindTimedTableCheckboxSync();
 bindSimHistoryTableFontFit();
 bindSimPriceColsToggle();
 initSimEaPriceCols();
+bindHistoryMonthImportColsToggle();
+initHistoryMonthImportCols();
+bindHistoryMonthDisColsToggle();
+initHistoryMonthDisCols();
 bindTariffChartResize();
 bindAcrChartLegend();
 bindFcChartLegend();
