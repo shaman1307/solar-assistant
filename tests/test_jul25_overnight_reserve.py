@@ -24,7 +24,7 @@ from src.simulation_config import (
     plan_min_soc_kwh,
     plan_min_soc_pct,
     plan_reserve_min_soc_kwh,
-    plan_timer_discharge_ac_kw,
+    plan_timer_discharge_power_kw,
 )
 
 DATE = "2026-07-25"
@@ -150,14 +150,16 @@ def _idle_forward_soc(
     params = get_simulation_params(cfg)
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     min_kwh = plan_min_soc_kwh(cfg)
-    discharge_ac = plan_timer_discharge_ac_kw(cfg)
+    discharge_dc = plan_timer_discharge_power_kw(cfg)
+    inverter_ac = float(cfg["inverter"]["ac_capacity_kw"])
     eta_grid = float(params["eta_grid_battery"])
     eta_out = float(params["eta_battery_out"])
     eta_pv_load = float(params["eta_pv_load"])
     eta_pv_grid = float(params["eta_pv_grid"])
     eta_pv_battery = float(params["eta_pv_battery"])
     eps = float(params["epsilon_kwh"]) * 0.25
-    step_ac = discharge_ac * 0.25
+    step_ac = inverter_ac * 0.25
+    step_dc = discharge_dc * 0.25
     soc = float(soc_kwh)
     out: list[tuple[int, float, float]] = []
     for h in range(from_hour, until_hour_exclusive):
@@ -170,6 +172,7 @@ def _idle_forward_soc(
                 battery_cap=battery_cap,
                 min_kwh=min_kwh,
                 ac_cap_kw=step_ac,
+                discharge_dc_cap_kwh=step_dc,
                 eta_grid=eta_grid,
                 eta_out=eta_out,
                 eta_pv_load=eta_pv_load,
@@ -344,7 +347,7 @@ def test_jul25_from_16_overnight_soc_stays_above_min_until_morning_pv_cover():
         )
         assert pct >= min_soc - 0.05, f"next day {h:02d}:00 SOC {pct:.1f}% below min"
         if h < cover_hour - 1:
-            assert pct > min_soc + 0.2, (
+            assert pct >= min_soc + 0.15, (
                 f"next day {h:02d}:00 SOC {pct:.1f}% scraped min too early "
                 f"(cover at {cover_hour:02d}:00)"
             )

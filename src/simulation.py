@@ -339,17 +339,18 @@ def _plan_start_soc_kwh(
 ) -> float:
     """SOC at the start of plan_from_hour (end of the last completed hour).
 
-    At hour 0 use live SOC. Solid chart midnight seed is separate
-    (``resolve_day_start_soc_kwh``).
+    Hour 0 uses calendar midnight seed (yesterday H23 / day_start), not live —
+    live is mid-hour and would corrupt the end-of-hour SOC column on Reset.
     """
-    del day_start_soc  # unused at hour 0; callers may still pass it
     if plan_from_hour > 0 and today_hourly:
         anchor = _hourly_soc_kwh(
             today_hourly, plan_from_hour - 1, battery_cap, min_soc_pct,
         )
         if anchor is not None:
             return anchor
-    # Hour 0, or no prior-hour Influx anchor: use live meter SOC.
+    if plan_from_hour == 0:
+        return float(day_start_soc)
+    # No prior-hour Influx anchor: live meter as last resort.
     return live_soc_kwh
 
 

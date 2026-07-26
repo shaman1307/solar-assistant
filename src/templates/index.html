@@ -4300,31 +4300,16 @@ function updateLiveFlow(d) {
 }
 
 // ---------------------------------------------------------------------------
-// Metrics polling — Live System and Energy Overview paint independently
+// Metrics polling — Live System only.
+// Do not paint api/live (or any client guess) over EA / Forecast / Energy Overview
+// values that came from the backend plan, optimizer, or Influx accruals.
 // ---------------------------------------------------------------------------
-function applySaDailyEnergyIfToday(d) {
-  // Paint EO kWh from SA daily totals when viewing today (before Influx).
-  const datePicker = document.getElementById('accruals-date');
-  if (!datePicker || datePicker.value !== DEBUG_TODAY || !d) return;
-  if (d.pv_energy_today == null && d.load_energy_today == null) return;
-  if (d.pv_energy_today != null) set('m-pv-energy', fmt(d.pv_energy_today, 2));
-  if (d.load_energy_today != null) set('m-load-energy', fmt(d.load_energy_today, 2));
-  if (d.grid_buy_energy != null) set('m-grid-buy', fmt(-Math.abs(d.grid_buy_energy), 2));
-  if (d.grid_sell_energy != null) set('m-grid-sell', fmt(Math.abs(d.grid_sell_energy), 2));
-  if (d.battery_charged_today != null) set('m-bat-charged', fmt(d.battery_charged_today, 2));
-  if (d.battery_discharged_today != null) {
-    set('m-bat-discharged', fmt(-Math.abs(d.battery_discharged_today), 2));
-  }
-}
-
 async function loadLiveMetrics() {
   try {
     const res = await fetch('api/live');
     const d = await res.json();
     updateLiveFlow(d);
-    updateSimCurrentHourLiveSoc(d.battery_soc ?? d.soc);
     updateSaStatusBadge(d);
-    applySaDailyEnergyIfToday(d);
   } catch (e) { console.warn('live metrics error', e); }
 }
 
@@ -9788,28 +9773,6 @@ function bindSimTimerCellActions() {
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape' && _simTimerEditCtx) closeSimTimerEditModal();
   });
-}
-
-function updateSimCurrentHourLiveSoc(socPct) {
-  if (socPct == null || !Number.isFinite(Number(socPct)) || !simData) return;
-  const hour = simData.plan_from_hour;
-  const today = simData.today_date;
-  if (hour == null) return;
-  const planBody = document.getElementById('sim-body-plan');
-  if (!planBody || planBody.classList.contains('hidden')) return;
-  let tr = null;
-  if (today) {
-    tr = planBody.querySelector(`tr[data-sim-date="${today}"][data-sim-hour="${hour}"]`);
-  }
-  if (!tr) {
-    tr = planBody.querySelector(`tr[data-sim-hour="${hour}"]:not([data-sim-history="1"])`);
-  }
-  if (!tr) return;
-  const cell = tr.querySelector('.sim-soc-cell');
-  if (!cell) return;
-  cell.textContent = Number(socPct).toFixed(1);
-  cell.classList.add('sim-soc-live', 'text-violet-700', 'font-semibold');
-  cell.classList.remove('text-gray-600');
 }
 
 // ---------------------------------------------------------------------------

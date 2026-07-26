@@ -28,7 +28,7 @@ from src.simulation_config import (
     plan_min_soc_kwh,
     plan_reserve_min_soc_kwh,
     plan_timer_charge_grid_kw,
-    plan_timer_discharge_ac_kw,
+    plan_timer_discharge_power_kw,
 )
 
 
@@ -100,7 +100,8 @@ def _path_cost_and_socs(
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     min_kwh = plan_min_soc_kwh(cfg)
     reserve_floor = plan_reserve_min_soc_kwh(cfg)
-    discharge_ac = plan_timer_discharge_ac_kw(cfg) * step_scale
+    discharge_dc = plan_timer_discharge_power_kw(cfg) * step_scale
+    inverter_ac = float(cfg['inverter']['ac_capacity_kw']) * step_scale
     eta_grid = float(params["eta_grid_battery"])
     eta_out = float(params["eta_battery_out"])
     eta_pv_load = float(params["eta_pv_load"])
@@ -148,7 +149,8 @@ def _path_cost_and_socs(
         g12_zone = "peak" if buy_p > offpeak + eps_step else "offpeak"
         phys = simulate_hour(
             soc, pv, load, ctrl,
-            battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=discharge_ac,
+            battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=inverter_ac,
+                discharge_dc_cap_kwh=discharge_dc,
             eta_grid=eta_grid, eta_out=eta_out,
             eta_pv_load=eta_pv_load, eta_pv_grid=eta_pv_grid,
             eta_pv_battery=eta_pv_battery, epsilon=eps_step,
@@ -165,7 +167,7 @@ def _path_cost_and_socs(
     cost += tail_balance_cost_pln(
         soc, tail_pv, tail_load, tail_buy, tail_export_credit,
         battery_cap=battery_cap, min_kwh=min_kwh,
-        ac_cap_kw=plan_timer_discharge_ac_kw(cfg),
+        ac_cap_kw=float(cfg["inverter"]["ac_capacity_kw"]),
         eta_out=eta_out, eta_pv_load=eta_pv_load,
         eta_pv_grid=eta_pv_grid, eta_pv_battery=eta_pv_battery,
         epsilon=epsilon,
@@ -193,7 +195,8 @@ def _brute_best_cost(
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     min_kwh = plan_min_soc_kwh(cfg)
     reserve_floor = plan_reserve_min_soc_kwh(cfg)
-    discharge_ac = plan_timer_discharge_ac_kw(cfg) * step_scale
+    discharge_dc = plan_timer_discharge_power_kw(cfg) * step_scale
+    inverter_ac = float(cfg['inverter']['ac_capacity_kw']) * step_scale
     charge_ac = plan_timer_charge_grid_kw(cfg) * step_scale
     eta_grid = float(params["eta_grid_battery"])
     eta_out = float(params["eta_battery_out"])
@@ -248,7 +251,7 @@ def _brute_best_cost(
             tail = tail_balance_cost_pln(
                 soc, tail_pv, tail_load, tail_buy, tail_export_credit,
                 battery_cap=battery_cap, min_kwh=min_kwh,
-                ac_cap_kw=plan_timer_discharge_ac_kw(cfg),
+                ac_cap_kw=float(cfg['inverter']['ac_capacity_kw']),
                 eta_out=eta_out, eta_pv_load=eta_pv_load,
                 eta_pv_grid=eta_pv_grid, eta_pv_battery=eta_pv_battery,
                 epsilon=epsilon,
@@ -266,7 +269,9 @@ def _brute_best_cost(
         for ctrl in _control_options(
             soc, pv, load,
             battery_cap=battery_cap, min_kwh=min_kwh,
-            discharge_ac_cap_kw=discharge_ac, charge_ac_cap_kw=charge_ac,
+            discharge_dc_cap_kwh=discharge_dc,
+            inverter_ac_cap_kw=inverter_ac,
+            charge_ac_cap_kw=charge_ac,
             eta_grid=eta_grid, eta_out=eta_out, eta_pv_load=eta_pv_load,
             epsilon=eps_step, buy_p=buy_p, offpeak_buy=offpeak,
             reserve_soc_kwh=reserves[step],
@@ -275,7 +280,8 @@ def _brute_best_cost(
         ):
             phys = simulate_hour(
                 soc, pv, load, ctrl,
-                battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=discharge_ac,
+                battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=inverter_ac,
+                discharge_dc_cap_kwh=discharge_dc,
                 eta_grid=eta_grid, eta_out=eta_out,
                 eta_pv_load=eta_pv_load, eta_pv_grid=eta_pv_grid,
                 eta_pv_battery=eta_pv_battery, epsilon=eps_step,

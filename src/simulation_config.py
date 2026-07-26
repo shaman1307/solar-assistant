@@ -14,7 +14,8 @@ DEFAULT_SIMULATION: dict[str, Any] = {
     "losses_pct": {
         "grid_to_battery": 7.5,
         "battery_to_load_or_grid": 7.5,
-        "pv_to_battery": 7.5,
+        # AC PV surplus → BMS SOC (calibrated to evening meter ΔSOC / surplus).
+        "pv_to_battery": 25.0,
         "pv_to_grid": 7.5,
         "pv_to_load": 7.5,
     },

@@ -16,7 +16,7 @@ from .simulation_config import (
     get_simulation_params,
     plan_min_soc_kwh,
     plan_reserve_min_soc_kwh,
-    plan_timer_discharge_ac_kw,
+    plan_timer_discharge_power_kw,
 )
 from .timer_plan import (
     _hhmm_to_minute_of_day,
@@ -213,7 +213,8 @@ def replay_day_plan_with_timer_overrides(
     params = get_simulation_params(cfg)
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     min_kwh = plan_min_soc_kwh(cfg)
-    discharge_ac_kw = plan_timer_discharge_ac_kw(cfg)
+    discharge_dc_kw = plan_timer_discharge_power_kw(cfg)
+    inverter_ac_kw = float(cfg["inverter"]["ac_capacity_kw"])
     epsilon = float(params["epsilon_kwh"])
     eps_q = eps_step_kwh(epsilon, STEP_SCALE)
     eta_grid = float(params["eta_grid_battery"])
@@ -276,7 +277,8 @@ def replay_day_plan_with_timer_overrides(
                     soc, pv_q[global_step], load_q[global_step], ctrl,
                     battery_cap=battery_cap,
                     min_kwh=min_kwh,
-                    ac_cap_kw=discharge_ac_kw * STEP_SCALE,
+                    ac_cap_kw=inverter_ac_kw * STEP_SCALE,
+                    discharge_dc_cap_kwh=discharge_dc_kw * STEP_SCALE,
                     eta_grid=eta_grid,
                     eta_out=eta_out,
                     eta_pv_load=eta_pv_load,
@@ -370,7 +372,8 @@ def replay_day_plan_with_timer_overrides(
                 soc, pv_q[global_step], load_q[global_step], ctrl,
                 battery_cap=battery_cap,
                 min_kwh=min_kwh,
-                ac_cap_kw=discharge_ac_kw * STEP_SCALE,
+                ac_cap_kw=inverter_ac_kw * STEP_SCALE,
+                discharge_dc_cap_kwh=discharge_dc_kw * STEP_SCALE,
                 eta_grid=eta_grid,
                 eta_out=eta_out,
                 eta_pv_load=eta_pv_load,

@@ -217,22 +217,26 @@ def _apply_actual_quarter_if_needed(
     if _q15_slot_actual(q15[quarter]) and not force:
         return False
 
+    # Force-rewrite only when Influx has a real slice; otherwise keep planned Δ.
+    if force and not series_10min:
+        return False
+
     min_soc_pct = plan_min_soc_pct(cfg)
     soc_start = hour_start_soc_kwh(today_hourly, hour, battery_cap, min_soc_pct)
-    if soc_start is None and live_soc_kwh is not None:
-        soc_start = float(live_soc_kwh)
     if soc_start is None:
-        # Use prior actual end-SOC, else implied start from the :00 plan slot.
+        # Prior completed actual end-SOC inside this hour.
         for q in range(quarter - 1, -1, -1):
             if _q15_slot_actual(q15[q]):
                 soc_start = (float(q15[q].get("soc") or 0) / 100.0) * battery_cap
                 break
-    if soc_start is None and live_soc_kwh is not None:
-        soc_start = float(live_soc_kwh)
     if soc_start is None and q15:
+        # Implied :00 start from the planned/first slot (end − battery Δ).
+        # Prefer this over live — live is mid-hour, not hour-start.
         end0 = (float(q15[0].get("soc") or 0) / 100.0) * battery_cap
         bat0 = float(q15[0].get("battery") or 0.0)
         soc_start = end0 - bat0
+    if soc_start is None and live_soc_kwh is not None:
+        soc_start = float(live_soc_kwh)
     if soc_start is None:
         return False
 
@@ -273,41 +277,39 @@ def datafix_completed_quarters_from_live(
     battery_cap: float,
     live_soc_kwh: float,
 ) -> bool:
-    """Rewrite completed quarters of the *current* hour from Influx; rechain SOC from *live*.
+    """Rewrite completed quarters from Influx; rechain later slots to end-of-hour.
 
-    Later quarters keep energy/timer; only SOC is rechained from that live start.
-    Past hours stay locked. Timer/action labels are not changed here.
+    Before the first quarter ends (:00–:14), keep the :00 end-of-hour SOC chain —
+    live meter SOC is mid-hour and must not replace the hour-end column.
+    After a completed quarter, rechain remaining slots from that quarter's end
+    (hour-start from Influx / planned slot, not live-as-:00).
     """
+    del live_soc_kwh  # mid-hour meter; never treat as hour-start for EOH display
     min_soc_pct = plan_min_soc_pct(cfg)
     min_kwh = plan_min_soc_kwh(cfg)
     hour_offset, tick_q = last_completed_quarter_tick(now)
     completed_through = tick_q if (hour_offset == 0 and tick_q >= 0) else -1
-    changed = False
+    if completed_through < 0:
+        return False
 
-    if completed_through >= 0:
-        for q in range(completed_through + 1):
-            if _apply_actual_quarter_if_needed(
-                row,
-                hour,
-                q,
-                series_10min=series_10min,
-                today_hourly=today_hourly,
-                cfg=cfg,
-                battery_cap=battery_cap,
-                live_soc_kwh=live_soc_kwh,
-                force=True,
-            ):
-                changed = True
+    changed = False
+    for q in range(completed_through + 1):
+        if _apply_actual_quarter_if_needed(
+            row,
+            hour,
+            q,
+            series_10min=series_10min,
+            today_hourly=today_hourly,
+            cfg=cfg,
+            battery_cap=battery_cap,
+            live_soc_kwh=None,
+            force=True,
+        ):
+            changed = True
 
     q15 = _ensure_q15_length(list(row.get("q15") or []))
-    if completed_through >= 0:
-        soc_kwh = (float(q15[completed_through].get("soc") or 0) / 100.0) * battery_cap
-        start_q = completed_through + 1
-    else:
-        soc_kwh = float(live_soc_kwh)
-        start_q = 0
-
-    for q in range(start_q, Q15_PER_HOUR):
+    soc_kwh = (float(q15[completed_through].get("soc") or 0) / 100.0) * battery_cap
+    for q in range(completed_through + 1, Q15_PER_HOUR):
         bat = float(q15[q].get("battery") or 0.0)
         soc_kwh = _soc_kwh_after_battery_delta(
             soc_kwh, bat, min_kwh=min_kwh, battery_cap=battery_cap,
@@ -356,8 +358,18 @@ def _merge_current_hour_q15(
     Timer Schedule / Action are left untouched (caller keeps them locked).
     Future / in-progress quarters take Production, battery, grid, SOC from the
     fresh optimizer (weather + plan); hour Energy Cost is recomputed from flows.
+
+    Before the first quarter ends, keep the :00 end-of-hour SOC chain on the
+    locked row — do not replace it with a mid-hour live-seeded fresh curve.
     """
     hour_offset, tick_q = last_completed_quarter_tick(now)
+    if hour_offset == 0 and tick_q < 0 and row.get("q15"):
+        # :00–:14 — preserve locked hour-end SOC from the :00 plan.
+        q15 = _ensure_q15_length(list(row.get("q15") or []))
+        apply_q15_physics_to_row(row, q15)
+        refresh_row_grid_cash(row, cfg)
+        return
+
     if hour_offset == 0 and tick_q >= 0:
         _apply_actual_quarter_if_needed(
             row,

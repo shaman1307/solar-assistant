@@ -21,7 +21,7 @@ from .simulation_config import (
     merge_simulation_defaults,
     plan_min_soc_kwh,
     plan_reserve_min_soc_kwh,
-    plan_timer_discharge_ac_kw,
+    plan_timer_discharge_power_kw,
 )
 from .timer_plan import (
     classify_action as timer_classify_action,
@@ -181,7 +181,8 @@ def _simulate_q15_controls(
     cfg: dict,
     battery_cap: float,
     min_kwh: float,
-    discharge_ac_kw: float,
+    discharge_dc_kw: float,
+    inverter_ac_kw: float,
     eps_q: float,
     eta_grid: float,
     eta_out: float,
@@ -207,7 +208,8 @@ def _simulate_q15_controls(
             soc, pv_q[step], load_q[step], ctrl,
             battery_cap=battery_cap,
             min_kwh=min_kwh,
-            ac_cap_kw=discharge_ac_kw * STEP_SCALE,
+            ac_cap_kw=inverter_ac_kw * STEP_SCALE,
+            discharge_dc_cap_kwh=discharge_dc_kw * STEP_SCALE,
             eta_grid=eta_grid,
             eta_out=eta_out,
             eta_pv_load=eta_pv_load,
@@ -291,7 +293,8 @@ def run_day_smart_q15_plan(
     params = get_simulation_params(cfg)
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     min_kwh = plan_min_soc_kwh(cfg)
-    discharge_ac_kw = plan_timer_discharge_ac_kw(cfg)
+    discharge_dc_kw = plan_timer_discharge_power_kw(cfg)
+    inverter_ac_kw = float(cfg["inverter"]["ac_capacity_kw"])
     epsilon = float(params["epsilon_kwh"])
     eps_q = eps_step_kwh(epsilon, STEP_SCALE)
     eta_grid = float(params["eta_grid_battery"])
@@ -414,7 +417,8 @@ def run_day_smart_q15_plan(
         cfg=cfg,
         battery_cap=battery_cap,
         min_kwh=min_kwh,
-        discharge_ac_kw=discharge_ac_kw,
+        discharge_dc_kw=discharge_dc_kw,
+        inverter_ac_kw=inverter_ac_kw,
         eps_q=eps_q,
         eta_grid=eta_grid,
         eta_out=eta_out,
@@ -545,12 +549,9 @@ def build_history_hour_timer_schedule(
         if minutes >= 60:
             to_hh = hour + 1
             to_mm = 0
-        cap = min_soc
-        if row.get("reserve_soc_pct") is not None:
-            try:
-                cap = max(min_soc, int(round(float(row["reserve_soc_pct"]))))
-            except (TypeError, ValueError):
-                pass
+        from .timer_plan import _discharge_cap_pct_from_row
+
+        cap = max(min_soc, _discharge_cap_pct_from_row(row, min_soc))
         return (
             f"Dis {hour:02d}:00-{to_hh:02d}:{to_mm:02d} {pwr}kW cap{cap}%"
         )

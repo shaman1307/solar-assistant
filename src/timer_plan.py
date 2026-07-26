@@ -477,21 +477,18 @@ def _hour_timer_segment(
         cap = _charge_timer_cap_pct(slots, cfg)
     else:
         # Survive-until-morning floor from the last active Dis quarter.
-        cap = min_soc
         last = slots[last_q] if 0 <= last_q < len(slots) else {}
-        raw = last.get("reserve_soc_pct")
-        if raw is None and last.get("reserve_kwh") is not None:
+        slot_for_cap = dict(last)
+        if slot_for_cap.get("reserve_soc_pct") is None and last.get("reserve_kwh") is not None:
             try:
                 bat_cap = float(cfg["battery"]["capacity_kwh"])
                 if bat_cap > 0:
-                    raw = 100.0 * float(last["reserve_kwh"]) / bat_cap
+                    slot_for_cap["reserve_soc_pct"] = (
+                        100.0 * float(last["reserve_kwh"]) / bat_cap
+                    )
             except (TypeError, ValueError, KeyError):
-                raw = None
-        if raw is not None:
-            try:
-                cap = max(min_soc, int(round(float(raw))))
-            except (TypeError, ValueError):
                 pass
+        cap = max(min_soc, _discharge_cap_pct_from_row(slot_for_cap, min_soc))
     return f"{prefix} {_min_to_hhmm(from_min)}-{_min_to_hhmm(to_min)} {power_kw}kW cap{cap}%"
 
 
@@ -634,20 +631,24 @@ def _minute_of_day_from_start(row: dict) -> int:
 
 
 def _discharge_cap_pct_from_row(row: dict[str, Any], fallback: float) -> int:
-    """SA Dis stop %: overnight survive reserve at this slot, else planned SOC."""
+    """SA Dis stop %: overnight survive reserve at this slot, else planned SOC.
+
+    Ceil fractional reserve so the inverter never stops below the modeled floor
+    (e.g. 31.2% → cap32%).
+    """
     raw = row.get("reserve_soc_pct")
     if raw is None and row.get("reserve_kwh") is not None:
         # Caller without battery_cap — keep prior block value.
         raw = fallback
     if raw is not None:
         try:
-            return int(round(float(raw)))
+            return max(0, int(math.ceil(float(raw) - 1e-9)))
         except (TypeError, ValueError):
             pass
     try:
-        return int(round(float(row.get("soc", fallback))))
+        return max(0, int(math.ceil(float(row.get("soc", fallback)) - 1e-9)))
     except (TypeError, ValueError):
-        return int(round(float(fallback)))
+        return max(0, int(math.ceil(float(fallback) - 1e-9)))
 
 
 def _merge_blocks_q15(rows: list[dict], target_action: str) -> list[dict[str, Any]]:

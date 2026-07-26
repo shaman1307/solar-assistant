@@ -794,8 +794,8 @@ def test_merge_incremental_at_30_quarter_pattern():
     assert future["timer_schedule"] == "FUTURE_9"
 
 
-def test_datafix_rechains_current_hour_soc_from_live_without_unlocking_past():
-    """Rechain current-hour SOC from live; keep past hours and timers locked."""
+def test_datafix_before_first_quarter_keeps_eoh_soc():
+    """:00–:14 Reset must not replace end-of-hour SOC with live meter."""
     cfg = _cfg()
     now = datetime(2026, 7, 7, 8, 5, tzinfo=ZoneInfo("Europe/Warsaw"))
     hist = _row(7, timer="Dis 07:00-07:45", locked=True)
@@ -803,11 +803,13 @@ def test_datafix_rechains_current_hour_soc_from_live_without_unlocking_past():
     hist["soc"] = 40.0
 
     cur = _row(8, timer="Dis 08:00-08:45", action="Discharging to Grid", locked=True)
-    # Stale :00 plan slots near 50% while live meter is 22%.
+    # :00 end-of-hour projection (~22.4 style); live meter is higher mid-hour.
     for q, slot in enumerate(cur["q15"]):
-        slot["soc"] = 50.0 - q * 0.4
+        slot["soc"] = 24.0 - (q + 1) * 0.4  # → EOH 22.4
         slot["battery"] = -0.08
         slot["from_actual"] = False
+    cur["soc"] = 22.4
+    cur["bat_discharge"] = 0.32
 
     existing = {
         "today_date": "2026-07-07",
@@ -818,12 +820,12 @@ def test_datafix_rechains_current_hour_soc_from_live_without_unlocking_past():
     fresh = {
         "today_date": "2026-07-07",
         "plan_from_hour": 8,
-        "live_soc_pct": 22.0,
+        "live_soc_pct": 24.0,
         "delta_kwh": 0.0,
         "history_rows": [],
         "rows": [_row(8), _row(9, timer="FUTURE_9")],
     }
-    metrics = {"sa_online": True, "battery_soc": 22.0}
+    metrics = {"sa_online": True, "battery_soc": 24.0}
 
     merged = merge_incremental_plan(existing, fresh, now=now, metrics=metrics, cfg=cfg)
     assert merged["history_rows"][0]["timer_schedule"] == "Dis 07:00-07:45"
@@ -832,8 +834,47 @@ def test_datafix_rechains_current_hour_soc_from_live_without_unlocking_past():
     out = next(r for r in merged["rows"] if r["hour"] == 8)
     assert out["timer_schedule"] == "Dis 08:00-08:45"
     assert out["action"] == "Discharging to Grid"
-    assert all(not s.get("from_actual") for s in out["q15"])
-    # SOC chain starts near live 22%.
-    assert out["q15"][0]["soc"] == pytest.approx(22.0, abs=0.5)
-    assert out["soc"] < 25.0
+    # Hour column stays end-of-hour, not live 24%.
+    assert float(out["soc"]) == pytest.approx(22.4, abs=0.15)
+    assert float(out["soc"]) != pytest.approx(24.0, abs=0.05)
+
+
+def test_datafix_after_quarter_rechains_from_hour_start_not_live():
+    """After :15, EOH stays on the :00 chain — not replaced by live meter."""
+    import copy
+
+    cfg = _cfg()
+    now = datetime(2026, 7, 7, 8, 21, tzinfo=ZoneInfo("Europe/Warsaw"))
+    cur = _row(8, timer="Dis 08:00-08:45", action="Discharging to Load", locked=True)
+    starts = [25.0, 24.1, 23.6, 23.0, 22.4]
+    for q, slot in enumerate(cur["q15"]):
+        slot["soc"] = starts[q + 1]
+        slot["battery"] = round((starts[q + 1] - starts[q]) / 100.0 * 20.0, 4)
+        slot["from_actual"] = q == 0
+    cur["soc"] = 22.4
+
+    existing = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 8,
+        "history_rows": [],
+        "rows": [cur, _row(9)],
+    }
+    fresh = {
+        "today_date": "2026-07-07",
+        "plan_from_hour": 8,
+        "live_soc_pct": 24.0,
+        "delta_kwh": 0.0,
+        "history_rows": [],
+        "rows": [copy.deepcopy(cur), _row(9, timer="FUTURE_9")],
+    }
+    metrics = {
+        "sa_online": True,
+        "battery_soc": 24.0,
+        "today_hourly": {"soc": [None] * 24},
+        "series_10min": None,
+    }
+    merged = merge_incremental_plan(existing, fresh, now=now, metrics=metrics, cfg=cfg)
+    out = next(r for r in merged["rows"] if r["hour"] == 8)
+    assert float(out["soc"]) == pytest.approx(22.4, abs=0.15)
+    assert float(out["soc"]) != pytest.approx(24.0, abs=0.05)
 

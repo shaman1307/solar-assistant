@@ -722,14 +722,15 @@ def simulate_blended_current_hour_q15(
         get_simulation_params,
         plan_min_soc_kwh,
         plan_min_soc_pct,
-        plan_timer_discharge_ac_kw,
+        plan_timer_discharge_power_kw,
     )
 
     params = get_simulation_params(cfg)
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     min_soc_pct = plan_min_soc_pct(cfg)
     min_kwh = plan_min_soc_kwh(cfg)
-    discharge_ac_kw = plan_timer_discharge_ac_kw(cfg)
+    discharge_dc_kw = plan_timer_discharge_power_kw(cfg)
+    inverter_ac_kw = float(cfg["inverter"]["ac_capacity_kw"])
     epsilon = float(params["epsilon_kwh"])
     eps_q = max(epsilon / Q15_PER_HOUR, 0.001)
     eta_grid = float(params["eta_grid_battery"])
@@ -786,7 +787,8 @@ def simulate_blended_current_hour_q15(
             soc_kwh, pv, load, ctrl,
             battery_cap=battery_cap,
             min_kwh=min_kwh,
-            ac_cap_kw=discharge_ac_kw / Q15_PER_HOUR,
+            ac_cap_kw=inverter_ac_kw / Q15_PER_HOUR,
+            discharge_dc_cap_kwh=discharge_dc_kw / Q15_PER_HOUR,
             eta_grid=eta_grid,
             eta_out=eta_out,
             eta_pv_load=eta_pv_load,
@@ -824,14 +826,15 @@ def simulate_q15_slots(
         get_simulation_params,
         plan_min_soc_kwh,
         plan_min_soc_pct,
-        plan_timer_discharge_ac_kw,
+        plan_timer_discharge_power_kw,
     )
 
     params = get_simulation_params(cfg)
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     min_soc_pct = plan_min_soc_pct(cfg)
     min_kwh = plan_min_soc_kwh(cfg)
-    discharge_ac_kw = plan_timer_discharge_ac_kw(cfg)
+    discharge_dc_kw = plan_timer_discharge_power_kw(cfg)
+    inverter_ac_kw = float(cfg["inverter"]["ac_capacity_kw"])
     epsilon = float(params["epsilon_kwh"])
     eps_q = max(epsilon / Q15_PER_HOUR, 0.001)
     eta_grid = float(params["eta_grid_battery"])
@@ -852,7 +855,8 @@ def simulate_q15_slots(
             soc_kwh, pv, load, ctrl,
             battery_cap=battery_cap,
             min_kwh=min_kwh,
-            ac_cap_kw=discharge_ac_kw / Q15_PER_HOUR,
+            ac_cap_kw=inverter_ac_kw / Q15_PER_HOUR,
+            discharge_dc_cap_kwh=discharge_dc_kw / Q15_PER_HOUR,
             eta_grid=eta_grid,
             eta_out=eta_out,
             eta_pv_load=eta_pv_load,

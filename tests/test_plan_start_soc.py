@@ -7,19 +7,19 @@ import pytest
 from src.simulation import _plan_start_soc_kwh
 
 
-def test_plan_start_hour0_uses_live():
+def test_plan_start_hour0_uses_day_start_not_live():
     battery_cap = 48.0
     live = 0.22 * battery_cap
-    unused_day_start = 0.5 * battery_cap
+    day_start = 0.25 * battery_cap
     got = _plan_start_soc_kwh(
         0,
         {"soc": [None] * 24},
         battery_cap,
         16.0,
-        unused_day_start,
+        day_start,
         live,
     )
-    assert got == live
+    assert got == day_start
 
 
 def test_plan_start_later_hour_uses_prior_influx_end():

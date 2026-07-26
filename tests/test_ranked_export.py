@@ -140,7 +140,8 @@ def test_equal_rating_after_rich_hour_prefers_neighbor():
             initial_soc_kwh=20.0,
             battery_cap=40.0,
             min_kwh=6.4,
-            discharge_ac_step=8.0,
+            discharge_dc_step=8.0,
+            inverter_ac_step=8.0,
             eta_grid=1.0,
             eta_out=1.0,
             eta_pv_load=1.0,
@@ -268,8 +269,64 @@ def test_avg_below_floor_no_export():
     assert all(c.battery_export_kwh == 0.0 for c in controls)
 
 
-def test_rank_order_middle_hour_gets_leftover_after_richer():
-    """Rank 1=21, rank 2=19, rank 3=20: hour 20 is planned after 21 and 19 claims."""
+def test_chrono_fill_opens_second_hour_to_reach_post_dis_floor():
+    """After H20 time-limits above post_dis(20), H21 sells leftover to post_dis(21)."""
+    cfg = _cfg(min_hourly_transfer_kwh=2.0)
+    params = get_simulation_params(cfg)
+    load_today = [0.2] * 24
+    load_today[20] = 0.8
+    load_today[21] = 1.2
+    load_today[22] = 1.3
+    load_today[23] = 1.0
+    load_tom = [1.0, 0.9, 0.7, 0.6, 0.5, 0.5, 0.5, 0.5] + [0.4] * 16
+    pv_tom = [0.0] * 7 + [2.0] + [3.0] * 16
+    offset = 19 * 4
+    steps = 20  # 19..23
+    rce = [None] * offset + [0.5] * 4 + [0.93] * 4 + [0.96] * 4 + [0.5] * 8
+    pv_s, load_s, buy_s = [], [], []
+    for h in range(19, 24):
+        for _ in range(4):
+            pv_s.append(0.0)
+            load_s.append(load_today[h] / 4.0)
+            buy_s.append(0.5)
+    # ~55% of 40 kWh — H20 alone cannot reach post_dis(20); leftover needs H21.
+    controls = optimize_horizon(
+        steps=steps,
+        pv_series=pv_s,
+        load_series=load_s,
+        buy_prices=buy_s,
+        rce_series=rce + [0.5] * 8,
+        initial_soc_kwh=22.0,
+        cfg=cfg,
+        params=params,
+        end_dt=datetime(2026, 7, 27, 0, 0),
+        today_date=datetime(2026, 7, 26).date(),
+        rce_map={},
+        forecast={
+            "today": {
+                "pv": [0.0] * 24,
+                "load": load_today,
+                "pv_total": 0.0,
+                "load_total": sum(load_today),
+            },
+            "tomorrow": {
+                "pv": pv_tom,
+                "load": load_tom,
+                "pv_total": sum(pv_tom),
+                "load_total": sum(load_tom),
+            },
+        },
+        step_scale=0.25,
+        rce_step_offset=offset,
+    )
+    exp20 = sum(c.battery_export_kwh for c in controls[4:8])
+    exp21 = sum(c.battery_export_kwh for c in controls[8:12])
+    assert exp20 > 1.0
+    assert exp21 > 1.0
+
+
+def test_chrono_fill_uses_later_hour_when_surplus_is_large():
+    """With a very full battery, later rich hours still get a Dis block."""
     cfg = _cfg(min_hourly_transfer_kwh=0.5)
     params = get_simulation_params(cfg)
     offset = 19 * 4
@@ -282,7 +339,7 @@ def test_rank_order_middle_hour_gets_leftover_after_richer():
         load_series=[0.1] * steps,
         buy_prices=[0.5] * steps,
         rce_series=rce,
-        initial_soc_kwh=16.0,
+        initial_soc_kwh=36.0,  # nearly full 40 kWh pack
         cfg=cfg,
         params=params,
         end_dt=end,
@@ -298,10 +355,10 @@ def test_rank_order_middle_hour_gets_leftover_after_richer():
     exp19 = sum(c.battery_export_kwh for c in controls[0:4])
     exp20 = sum(c.battery_export_kwh for c in controls[4:8])
     exp21 = sum(c.battery_export_kwh for c in controls[8:12])
-    assert exp21 > 1.0
-    assert exp21 >= exp19
-    assert exp21 >= exp20
-    assert exp19 + exp20 + exp21 > 2.0
+    assert exp19 + exp20 + exp21 > 5.0
+    # Chrono fills earlier hours first; with large surplus a later hour still opens.
+    assert exp19 > 0.5
+    assert exp20 > 0.5 or exp21 > 0.5
 
 
 def test_floor_ignores_load_only_quarters_outside_export_span():
@@ -324,7 +381,8 @@ def test_floor_ignores_load_only_quarters_outside_export_span():
         base_charge_q=[0.0, 0.0, 0.0, 0.0],
         battery_cap=43.0,
         min_kwh=6.88,
-        discharge_ac_step=1.85,
+        discharge_dc_step=2.0,
+        inverter_ac_step=2.0,
         eta_grid=0.925,
         eta_out=0.925,
         eta_pv_load=0.925,
@@ -403,7 +461,8 @@ def test_middle_hour_is_full_four_quarters():
         initial_soc_kwh=35.0,
         battery_cap=40.0,
         min_kwh=6.4,
-        discharge_ac_step=2.0,
+        discharge_dc_step=2.0,
+        inverter_ac_step=2.0,
         eta_grid=1.0,
         eta_out=1.0,
         eta_pv_load=1.0,

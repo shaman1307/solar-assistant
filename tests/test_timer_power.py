@@ -372,6 +372,7 @@ def test_model_applies_config_losses_to_timer_caps():
         },
     }
     assert plan_timer_discharge_power_kw(cfg) == 8.0
+    # AC equivalent of DC timer power (reference only; optimizer uses DC 8.0).
     assert plan_timer_discharge_ac_kw(cfg) == 7.4
     assert plan_timer_charge_power_kw(cfg) == 5.0
     assert plan_timer_charge_grid_kw(cfg) == 5.41

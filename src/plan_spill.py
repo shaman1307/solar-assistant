@@ -14,12 +14,15 @@ def pv_load_energy_split(
     *,
     eta_pv_load: float,
 ) -> tuple[float, float]:
-    """AC load deficit after PV→load; remaining PV (DC kWh) for battery/export."""
+    """Split AC-meter PV vs AC load into deficit and surplus for battery/export.
+
+    Plan PV/load series are already AC (inverter / house meter). Do not apply
+    ``eta_pv_load`` as a second conversion — that double-counts and inflates
+    SOC on PV→battery. ``eta_pv_load <= 0`` still means ignore PV (full deficit).
+    """
     if eta_pv_load <= 0:
         return max(0.0, load), max(0.0, pv)
-    deficit = max(0.0, load - pv * eta_pv_load)
-    pv_surplus = max(0.0, pv - load / eta_pv_load)
-    return deficit, pv_surplus
+    return max(0.0, load - pv), max(0.0, pv - load)
 
 
 def _natural_hour(
