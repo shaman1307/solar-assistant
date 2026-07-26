@@ -10,8 +10,10 @@ from src.plan_optimizer import (
     assign_ranked_battery_export,
     export_span_candidates,
     export_window_roles,
+    hour_rce_rating,
     hourly_avg_rce,
     optimize_horizon,
+    pick_next_export_hour,
     rank_hours_by_avg_rce,
 )
 from src.simulation_config import (
@@ -68,6 +70,92 @@ def test_hourly_avg_rce_and_rank():
     assert hourly_avg_rce(rce, 0) == 0.4
     assert hourly_avg_rce(rce, 1) == 0.9
     assert rank_hours_by_avg_rce([0, 1, 2], rce, 0.5) == [1, 2]
+
+
+def test_hour_rce_rating_rounds_to_hundredths():
+    # 0.901 / 0.904 → same 0.90 rating; 0.906 → 0.91
+    rce = (
+        [0.901] * 4
+        + [0.904] * 4
+        + [0.906] * 4
+    )
+    assert hour_rce_rating(rce, 0) == 0.90
+    assert hour_rce_rating(rce, 1) == 0.90
+    assert hour_rce_rating(rce, 2) == 0.91
+    assert rank_hours_by_avg_rce([0, 1, 2], rce, 0.5) == [2, 0, 1]
+
+
+def test_pick_next_export_hour_prefers_proximity_on_tie():
+    ratings = {18: 1.0, 20: 1.0, 21: 1.0, 17: 0.8}
+    # First pick among top rating: earliest
+    assert pick_next_export_hour([18, 20, 21, 17], ratings, last_hour=None) == 18
+    # After 18: among remaining top (20,21) pick closer → 20
+    assert pick_next_export_hour([20, 21, 17], ratings, last_hour=18) == 20
+    # After 20: 21 still tops 17
+    assert pick_next_export_hour([21, 17], ratings, last_hour=20) == 21
+    assert pick_next_export_hour([17], ratings, last_hour=21) == 17
+    # After rich hour 21: equal 0.90 at 18 and 20 → prefer 20 (closer)
+    ratings2 = {21: 1.0, 18: 0.9, 20: 0.9}
+    assert pick_next_export_hour([18, 20], ratings2, last_hour=21) == 20
+
+
+def test_equal_rating_after_rich_hour_prefers_neighbor():
+    """Allocator tries the nearer equal-rating hour before a distant one.
+
+    Static (-rating, hour) would try 16 before 20 after rich 19; proximity tries 20 first.
+    """
+    import src.plan_optimizer as po
+
+    orig = po.pick_next_export_hour
+    tried: list[int] = []
+
+    def _wrap(remaining, ratings, *, last_hour):
+        h = orig(remaining, ratings, last_hour=last_hour)
+        tried.append(h)
+        return h
+
+    po.pick_next_export_hour = _wrap
+    try:
+        offset = 16 * 4
+        steps = 20  # 16..20
+        rce = (
+            [None] * offset
+            + [0.90] * 4  # 16
+            + [0.40] * 4  # 17 below floor
+            + [0.40] * 4  # 18 below floor
+            + [1.00] * 4  # 19
+            + [0.90] * 4  # 20
+        )
+        assert hour_rce_rating(rce, 16) == hour_rce_rating(rce, 20) == 0.90
+        assert hour_rce_rating(rce, 19) == 1.0
+        base = [HourControl(0.0, 0.0) for _ in range(steps)]
+        assign_ranked_battery_export(
+            base,
+            steps=steps,
+            pv_series=[0.0] * steps,
+            load_series=[0.05] * steps,
+            rce_series=rce,
+            rce_step_offset=offset,
+            step_scale=0.25,
+            initial_soc_kwh=20.0,
+            battery_cap=40.0,
+            min_kwh=6.4,
+            discharge_ac_step=8.0,
+            eta_grid=1.0,
+            eta_out=1.0,
+            eta_pv_load=1.0,
+            eta_pv_grid=1.0,
+            eta_pv_battery=1.0,
+            eps_step=0.01,
+            reserves=[6.4] * steps,
+            export_floor=0.5,
+            min_hourly_kwh=0.5,
+        )
+    finally:
+        po.pick_next_export_hour = orig
+
+    assert tried[0] == 19
+    assert tried.index(20) < tried.index(16)
 
 
 def test_export_window_roles_and_spans():

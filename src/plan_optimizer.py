@@ -237,6 +237,19 @@ def hourly_avg_rce(
     return sum(vals) / len(vals)
 
 
+def hour_rce_rating(
+    rce_series: list[float | None],
+    hour: int,
+    *,
+    slots_per_hour: int = 4,
+) -> float | None:
+    """Hour rating for export ranking: avg RCE rounded to 0.01 (same avg → same rating)."""
+    avg = hourly_avg_rce(rce_series, hour, slots_per_hour=slots_per_hour)
+    if avg is None:
+        return None
+    return round(float(avg), 2)
+
+
 def rank_hours_by_avg_rce(
     hours: list[int],
     rce_series: list[float | None],
@@ -245,14 +258,35 @@ def rank_hours_by_avg_rce(
     slots_per_hour: int = 4,
     epsilon: float = 0.0,
 ) -> list[int]:
-    """Hours with avg RCE ≥ floor, richest first (rank 1 = first element)."""
+    """Hours with rating ≥ floor, richest first (ties: earlier hour).
+
+    Rating is avg RCE rounded to hundredths. Prefer
+    ``pick_next_export_hour`` during allocation so equal ratings prefer
+    proximity to the last successfully assigned hour.
+    """
     scored: list[tuple[float, int]] = []
     for h in hours:
-        avg = hourly_avg_rce(rce_series, h, slots_per_hour=slots_per_hour)
-        if avg is not None and avg + epsilon >= floor:
-            scored.append((avg, int(h)))
+        rating = hour_rce_rating(rce_series, h, slots_per_hour=slots_per_hour)
+        if rating is not None and rating + epsilon >= floor:
+            scored.append((rating, int(h)))
     scored.sort(key=lambda t: (-t[0], t[1]))
     return [h for _, h in scored]
+
+
+def pick_next_export_hour(
+    remaining: list[int],
+    ratings: dict[int, float],
+    *,
+    last_hour: int | None,
+) -> int:
+    """Next hour to try: highest rating; ties → closest to *last_hour* (else earliest)."""
+    if not remaining:
+        raise ValueError("remaining hours empty")
+    best = max(float(ratings[h]) for h in remaining)
+    tied = [h for h in remaining if float(ratings[h]) == best]
+    if last_hour is None:
+        return min(tied)
+    return min(tied, key=lambda h: (abs(int(h) - int(last_hour)), int(h)))
 
 
 def export_window_roles(selected_hours: set[int] | list[int]) -> dict[int, str]:
@@ -623,8 +657,12 @@ def assign_ranked_battery_export(
 ) -> list[HourControl]:
     """Assign battery→grid export in hourly avg-RCE rank order.
 
-    Rank 1 (richest hour) claims SOC first at max power; rank 2 uses the
-    remainder, etc. Chronology is respected via holds for later higher-rank
+    Rank uses avg RCE rounded to 0.01 (identical ratings share priority).
+    Among equal ratings, the next hour is the one closest to the last
+    successfully assigned hour (contiguous discharge preference).
+
+    Highest rating claims SOC first at max power; lower ratings use the
+    remainder. Chronology is respected via holds for later higher-rank
     claims. Any hour (including middle) may use reduced power when leftover
     SOC cannot saturate max kW — as long as Bat Discharge ≥ min_hourly_kwh.
 
@@ -636,11 +674,12 @@ def assign_ranked_battery_export(
     hours = sorted({
         (rce_step_offset + i) // slots for i in range(steps)
     })
-    ranked = rank_hours_by_avg_rce(
-        hours, rce_series, export_floor,
-        slots_per_hour=slots, epsilon=eps_step,
-    )
-    if not ranked:
+    ratings: dict[int, float] = {}
+    for h in hours:
+        rating = hour_rce_rating(rce_series, h, slots_per_hour=slots)
+        if rating is not None and rating + eps_step >= export_floor:
+            ratings[int(h)] = float(rating)
+    if not ratings:
         return [
             HourControl(c.grid_charge_kw, 0.0, c.load_from_grid) for c in base_controls
         ]
@@ -689,10 +728,15 @@ def assign_ranked_battery_export(
         reserves=reserves,
     )
 
-    # Pass 1: select hours in rank order (feasibility with growing claim set).
+    # Pass 1: select hours by rating; equal ratings → closest to last success.
     selected: set[int] = set()
+    selected_order: list[int] = []
     draft: dict[int, _ExportHourClaim] = {}
-    for h in ranked:
+    remaining = list(ratings.keys())
+    last_assigned: int | None = None
+    while remaining:
+        h = pick_next_export_hour(remaining, ratings, last_hour=last_assigned)
+        remaining = [x for x in remaining if x != h]
         trial = selected | {h}
         roles = export_window_roles(trial)
         _, soc_starts = _apply_export_claims_chrono(base_controls, draft, **common)
@@ -714,16 +758,18 @@ def assign_ranked_battery_export(
             continue
         draft[h] = claim
         selected = trial
+        selected_order.append(h)
+        last_assigned = h
 
     if not selected:
         return [
             HourControl(c.grid_charge_kw, 0.0, c.load_from_grid) for c in base_controls
         ]
 
-    # Pass 2: final roles for the selected set; re-claim SOC strictly by rank.
+    # Pass 2: final roles; re-claim SOC in the same assignment order as pass 1.
     roles = export_window_roles(selected)
     claims: dict[int, _ExportHourClaim] = {}
-    for h in ranked:
+    for h in selected_order:
         if h not in selected:
             continue
         _, soc_starts = _apply_export_claims_chrono(base_controls, claims, **common)

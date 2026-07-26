@@ -277,10 +277,12 @@
       width: 100%;
     }
     .sim-table-month thead th {
-      white-space: normal;
-      overflow: visible;
-      line-height: 1.1;
-      hyphens: auto;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.15;
+      text-align: center;
+      vertical-align: middle;
     }
     .sim-table-month .sim-col-day { width: 14%; }
     .sim-table-month .sim-col-kwh { width: 10%; }
@@ -346,10 +348,17 @@
       font-size: inherit;
     }
     @media (max-width: 767px) {
-      .sim-history-block--ea .sim-table-ea thead th,
+      .sim-history-block--ea .sim-table-ea thead th {
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+        line-height: 1.1;
+      }
       .sim-history-block--month .sim-table-month thead th {
         white-space: normal;
-        hyphens: auto;
+        overflow: visible;
+        text-overflow: clip;
+        line-height: 1.1;
       }
       .sim-history-block--ea .sim-table-ea {
         --sim-table-font-size: 8px;
@@ -428,6 +437,15 @@
       vertical-align: bottom;
       line-height: 1.15;
     }
+    /* Two-line column titles only on phone */
+    .sim-th-br-mobile {
+      display: none;
+    }
+    @media (max-width: 767px) {
+      .sim-th-br-mobile {
+        display: inline;
+      }
+    }
     .sim-table tbody td {
       white-space: nowrap;
     }
@@ -442,12 +460,18 @@
     .sim-table .sim-col-action-cell span {
       font-size: inherit;
     }
-    .sim-table-ea th:nth-child(n+2):nth-child(-n+12),
-    .sim-table-ea td:nth-child(n+2):nth-child(-n+12) {
-      text-align: right;
+    .sim-table-ea td:nth-child(n+2):nth-child(-n+11) {
+      text-align: center;
     }
-    .sim-table-ea thead th {
+    .sim-table-ea thead th,
+    .sim-table-ea thead th:nth-child(n+2):nth-child(-n+12) {
       z-index: 3;
+      text-align: center;
+      vertical-align: middle;
+    }
+    .sim-table-month tbody td.tabular-nums,
+    .sim-table-month tbody td.text-right {
+      text-align: center;
     }
     .sim-table-ea #sim-body-total > tr.sim-row-total {
       position: sticky;
@@ -826,13 +850,28 @@
     }
     .sim-history-head-row {
       display: flex;
-      align-items: center;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      align-content: flex-start;
       justify-content: space-between;
-      gap: 0.75rem;
+      gap: 0.5rem 0.75rem;
       min-width: 0;
     }
     .sim-history-head-row h2 {
       min-width: 0;
+    }
+    .sim-history-head-title {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+    .sim-history-head-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 0.5rem 0.75rem;
+      margin-left: auto;
+      flex: 0 1 auto;
     }
     .sim-history-head-meta {
       display: flex;
@@ -841,6 +880,32 @@
       align-self: end;
       gap: 0.25rem 1rem;
       min-width: 0;
+    }
+    .sim-history-deposit {
+      display: inline;
+      white-space: normal;
+    }
+    .sim-history-deposit-value {
+      white-space: nowrap;
+    }
+    @media (max-width: 767px) {
+      .sim-history-head-row {
+        flex-direction: column;
+        flex-wrap: nowrap;
+        align-items: stretch;
+        align-content: flex-start;
+        gap: 0.375rem;
+      }
+      .sim-history-head-title {
+        flex: 0 0 auto;
+        width: 100%;
+      }
+      .sim-history-head-controls {
+        flex: 0 0 auto;
+        width: 100%;
+        margin-left: 0;
+        justify-content: flex-end;
+      }
     }
     .sim-history-table-wrap {
       min-width: 0;
@@ -3104,18 +3169,20 @@
   <section class="sim-history-grid">
     <div class="sim-history-block sim-history-block--ea">
     <div class="sim-history-head-row">
-      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider truncate min-w-0" id="sim-title" title="minimize net bill">Energy arbitrage</h2>
-      <button type="button" id="sim-price-cols-toggle"
-        class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0 ml-auto"
-        title="Show or hide Buy Price and Sell Price columns">Buy/Sell ▶</button>
-      <button type="button" id="sim-refresh-btn" onclick="refreshSimView()"
-        class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0">Refresh</button>
-      <label class="flex items-center gap-1.5 whitespace-nowrap text-xs text-gray-500 shrink-0" lang="pl-PL">
-        <span>Day</span>
-        <input type="date" id="sim-date"
-          class="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-800 tabular-nums"
-          onchange="loadSimulationForDate(this.value)" />
-      </label>
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider truncate min-w-0 sim-history-head-title" id="sim-title" title="minimize net bill">Energy arbitrage</h2>
+      <div class="sim-history-head-controls">
+        <button type="button" id="sim-price-cols-toggle"
+          class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0"
+          title="Show or hide Buy Price and Sell Price columns">Buy/Sell ▶</button>
+        <button type="button" id="sim-refresh-btn" onclick="refreshSimView()"
+          class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0">Refresh</button>
+        <label class="flex items-center gap-1.5 whitespace-nowrap text-xs text-gray-500 shrink-0" lang="pl-PL">
+          <span>Day</span>
+          <input type="date" id="sim-date"
+            class="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-800 tabular-nums"
+            onchange="loadSimulationForDate(this.value)" />
+        </label>
+      </div>
     </div>
     <p id="sim-history-hint" class="hidden text-[11px] text-amber-700 mt-1 mb-0"></p>
     <div class="sim-history-table-wrap sim-table-wrap bg-white rounded-xl border border-gray-200">
@@ -3133,17 +3200,17 @@
         <thead>
           <tr class="border-b border-gray-200 text-gray-500 text-left">
             <th class="font-medium">Start - End</th>
-            <th class="font-medium text-right">Production<br><span class="font-normal">(kWh)</span></th>
-            <th class="font-medium text-right">Consumption<br><span class="font-normal">(kWh)</span></th>
-            <th class="font-medium text-right">Bat Charge<br><span class="font-normal">(kWh)</span></th>
-            <th class="font-medium text-right">Bat Discharge<br><span class="font-normal">(kWh)</span></th>
-            <th class="font-medium text-right">Grid import<br><span class="font-normal">(kWh)</span></th>
-            <th class="font-medium text-right">Grid export<br><span class="font-normal">(kWh)</span></th>
-            <th class="font-medium text-right">SOC<br><span class="font-normal">(%)</span></th>
-            <th class="font-medium text-right sim-col-buy" id="sim-hdr-buy">Buy Price<br><span class="font-normal">(PLN/kWh)</span></th>
-            <th class="font-medium text-right sim-col-sell" id="sim-hdr-sell">Sell Price<br><span class="font-normal">(PLN/kWh)</span></th>
-            <th class="font-medium text-right" id="sim-hdr-energy">Energy Cost<br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium">Timer Schedule</th>
+            <th class="font-medium text-right" title="(kWh)">Production</th>
+            <th class="font-medium text-right" title="(kWh)">Consumption</th>
+            <th class="font-medium text-right" title="(kWh)">Bat Charge</th>
+            <th class="font-medium text-right" title="(kWh)">Bat Discharge</th>
+            <th class="font-medium text-right" title="(kWh)">Grid import</th>
+            <th class="font-medium text-right" title="(kWh)">Grid export</th>
+            <th class="font-medium text-right" title="(%)">SOC</th>
+            <th class="font-medium text-right sim-col-buy" id="sim-hdr-buy" title="(PLN/kWh)">Buy Price</th>
+            <th class="font-medium text-right sim-col-sell" id="sim-hdr-sell" title="(PLN/kWh)">Sell Price</th>
+            <th class="font-medium text-right" id="sim-hdr-energy" title="(PLN)">Energy Cost</th>
+            <th class="font-medium">Timer <br class="sim-th-br-mobile">Schedule</th>
             <th class="font-medium">Action</th>
           </tr>
         </thead>
@@ -3173,30 +3240,32 @@
 
     <div class="sim-history-block sim-history-block--month sim-history-block--nested">
     <div class="sim-history-head-row">
-      <div class="min-w-0">
+      <div class="sim-history-head-title">
         <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider truncate">Monthly history</h2>
-        <p class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span class="ov-total-label text-sm font-semibold text-gray-500"
+        <p class="mt-1 mb-0">
+          <span class="sim-history-deposit ov-total-label text-sm font-semibold text-gray-500"
             title="Sum of remaining deposit balances across months. Each month credits export RCE into the pool; import tariff is paid from older months first (not subtracted from that month credit).">
-            Energy Deposit Total:
+            Energy Deposit:
             <button type="button" id="history-deposit-total" onclick="rebuildHistoryFromSqlite()"
-              class="tabular-nums font-semibold text-green-600 hover:text-green-700 underline decoration-dotted underline-offset-2 cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+              class="sim-history-deposit-value tabular-nums font-semibold text-green-600 hover:text-green-700 underline decoration-dotted underline-offset-2 cursor-pointer disabled:opacity-60 disabled:cursor-wait"
               title="Click to full rebuild from Energy Arbitrage actuals (after SQLite edits)">— PLN</button>
           </span>
         </p>
       </div>
-      <button type="button" id="history-month-import-cols-toggle"
-        class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0 ml-auto"
-        title="Show or hide Energy Export RCE, Energy Import tariff/service/total, and Baseline Export/Import">Details ▶</button>
-      <button type="button" id="history-month-dis-cols-toggle"
-        class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0"
-        title="Show or hide evening Dis baseline (Export, Import, Cost Total, Saved vs Dis)">Dis ▶</button>
-      <label class="flex items-center gap-1.5 whitespace-nowrap text-xs text-gray-500 shrink-0" lang="pl-PL">
-        <span>Month</span>
-        <input type="month" id="history-month-picker"
-          class="rounded-lg border border-gray-300 px-2 py-1 text-xs text-gray-900"
-          onchange="loadHistoryMonth()" />
-      </label>
+      <div class="sim-history-head-controls">
+        <button type="button" id="history-month-import-cols-toggle"
+          class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0"
+          title="Show or hide Energy Export RCE, Energy Import tariff/service/total, and Baseline Export/Import">Details ▶</button>
+        <button type="button" id="history-month-dis-cols-toggle"
+          class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0"
+          title="Show or hide evening Dis baseline (Export, Import, Cost Total, Saved vs Dis)">Dis ▶</button>
+        <label class="flex items-center gap-1.5 whitespace-nowrap text-xs text-gray-500 shrink-0" lang="pl-PL">
+          <span>Month</span>
+          <input type="month" id="history-month-picker"
+            class="rounded-lg border border-gray-300 px-2 py-1 text-xs text-gray-900"
+            onchange="loadHistoryMonth()" />
+        </label>
+      </div>
     </div>
     <div class="sim-history-table-wrap sim-table-wrap bg-white rounded-xl border border-gray-200">
       <table class="sim-table sim-table-month sim-month-import-collapsed sim-month-dis-collapsed">
@@ -3215,38 +3284,46 @@
         <thead>
           <tr class="border-b border-gray-200 text-gray-500 text-left">
             <th class="font-medium mh-bg-import-part">Day</th>
-            <th class="font-medium text-right mh-bg-import-part">Production<br><span class="font-normal">(kWh)</span></th>
-            <th class="font-medium text-right mh-bg-import-part">Consumption<br><span class="font-normal">(kWh)</span></th>
-            <th class="font-medium text-right mh-bg-import-part">Grid import<br><span class="font-normal">(kWh)</span></th>
-            <th class="font-medium text-right mh-bg-import-part">Grid export<br><span class="font-normal">(kWh)</span></th>
-            <th class="font-medium text-right mh-bg-export mh-col-import-detail">Energy Export.<br><span class="font-normal">RCE Cost</span><br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-import-tariff mh-col-import-detail">Energy Import.<br><span class="font-normal">Tariff Cost</span><br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-energy-total">Energy Cost Total<br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-import-part mh-bg-import-part--first mh-col-import-detail">Energy Import.<br><span class="font-normal">Service Cost</span><br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-import-part mh-col-import-detail">Energy Import.<br><span class="font-normal">Service Fee</span><br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-import-total mh-col-import-detail">Energy Import<br><span class="font-normal">Cost Total (To be paid)</span><br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-export mh-col-import-detail" title="Physics baseline (no timer control)
+            <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Production</th>
+            <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Consumption</th>
+            <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Grid import</th>
+            <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Grid export</th>
+            <th class="font-medium text-right mh-bg-export mh-col-import-detail" title="RCE Cost (PLN)">Energy Export</th>
+            <th class="font-medium text-right mh-bg-import-tariff mh-col-import-detail" title="Tariff Cost (PLN)">Energy Import</th>
+            <th class="font-medium text-right mh-bg-energy-total" title="(PLN)">Energy Cost Total</th>
+            <th class="font-medium text-right mh-bg-import-part mh-bg-import-part--first mh-col-import-detail" title="Service Cost (PLN)">Energy Import</th>
+            <th class="font-medium text-right mh-bg-import-part mh-col-import-detail" title="Service Fee (PLN)">Energy Import</th>
+            <th class="font-medium text-right mh-bg-import-total mh-col-import-detail" title="Cost Total (To be paid) (PLN)">Energy Import</th>
+            <th class="font-medium text-right mh-bg-export mh-col-import-detail" title="(PLN)
+Physics baseline (no timer control)
 Charge: PV only
 Discharge to grid: battery overflow only
 House load: battery while SOC &gt; min
-SOC chains day-to-day within the month">Baseline Export<br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-import-tariff mh-col-import-detail" title="Physics baseline (no timer control)
+SOC chains day-to-day within the month">Baseline Export</th>
+            <th class="font-medium text-right mh-bg-import-tariff mh-col-import-detail" title="(PLN)
+Physics baseline (no timer control)
 Charge: PV only
 Discharge to grid: battery overflow only
 House load: battery while SOC &gt; min
-SOC chains day-to-day within the month">Baseline Import<br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-energy-total" title="Baseline Export − Baseline Import">Baseline Cost<br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-import-total" title="Actual Energy Cost Total − Baseline Cost">Saved<br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-export mh-col-dis-baseline" title="Evening Dis baseline (hardcoded)
+SOC chains day-to-day within the month">Baseline Import</th>
+            <th class="font-medium text-right mh-bg-energy-total" title="(PLN)
+Baseline Export − Baseline Import">Baseline Cost</th>
+            <th class="font-medium text-right mh-bg-import-total" title="(PLN)
+Actual Energy Cost Total − Baseline Cost">Saved</th>
+            <th class="font-medium text-right mh-bg-export mh-col-dis-baseline" title="(PLN)
+Evening Dis baseline (hardcoded)
 Dis 8 kW 19:00–22:00 down to SOC 30%
 Other hours: physics only (PV charge, overflow export)
-SOC chains day-to-day within the month">Dis Export<br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-import-tariff mh-col-dis-baseline" title="Evening Dis baseline (hardcoded)
+SOC chains day-to-day within the month">Dis Export</th>
+            <th class="font-medium text-right mh-bg-import-tariff mh-col-dis-baseline" title="(PLN)
+Evening Dis baseline (hardcoded)
 Dis 8 kW 19:00–22:00 down to SOC 30%
 Other hours: physics only (PV charge, overflow export)
-SOC chains day-to-day within the month">Dis Import<br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-energy-total mh-col-dis-baseline" title="Dis Export − Dis Import">Dis Cost<br><span class="font-normal">(PLN)</span></th>
-            <th class="font-medium text-right mh-bg-import-total mh-col-dis-baseline" title="Actual Energy Cost Total − Dis Cost">Saved vs Dis<br><span class="font-normal">(PLN)</span></th>
+SOC chains day-to-day within the month">Dis Import</th>
+            <th class="font-medium text-right mh-bg-energy-total mh-col-dis-baseline" title="(PLN)
+Dis Export − Dis Import">Dis Cost</th>
+            <th class="font-medium text-right mh-bg-import-total mh-col-dis-baseline" title="(PLN)
+Actual Energy Cost Total − Dis Cost">Saved vs Dis</th>
           </tr>
         </thead>
         <tbody id="history-month-body-total">
@@ -8433,10 +8510,12 @@ function updateSimTableHeaders(_data) {
   const buyEl = document.getElementById('sim-hdr-buy');
   const sellEl = document.getElementById('sim-hdr-sell');
   if (buyEl) {
-    buyEl.innerHTML = 'Buy Price<br><span class="font-normal">(PLN/kWh)</span>';
+    buyEl.textContent = 'Buy Price';
+    buyEl.title = '(PLN/kWh)';
   }
   if (sellEl) {
-    sellEl.innerHTML = 'Sell Price<br><span class="font-normal">(PLN/kWh)</span>';
+    sellEl.textContent = 'Sell Price';
+    sellEl.title = '(PLN/kWh)';
   }
 }
 
@@ -8539,7 +8618,7 @@ function historyMonthImportTitle(r) {
 
 function historyMonthCostTotalDisplayValue(r, isTotal) {
   // Always show energy net (export RCE − import tariff), including month TOTAL.
-  // Deposit pool accrual stays in Energy Deposit Total / backend cascade — not this cell.
+  // Deposit pool accrual stays in Energy Deposit / backend cascade — not this cell.
   const exp = Number(r.export_revenue);
   const imp = Number(r.import_energy_cost);
   if (!Number.isFinite(exp) || !Number.isFinite(imp)) return null;
@@ -8553,7 +8632,7 @@ function historyMonthCostTotalTitle(r, isTotal) {
   if (total == null) return 'Export RCE − import tariff (energy net)';
   const expNum = Number(r.export_revenue);
   const impNum = Number(r.import_energy_cost);
-  return `Energy net = export ${fmt(expNum, 2)} − tariff ${fmt(impNum, 2)} = ${fmt(Number(total), 2)} zł (deposit pool is Energy Deposit Total)`;
+  return `Energy net = export ${fmt(expNum, 2)} − tariff ${fmt(impNum, 2)} = ${fmt(Number(total), 2)} zł (deposit pool is Energy Deposit)`;
 }
 
 function historyMonthImportCostTotalDisplayValue(r, isTotal) {
@@ -9018,11 +9097,11 @@ function syncSimEaStickyOffsets() {
   }
 }
 
-const SIM_TABLE_FONT_MAX_PX = 12;
+const SIM_TABLE_FONT_MAX_PX = 8;
 const SIM_TABLE_FONT_MIN_PX = 5;
 const SIM_TABLE_FONT_STEP_PX = 0.5;
-const SIM_TABLE_FONT_MOBILE_BOOST_PX = 1;
-const SIM_EA_FONT_CACHE_KEY = 'sa_sim_ea_font_px_v1';
+const SIM_TABLE_FONT_MOBILE_BOOST_PX = 0;
+const SIM_EA_FONT_CACHE_KEY = 'sa_sim_ea_font_px_v2';
 
 function simHistoryApplyTableFont(table, size) {
   table.style.setProperty('--sim-table-font-size', `${size}px`);
@@ -9064,15 +9143,24 @@ function simHistoryEaHasPlanRows(table) {
 function simHistoryOverflowCells(table) {
   const cells = [];
   const priceCollapsed = table?.classList.contains('sim-ea-price-collapsed');
+  const monthImportCollapsed = table?.classList.contains('sim-month-import-collapsed');
+  const monthDisCollapsed = table?.classList.contains('sim-month-dis-collapsed');
+  const skipCell = (c) => {
+    if (!c) return true;
+    if (priceCollapsed && (c.classList.contains('sim-col-buy') || c.classList.contains('sim-col-sell'))) return true;
+    if (monthImportCollapsed && c.classList.contains('mh-col-import-detail')) return true;
+    if (monthDisCollapsed && c.classList.contains('mh-col-dis-baseline')) return true;
+    return false;
+  };
   table.querySelectorAll('thead th').forEach(c => {
-    if (priceCollapsed && (c.classList.contains('sim-col-buy') || c.classList.contains('sim-col-sell'))) return;
+    if (skipCell(c)) return;
     cells.push(c);
   });
   table.querySelectorAll('tbody tr').forEach(row => {
     if (row.querySelector('td[colspan]')) return;
     for (const cell of row.cells) {
       if (!cell || cell.colSpan > 1) continue;
-      if (priceCollapsed && (cell.classList.contains('sim-col-buy') || cell.classList.contains('sim-col-sell'))) continue;
+      if (skipCell(cell)) continue;
       cells.push(cell);
     }
   });
