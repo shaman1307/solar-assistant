@@ -47,6 +47,40 @@ def _timer_chg_ends_after(timer_txt: str, minute_of_day: int) -> bool:
     return False
 
 
+def _min_hourly_transfer_kwh(cfg: dict | None) -> float:
+    if cfg is None:
+        from .simulation_config import DEFAULT_TIMER_SCHEDULE
+
+        return float(DEFAULT_TIMER_SCHEDULE.get("min_hourly_transfer_kwh") or 0)
+    return float(
+        (cfg.get("timer_schedule") or {}).get("min_hourly_transfer_kwh") or 0
+    )
+
+
+def _release_locked_chg_if_invalid(
+    row: dict[str, Any],
+    fresh_row: dict[str, Any] | None,
+    *,
+    cfg: dict | None = None,
+) -> None:
+    """Clear a locked Chg when Bat Charge is below min_hourly_transfer."""
+    del fresh_row
+    if row.get("timer_schedule_manual"):
+        return
+    timer = str(row.get("timer_schedule") or "").strip()
+    if not timer.lower().startswith("chg"):
+        return
+    min_hourly = _min_hourly_transfer_kwh(cfg)
+    if min_hourly <= 0:
+        return
+    bat_chg = float(row.get("bat_charge") or 0)
+    if bat_chg + 1e-6 >= min_hourly:
+        return
+    row["timer_schedule"] = ""
+    row["action"] = ACTION_DISCHARGE_LOAD
+    row["hour_labels_locked"] = False
+
+
 def _should_preserve_imminent_chg(
     existing_row: dict[str, Any],
     fresh_row: dict[str, Any],
@@ -59,7 +93,8 @@ def _should_preserve_imminent_chg(
     """Keep SQLite next-hour Chg when the fresh sim clears that timer before :00.
 
     Front-load often slips charge to hour+1; keep the committed Chg so the :00
-    SA sync still sees the planned timer.
+    SA sync still sees the planned timer. Thin Chg is cleared elsewhere via
+    min_hourly / economics before it is written.
     """
     if plan_date != today_str or hour != current_hour + 1:
         return False
@@ -69,7 +104,6 @@ def _should_preserve_imminent_chg(
     fresh_timer = str(fresh_row.get("timer_schedule") or "").strip()
     if not _timer_has_chg(existing_timer):
         return False
-    # Fresh cleared the timer — keep the planned Chg.
     return not fresh_timer
 
 
@@ -341,6 +375,36 @@ def _live_soc_kwh_from_metrics(
     return (pct / 100.0) * battery_cap
 
 
+def _q15_bat_charge_kwh(row: dict[str, Any] | None) -> float:
+    if not row:
+        return 0.0
+    return sum(max(0.0, float(s.get("battery") or 0)) for s in (row.get("q15") or []))
+
+
+def _q15_bat_discharge_kwh(row: dict[str, Any] | None) -> float:
+    if not row:
+        return 0.0
+    return sum(max(0.0, -float(s.get("battery") or 0)) for s in (row.get("q15") or []))
+
+
+def _locked_timer_q15_mismatch(
+    row: dict[str, Any],
+    fresh_row: dict[str, Any] | None,
+) -> bool:
+    """True when locked Chg/Dis label has no matching energy but *fresh_row* does."""
+    timer = str(row.get("timer_schedule") or "").strip().lower()
+    if timer.startswith("chg") or " chg " in f" {timer} ":
+        return _q15_bat_charge_kwh(row) < 0.05 and _q15_bat_charge_kwh(fresh_row) > 0.05
+    if timer.startswith("dis") or " dis " in f" {timer} ":
+        # Export Dis should show positive grid export or battery discharge above house.
+        row_exp = sum(float(s.get("grid_export") or 0) for s in (row.get("q15") or []))
+        fresh_exp = sum(
+            float(s.get("grid_export") or 0) for s in ((fresh_row or {}).get("q15") or [])
+        )
+        return row_exp < 0.05 and fresh_exp > 0.05
+    return False
+
+
 def _merge_current_hour_q15(
     row: dict[str, Any],
     *,
@@ -360,15 +424,25 @@ def _merge_current_hour_q15(
     fresh optimizer (weather + plan); hour Energy Cost is recomputed from flows.
 
     Before the first quarter ends, keep the :00 end-of-hour SOC chain on the
-    locked row — do not replace it with a mid-hour live-seeded fresh curve.
+    locked row — do not replace it with a mid-hour live-seeded fresh curve —
+    unless the locked timer implies Chg/Dis that the stored q15 never applied.
     """
     hour_offset, tick_q = last_completed_quarter_tick(now)
     if hour_offset == 0 and tick_q < 0 and row.get("q15"):
-        # :00–:14 — preserve locked hour-end SOC from the :00 plan.
-        q15 = _ensure_q15_length(list(row.get("q15") or []))
-        apply_q15_physics_to_row(row, q15)
-        refresh_row_grid_cash(row, cfg)
-        return
+        if not _locked_timer_q15_mismatch(row, fresh_row):
+            # :00–:14 — preserve locked hour-end SOC from the :00 plan.
+            q15 = _ensure_q15_length(list(row.get("q15") or []))
+            apply_q15_physics_to_row(row, q15)
+            refresh_row_grid_cash(row, cfg)
+            return
+        # Locked Chg/Dis label with idle q15 — take fresh physics for the hour.
+        if fresh_row is not None:
+            row["q15"] = copy.deepcopy(_ensure_q15_length(list(fresh_row.get("q15") or [])))
+            for slot in row["q15"]:
+                slot["from_actual"] = False
+            apply_q15_physics_to_row(row, row["q15"])
+            refresh_row_grid_cash(row, cfg)
+            return
 
     if hour_offset == 0 and tick_q >= 0:
         _apply_actual_quarter_if_needed(
@@ -644,9 +718,10 @@ def merge_incremental_plan(
                 )
             # Violet live-SOC highlight: always the in-progress hour.
             row["soc_blended"] = True
-            # Locked timer_schedule / action stay as written at :00 for the whole
-            # hour (and into history). Clip only when building SA write payloads —
-            # never erase a started Dis/Chg window from SQLite.
+            # Locked Dis stays for the hour. Locked Chg may be dropped when the
+            # fresh plan cleared it (min-hourly / economics) or Bat Charge is
+            # still below min_hourly_transfer.
+            _release_locked_chg_if_invalid(row, fresh_row, cfg=cfg)
             out_rows.append(row)
             continue
 
@@ -877,6 +952,7 @@ def _merge_hour_from_quarter(
     incoming_row: dict[str, Any],
     *,
     from_q: int,
+    cfg: dict | None = None,
 ) -> dict[str, Any]:
     """Keep completed/from_actual (and optionally q < from_q); rest from incoming.
 
@@ -885,9 +961,14 @@ def _merge_hour_from_quarter(
     timer/action stay once a Chg/Dis window exists; an empty locked timer may
     still take incoming labels so an early offpeak Chg is kept when the current
     hour was seeded empty.
+
+    Do not resurrect a thin/invalid Chg that the incremental merge already
+    released (incoming empty + unlocked) or whose Bat Charge is still below
+    min_hourly_transfer after physics.
     """
     merged = copy.deepcopy(incoming_row)
     existing_timer = str(existing_row.get("timer_schedule") or "")
+    incoming_timer = str(incoming_row.get("timer_schedule") or "").strip()
     has_actual = any(
         _q15_slot_actual(s) for s in (existing_row.get("q15") or [])
     )
@@ -897,10 +978,19 @@ def _merge_hour_from_quarter(
         merged["hour_labels_locked"] = True
         merged["timer_schedule_manual"] = True
     elif existing_row.get("hour_labels_locked"):
-        if existing_timer.strip() or has_actual:
-            merged["timer_schedule"] = existing_timer
-            merged["action"] = existing_row.get("action", "")
-        merged["hour_labels_locked"] = True
+        # Merge already cleared an illegal thin Chg — keep the empty timer.
+        released_thin_chg = (
+            _timer_has_chg(existing_timer)
+            and not incoming_timer
+            and not incoming_row.get("hour_labels_locked")
+        )
+        if released_thin_chg:
+            merged["hour_labels_locked"] = False
+        else:
+            if existing_timer.strip() or has_actual:
+                merged["timer_schedule"] = existing_timer
+                merged["action"] = existing_row.get("action", "")
+            merged["hour_labels_locked"] = True
 
     eq = _ensure_q15_length(list(existing_row.get("q15") or []))
     iq = _ensure_q15_length(list(incoming_row.get("q15") or []))
@@ -917,6 +1007,8 @@ def _merge_hour_from_quarter(
         else:
             out.append(copy.deepcopy(iq[q]))
     apply_q15_physics_to_row(merged, out)
+    # Drop sticky locked Chg when physics still show Bat Charge below min_hourly.
+    _release_locked_chg_if_invalid(merged, None, cfg=cfg)
     return merged
 
 
@@ -925,6 +1017,7 @@ def _merge_current_hour_future_quarters(
     incoming_row: dict[str, Any],
     *,
     now: datetime,
+    cfg: dict | None = None,
 ) -> dict[str, Any]:
     """Keep completed clock quarters (+ meter actuals); rest from incoming.
 
@@ -934,7 +1027,9 @@ def _merge_current_hour_future_quarters(
     """
     hour_offset, tick_q = last_completed_quarter_tick(now)
     from_q = (tick_q + 1) if hour_offset == 0 and tick_q >= 0 else 0
-    return _merge_hour_from_quarter(existing_row, incoming_row, from_q=from_q)
+    return _merge_hour_from_quarter(
+        existing_row, incoming_row, from_q=from_q, cfg=cfg,
+    )
 
 
 def _in_progress_quarter(now: datetime) -> int:
@@ -1022,7 +1117,9 @@ def guard_future_quarters_on_write(
             continue
         if plan_date == today_str and hour == current_hour and existing_current is not None:
             live_rows.append(
-                _merge_current_hour_future_quarters(existing_current, row, now=now),
+                _merge_current_hour_future_quarters(
+                    existing_current, row, now=now, cfg=None,
+                ),
             )
         else:
             live_rows.append(row)

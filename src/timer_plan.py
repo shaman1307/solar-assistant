@@ -1147,13 +1147,13 @@ def timer_charge_active_at(timer_txt: str, now: datetime) -> bool:
 
 
 def timer_covers_quarter(timer_txt: str, hour: int, quarter: int) -> bool:
-    """True when any discharge segment overlaps a 15-min slot in *hour*."""
+    """True when any Chg/Dis segment overlaps a 15-min slot in *hour*."""
     if not str(timer_txt or "").strip():
         return False
     slot_start = int(hour) * 60 + int(quarter) * 15
     slot_end = slot_start + 15
     for seg in parse_timer_schedule_segments(timer_txt):
-        if seg.get("kind") != "dis":
+        if seg.get("kind") not in ("dis", "chg"):
             continue
         from_min = _hhmm_to_minute_of_day(seg["from"])
         to_min = _hhmm_to_minute_of_day(seg["to"])

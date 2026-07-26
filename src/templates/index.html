@@ -5029,7 +5029,7 @@ async function saveOverrides() {
   }
 }
 
-/** Force rebuild forecast chart + EA plan + solid SOC plan from current overrides/EV. */
+/** Force rebuild forecast chart + EA plan + solid as-if-00:00 SOC plan. */
 async function refreshForecastOverridesPlan() {
   const btn = document.getElementById('fc-overrides-refresh');
   if (btn) {
@@ -5048,7 +5048,16 @@ async function refreshForecastOverridesPlan() {
       evSaveTimer = null;
       await saveEvCharging();
     }
-    await refreshQuarterCycle({ silent: false, syncSliders: false, force: true });
+    // Unlock solid SOC (as-if-00:00); plain ?refresh=1 keeps the frozen curve.
+    await loadForecast(true, { syncSliders: false });
+    const res = await fetch('api/simulation?refresh=1&unlock_plan_soc=1');
+    simData = await res.json();
+    applyPlanPricesFromSimulation(simData);
+    if (currentTab === 'simulation' && simViewIsToday()) {
+      renderSimulationBundle(simData);
+    }
+    refreshEnergyOverviewPlanFill();
+    refreshEnergyOverviewCosts();
     renderForecast();
   } catch (e) {
     console.warn('forecast overrides refresh', e);

@@ -237,3 +237,39 @@ def test_empty_sqlite_allows_first_seed():
     )
     stored = read_plan()
     assert stored["history_rows"][0]["action"] == "SEEDED"
+
+
+def test_guard_does_not_resurrect_thin_locked_chg():
+    """write_plan must not restore a locked Chg with Bat Charge below min_hourly."""
+    existing_cur = _live_row(14, marker="Charging from Grid", q_marker=1.0, locked=True)
+    existing_cur["timer_schedule"] = "Chg 14:00-14:30 4.0kW cap25%"
+    existing_cur["bat_charge"] = 0.0
+    existing_cur["battery"] = -0.7
+    for slot in existing_cur["q15"]:
+        slot["battery"] = -0.2
+        slot["grid_import"] = 0.0
+
+    incoming_cur = _live_row(14, marker="Discharging to Load", q_marker=2.0, locked=False)
+    incoming_cur["timer_schedule"] = ""
+    incoming_cur["bat_charge"] = 0.0
+    for slot in incoming_cur["q15"]:
+        slot["battery"] = -0.2
+        slot["grid_import"] = 0.0
+
+    existing = {
+        "today_date": TODAY,
+        "plan_from_hour": 14,
+        "history_rows": [],
+        "rows": [existing_cur],
+    }
+    incoming = {
+        "today_date": TODAY,
+        "plan_from_hour": 14,
+        "history_rows": [],
+        "rows": [incoming_cur],
+    }
+    guarded = guard_future_quarters_on_write(incoming, existing, now=_now(14, 25))
+    cur = next(r for r in guarded["rows"] if int(r["hour"]) == 14)
+    assert not str(cur.get("timer_schedule") or "").strip().startswith("Chg")
+    assert cur.get("hour_labels_locked") is False
+    assert float(cur.get("bat_charge") or 0) < 0.01

@@ -1539,6 +1539,7 @@ def _front_load_offpeak_grid_charge(
     step_scale: float = 1.0,
     skip_leading_slots: int | None = None,
     min_block_minutes: int | None = None,
+    min_hourly_kwh: float = 0.0,
 ) -> list[HourControl]:
     """Move DP pre-peak grid charge to the earliest allowed offpeak steps.
 
@@ -1549,6 +1550,9 @@ def _front_load_offpeak_grid_charge(
     Relocate the optimizer AC budget into consecutive offpeak steps from
     ``fill_from_step`` at hardware max so one budget packs into the earliest
     clock hour(s).
+
+    Drop the budget when it is below ``min_hourly_kwh`` and forcing a min block
+    would cost more than buying the same house energy at peak.
 
     ``charge_targets`` is unused; callers may still pass it.
     House load stays on the battery during the relocated fill.
@@ -1565,11 +1569,14 @@ def _front_load_offpeak_grid_charge(
         min_block_minutes = 30
 
     first_peak = len(controls)
+    peak_buy = float(offpeak_buy)
     for i, p in enumerate(buy_prices):
         if i >= len(controls):
             break
-        if float(p) > offpeak_buy + eps_step:
+        price = float(p)
+        if price > offpeak_buy + eps_step:
             first_peak = i
+            peak_buy = price
             break
 
     # Optimizer-decided volume: all pre-peak offpeak charge DP already chose.
@@ -1579,11 +1586,28 @@ def _front_load_offpeak_grid_charge(
         if float(buy_prices[i] if i < len(buy_prices) else offpeak_buy)
         <= offpeak_buy + eps_step
     )
+    if budget_ac > eps_step and not offpeak_min_block_charge_is_worth(
+        need_ac_kwh=budget_ac,
+        min_hourly_kwh=float(min_hourly_kwh),
+        offpeak_buy=float(offpeak_buy),
+        peak_buy=float(peak_buy),
+        eta_grid=float(eta_grid),
+        eta_out=float(eta_out),
+        epsilon=float(eps_step),
+    ):
+        budget_ac = 0.0
     if budget_ac <= eps_step:
-        # Still clear any charge left in the current hour.
+        # No budget (or economics rejected it): clear all pre-peak offpeak Chg,
+        # including DP leftovers that would otherwise stay as thin orphan slots.
         out_clear: list[HourControl] = []
         for step, prev in enumerate(controls):
-            if step < fill_from_step and float(prev.grid_charge_kw) > eps_step:
+            buy_p = float(buy_prices[step]) if step < len(buy_prices) else offpeak_buy
+            clear_chg = (
+                step < first_peak
+                and buy_p <= offpeak_buy + eps_step
+                and float(prev.grid_charge_kw) > eps_step
+            )
+            if clear_chg:
                 out_clear.append(
                     HourControl(0.0, prev.battery_export_kwh, prev.load_from_grid)
                 )
@@ -1662,9 +1686,9 @@ def _correct_min_hourly_transfer_controls(
 ) -> list[HourControl]:
     """Per clock hour: enforce min_hourly_transfer_kwh on battery↔grid flows.
 
-    Any export below the floor is cleared (including 1-quarter orphans that
-    would show Feed-in without a Dis timer). Charge below the floor is scaled
-    up to the floor so overnight reserve top-up is not deleted.
+    Export or charge below the floor is cleared. Do not scale a thin overnight
+    top-up up to the floor — that forces an uneconomic min block (e.g. 2 kWh
+    Chg to cover a 0.3 kWh morning gap).
     """
     if min_hourly_kwh <= epsilon or not controls:
         return controls
@@ -1683,16 +1707,42 @@ def _correct_min_hourly_transfer_controls(
                 c = out[i]
                 out[i] = HourControl(c.grid_charge_kw, 0.0, c.load_from_grid)
         if epsilon < charge_h < min_hourly_kwh:
-            scale = min_hourly_kwh / charge_h
             for i in idxs:
                 c = out[i]
-                if c.grid_charge_kw > epsilon:
-                    out[i] = HourControl(
-                        c.grid_charge_kw * scale,
-                        c.battery_export_kwh,
-                        c.load_from_grid,
-                    )
+                out[i] = HourControl(0.0, c.battery_export_kwh, c.load_from_grid)
     return out
+
+
+def offpeak_min_block_charge_is_worth(
+    *,
+    need_ac_kwh: float,
+    min_hourly_kwh: float,
+    offpeak_buy: float,
+    peak_buy: float,
+    eta_grid: float,
+    eta_out: float,
+    epsilon: float,
+) -> bool:
+    """Whether an offpeak grid→battery block pays for itself vs peak house buy.
+
+    When *need_ac_kwh* is below *min_hourly_kwh*, the timer must take the full
+    min block (or nothing). Skip the block when its offpeak cost exceeds the
+    peak-tariff cost of buying only the needed house energy.
+    """
+    need = max(0.0, float(need_ac_kwh))
+    if need <= epsilon:
+        return False
+    floor = max(0.0, float(min_hourly_kwh))
+    off = max(0.0, float(offpeak_buy))
+    peak = max(off, float(peak_buy))
+    eta_g = max(1e-9, float(eta_grid))
+    eta_o = max(1e-9, float(eta_out))
+    # Battery DC from AC charge ≈ need*eta_grid; that DC serves peak AC load *eta_out.
+    avoided_peak_ac = need * eta_g * eta_o
+    cost_avoided = avoided_peak_ac * peak
+    charge_ac = need if need + epsilon >= floor or floor <= epsilon else floor
+    cost_charge = charge_ac * off
+    return cost_charge <= cost_avoided + epsilon
 
 
 def _should_extend_reserve_horizon(
@@ -2049,6 +2099,7 @@ def optimize_horizon(
         step_scale=step_scale,
         skip_leading_slots=front_load_skip_leading_slots,
         min_block_minutes=plan_timer_min_block_minutes(cfg),
+        min_hourly_kwh=min_hourly_transfer,
     )
 
     controls = assign_ranked_battery_export(

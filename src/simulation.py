@@ -244,29 +244,6 @@ def _plan_row_end_soc_kwh(row: dict[str, Any], battery_cap: float) -> float | No
     return None
 
 
-def _smart_plan_hour_end_soc_kwh(
-    plan: dict[str, Any] | None,
-    hour: int,
-    battery_cap: float,
-) -> float | None:
-    """Forecast end-of-hour SOC (kWh) from optimizer q15 slots for *hour*."""
-    if battery_cap <= 0 or plan is None:
-        return None
-    slots = (plan.get("q15_by_hour") or {}).get(hour) or []
-    if not slots:
-        return None
-    last = slots[-1]
-    raw = last.get("soc_pct")
-    if raw is None:
-        raw = last.get("soc")
-    if raw is None:
-        return None
-    try:
-        return (float(raw) / 100.0) * battery_cap
-    except (TypeError, ValueError):
-        return None
-
-
 def _committed_current_hour_row(
     today_str: str,
     plan_from_hour: int,
@@ -354,6 +331,22 @@ def _plan_start_soc_kwh(
     return live_soc_kwh
 
 
+def _locked_chg_is_below_min_hourly(
+    existing_row: dict[str, Any],
+    cfg: dict | None,
+) -> bool:
+    """True when a locked Chg still has Bat Charge below min_hourly_transfer."""
+    timer = str(existing_row.get("timer_schedule") or "").strip().lower()
+    if not timer.startswith("chg"):
+        return False
+    min_hourly = float(
+        ((cfg or {}).get("timer_schedule") or {}).get("min_hourly_transfer_kwh") or 0
+    )
+    if min_hourly <= 0:
+        return False
+    return float(existing_row.get("bat_charge") or 0) + 1e-6 < min_hourly
+
+
 def apply_locked_hour_labels_from_plan(
     result: dict[str, Any],
     existing: dict[str, Any] | None,
@@ -365,9 +358,8 @@ def apply_locked_hour_labels_from_plan(
     At :00: if SQLite already has a non-empty Timer for this hour, keep that
     timer/action and the row energy/SOC; otherwise lock fresh labels.
     Mid-hour: keep locked labels from SQLite.
-    Once locked, timer_schedule and action are never clipped or rewritten.
+    Thin illegal Chg (Bat Charge below min_hourly_transfer) is not restored.
     """
-    del cfg
     today_str = now.strftime("%Y-%m-%d")
     hour = now.hour
 
@@ -397,7 +389,11 @@ def apply_locked_hour_labels_from_plan(
                 if existing_row is not None
                 else ""
             )
-            if existing_row is not None and existing_timer:
+            if (
+                existing_row is not None
+                and existing_timer
+                and not _locked_chg_is_below_min_hourly(existing_row, cfg)
+            ):
                 # Commit the already-planned current hour from SQLite.
                 for key, val in existing_row.items():
                     row[key] = copy.deepcopy(val)
@@ -416,6 +412,7 @@ def apply_locked_hour_labels_from_plan(
             existing_row is not None
             and existing_row.get("hour_labels_locked")
             and not row.get("timer_schedule_manual")
+            and not _locked_chg_is_below_min_hourly(existing_row, cfg)
         ):
             row["timer_schedule"] = existing_row.get("timer_schedule", "")
             row["action"] = existing_row.get("action", "")
@@ -519,6 +516,17 @@ def build_energy_arbitrage_plan(
 
     rce_today = quarters_by_date.get(today_str) or []
     committed_hour = _committed_current_hour_row(today_str, plan_from_hour)
+    # Keep a locked Chg that already meets min_hourly (full block in progress).
+    # Only drop an illegal thin top-up (Bat Charge below min_hourly_transfer) so
+    # a valid dense Chg hour is not re-opened and split by a later replan.
+    if committed_hour is not None:
+        t = str(committed_hour.get("timer_schedule") or "").strip().lower()
+        min_hourly = float(
+            (cfg.get("timer_schedule") or {}).get("min_hourly_transfer_kwh") or 0
+        )
+        bat_chg = float(committed_hour.get("bat_charge") or 0)
+        if t.startswith("chg") and min_hourly > epsilon and bat_chg + epsilon < min_hourly:
+            committed_hour = None
     committed_end_soc = (
         _plan_row_end_soc_kwh(committed_hour, battery_cap)
         if committed_hour is not None
@@ -679,7 +687,11 @@ def build_energy_arbitrage_plan(
                     slots_now = list(row.get("q15") or [])
                     fpv_h = float(pv_merged[h]) if h < len(pv_merged) else 0.0
                     flo_h = float(load_merged[h]) if h < len(load_merged) else 0.0
-                    sa_timer = sa_discharge_timer_for_hour(rules, h, cfg=cfg)
+                    # Prefer locked EA timer so blend applies Chg/Dis even when SA
+                    # rules have not caught up yet this hour.
+                    sa_timer = str(committed_hour.get("timer_schedule") or "").strip()
+                    if not sa_timer:
+                        sa_timer = sa_discharge_timer_for_hour(rules, h, cfg=cfg) or ""
                     # Prefer opt slots from committed q15 shape for blend physics.
                     opt_slots = []
                     for s in slots_now:
@@ -727,9 +739,9 @@ def build_energy_arbitrage_plan(
                     row["timer_schedule"] = committed_hour.get("timer_schedule", "")
                     row["action"] = committed_hour.get("action", "")
                     row["hour_labels_locked"] = True
-                    # Current-hour UI may show live blend; forward hours must
-                    # chain from the *planned* end-of-hour SOC (same seed as
-                    # smart_today from_hour+1) — not from live blend.
+                    # Committed Chg/Dis: seed H+1 from planned EOH (may still be
+                    # mid-charge while live blend lags). Idle current hour uses
+                    # display blend below so the table stays continuous.
                     blended_anchor_kwh = (
                         committed_end_soc
                         if committed_end_soc is not None
@@ -819,16 +831,10 @@ def build_energy_arbitrage_plan(
                     sa_timer_txt=sa_timer or None,
                     now=now,
                 )
-                # Forward SOC from optimizer forecast EOH for this hour (quarterly
-                # replan seed), not from the live-blended display SOC.
-                planned_eoh = _smart_plan_hour_end_soc_kwh(
-                    smart_today, h, battery_cap,
-                )
-                blended_anchor_kwh = (
-                    planned_eoh
-                    if planned_eoh is not None
-                    else (soc_blend / 100.0) * battery_cap
-                )
+                # No committed timer: chain H+1 from the same EOH shown on this
+                # row (live blend). Using a lower as-if-00:00 planned EOH here
+                # makes a following Chg hour end flat vs the violet SOC.
+                blended_anchor_kwh = (soc_blend / 100.0) * battery_cap
                 blended_row_idx = len(all_rows)
             all_rows.append(row)
             if row.get("export_planned"):

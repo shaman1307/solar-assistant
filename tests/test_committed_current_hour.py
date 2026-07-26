@@ -338,3 +338,280 @@ def test_mid_hour_forward_soc_uses_planned_eoh_not_live_blend():
     h4 = float(by_h[4]["soc"])
     assert h4 >= 40.0, f"H04 soc={h4} should track from planned EOH 50% (cap={cap})"
     assert abs(_plan_row_end_soc_kwh(committed, cap) - 0.5 * cap) < 1e-6
+
+
+def test_valid_locked_chg_stays_committed_not_replanned():
+    """Bat Charge ≥ min_hourly keeps the locked Chg hour; do not reopen/split it."""
+    from zoneinfo import ZoneInfo
+
+    from src.simulation import build_energy_arbitrage_plan
+
+    cfg = _cfg()
+    cfg["timer_schedule"] = {"min_block_minutes": 30, "min_hourly_transfer_kwh": 2.0}
+    tz = ZoneInfo("Europe/Warsaw")
+    now = datetime(2026, 7, 21, 3, 20, tzinfo=tz)
+    today = "2026-07-21"
+    committed = {
+        "plan_date": today,
+        "hour": 3,
+        "start": "21-07-2026 04:00",
+        "timer_schedule": "Chg 03:00-03:30 6.0kW cap50%",
+        "action": "Charging from Grid",
+        "soc": 50.0,
+        "hour_labels_locked": True,
+        "production": 0.0,
+        "consumption": 0.5,
+        "battery": 2.2,
+        "bat_charge": 2.5,
+        "bat_discharge": 0.3,
+        "grid_import": 2.8,
+        "grid_export": 0.0,
+        "q15": [
+            {"quarter": q, "soc": 40.0 + q * 3, "production": 0.0, "consumption": 0.1,
+             "battery": 0.6, "grid_import": 0.7, "grid_export": 0.0,
+             "from_actual": q < 2}
+            for q in range(4)
+        ],
+    }
+    stored = {"today_date": today, "plan_from_hour": 3, "rows": [committed], "history_rows": []}
+    pv = [0.0] * 24
+    load = [0.5] * 24
+    forecast = {
+        "today": {
+            "pv": pv, "load": load, "pv_forecast": pv, "load_forecast": load,
+            "pv_total": 0.0, "load_total": 12.0,
+        },
+        "tomorrow": {
+            "pv": [1.0] * 24, "load": [0.5] * 24, "pv_total": 24.0, "load_total": 12.0,
+        },
+        "meta": {},
+    }
+    metrics = {
+        "battery_soc": 45.0,
+        "today_hourly": {
+            "pv": [0.0] * 24, "load": [0.5] * 24, "soc": [40.0] * 24,
+            "bat_charge": [0.0] * 24, "bat_discharge": [0.0] * 24,
+            "grid_buy": [0.0] * 24, "grid_sell": [0.0] * 24,
+        },
+        "series_10min": None,
+    }
+
+    with (
+        patch("src.simulation._now_warsaw", return_value=now),
+        patch("src.sqlite_store.read_plan", return_value=stored),
+        patch("src.simulation.quarter_rce_for_dates", return_value={today: [0.1] * 96}),
+    ):
+        plan = build_energy_arbitrage_plan(forecast, metrics, {}, cfg)
+
+    h3 = next(
+        r for r in plan["rows"]
+        if r.get("start") != "TOTAL" and str(r.get("plan_date")) == today and int(r["hour"]) == 3
+    )
+    assert "Chg" in str(h3.get("timer_schedule") or "")
+    assert h3.get("hour_labels_locked") is True
+
+
+def test_committed_chg_blend_uses_locked_timer_not_sa_rules():
+    """Locked EA Chg must drive blend charge even when SA rules timer is empty."""
+    from zoneinfo import ZoneInfo
+
+    from src.simulation import build_energy_arbitrage_plan
+
+    cfg = _cfg()
+    tz = ZoneInfo("Europe/Warsaw")
+    now = datetime(2026, 7, 27, 1, 5, tzinfo=tz)
+    today = "2026-07-27"
+    committed = {
+        "plan_date": today,
+        "hour": 1,
+        "start": "27-07-2026 02:00",
+        "timer_schedule": "Chg 01:00-01:30 4.0kW cap25%",
+        "action": "Charging from Grid",
+        "soc": 25.0,
+        "hour_labels_locked": True,
+        "production": 0.0,
+        "consumption": 0.8,
+        "battery": 0.9,
+        "bat_charge": 1.5,
+        "bat_discharge": 0.6,
+        "grid_import": 2.0,
+        "grid_export": 0.0,
+        "q15": [
+            {"quarter": q, "soc": 23.0 + q, "production": 0.0, "consumption": 0.2,
+             "battery": 0.4 if q < 2 else -0.2, "grid_import": 0.5 if q < 2 else 0.0,
+             "grid_export": 0.0}
+            for q in range(4)
+        ],
+    }
+    stored = {"today_date": today, "plan_from_hour": 1, "rows": [committed], "history_rows": []}
+    pv = [0.0] * 24
+    load = [0.8] * 24
+    forecast = {
+        "today": {
+            "pv": pv, "load": load, "pv_forecast": pv, "load_forecast": load,
+            "pv_total": 0.0, "load_total": 19.2,
+        },
+        "tomorrow": {
+            "pv": [1.0] * 24, "load": [0.5] * 24, "pv_total": 24.0, "load_total": 12.0,
+        },
+        "meta": {},
+    }
+    metrics = {
+        "battery_soc": 23.5,
+        "today_hourly": {
+            "pv": [0.0] * 24,
+            "load": [0.8] * 24,
+            "soc": [23.0] * 24,
+            "bat_charge": [0.0] * 24,
+            "bat_discharge": [0.0] * 24,
+            "grid_buy": [0.0] * 24,
+            "grid_sell": [0.0] * 24,
+        },
+        "series_10min": None,
+        "prev_day_hourly": {
+            "pv": [0.0] * 24, "load": [0.8] * 24, "soc": [24.0] * 24,
+            "bat_charge": [0.0] * 24, "bat_discharge": [0.0] * 24,
+            "grid_buy": [0.0] * 24, "grid_sell": [0.0] * 24,
+        },
+    }
+
+    with (
+        patch("src.simulation._now_warsaw", return_value=now),
+        patch("src.sqlite_store.read_plan", return_value=stored),
+        patch("src.simulation.sa_discharge_timer_for_hour", return_value=""),
+        patch("src.simulation.quarter_rce_for_dates", return_value={today: [0.1] * 96}),
+    ):
+        plan = build_energy_arbitrage_plan(forecast, metrics, {}, cfg)
+
+    h1 = next(
+        r for r in plan["rows"]
+        if r.get("start") != "TOTAL" and str(r.get("plan_date")) == today and int(r["hour"]) == 1
+    )
+    assert "Chg" in str(h1.get("timer_schedule") or "")
+    assert float(h1.get("bat_charge") or 0) > 0.5, (
+        f"expected grid charge from locked timer, got bat_charge={h1.get('bat_charge')} "
+        f"battery={h1.get('battery')} gi={h1.get('grid_import')}"
+    )
+    assert float(h1.get("soc") or 0) > 23.5, (
+        f"SOC after committed Chg should rise above start, got {h1.get('soc')}"
+    )
+
+
+def test_idle_current_hour_forward_soc_chains_from_display_blend():
+    """Without a committed timer, H+1 must continue from the violet EOH.
+
+    If forward seeded from a lower as-if-00:00 planned EOH, a following Chg
+    hour can end at the same SOC as the current row and look like a no-op.
+    """
+    from zoneinfo import ZoneInfo
+
+    from src.simulation import build_energy_arbitrage_plan
+
+    cfg = _cfg()
+    tz = ZoneInfo("Europe/Warsaw")
+    now = datetime(2026, 7, 27, 0, 55, tzinfo=tz)
+    today = "2026-07-27"
+
+    # No timer on H00 — not a committed current hour.
+    stored = {
+        "today_date": today,
+        "plan_from_hour": 0,
+        "rows": [{
+            "plan_date": today,
+            "hour": 0,
+            "start": "27-07-2026 01:00",
+            "timer_schedule": "",
+            "action": "Discharging to Load",
+            "soc": 22.0,
+            "hour_labels_locked": False,
+            "production": 0.0,
+            "consumption": 0.9,
+            "battery": -0.9,
+            "bat_charge": 0.0,
+            "bat_discharge": 0.9,
+            "grid_import": 0.0,
+            "grid_export": 0.0,
+            "q15": [
+                {"quarter": q, "soc": 22.0 - q * 0.2, "production": 0.0,
+                 "consumption": 0.2, "battery": -0.2, "grid_import": 0.0,
+                 "grid_export": 0.0}
+                for q in range(4)
+            ],
+        }],
+        "history_rows": [],
+    }
+
+    pv = [0.0] * 24
+    load = [0.8] * 24
+    forecast = {
+        "today": {
+            "pv": pv, "load": load, "pv_forecast": pv, "load_forecast": load,
+            "pv_total": 0.0, "load_total": 19.2,
+        },
+        "tomorrow": {
+            "pv": [1.0] * 24, "load": [0.5] * 24, "pv_total": 24.0, "load_total": 12.0,
+        },
+        "meta": {},
+    }
+    metrics = {
+        "battery_soc": 24.0,
+        "today_hourly": {
+            "pv": [0.0] * 24,
+            "load": [0.8] * 24,
+            "soc": [23.0] * 24,
+            "bat_charge": [0.0] * 24,
+            "bat_discharge": [0.0] * 24,
+            "grid_buy": [0.0] * 24,
+            "grid_sell": [0.0] * 24,
+        },
+        "series_10min": None,
+        "prev_day_hourly": {
+            "pv": [0.0] * 24,
+            "load": [0.8] * 24,
+            "soc": [24.0] * 24,
+            "bat_charge": [0.0] * 24,
+            "bat_discharge": [0.0] * 24,
+            "grid_buy": [0.0] * 24,
+            "grid_sell": [0.0] * 24,
+        },
+    }
+
+    # Display EOH for H00 — higher than a typical as-if-00:00 planned EOH.
+    display_blend = [
+        {"quarter": q, "soc": 23.7, "production": 0.0, "consumption": 0.2,
+         "battery": -0.2, "grid_import": 0.0, "grid_export": 0.0}
+        for q in range(4)
+    ]
+
+    with (
+        patch("src.simulation._now_warsaw", return_value=now),
+        patch("src.sqlite_store.read_plan", return_value=stored),
+        patch(
+            "src.simulation.build_blended_current_hour_q15",
+            return_value=display_blend,
+        ),
+        patch("src.simulation.quarter_rce_for_dates", return_value={today: [0.1] * 96}),
+    ):
+        plan = build_energy_arbitrage_plan(forecast, metrics, {}, cfg)
+
+    by_h = {
+        int(r["hour"]): r
+        for r in plan["rows"]
+        if r.get("start") != "TOTAL" and str(r.get("plan_date")) == today
+    }
+    assert 0 in by_h and 1 in by_h
+    assert abs(float(by_h[0]["soc"]) - 23.7) < 0.05
+    # H01 must not sit flat at 23.7 when net battery is clearly positive, and
+    # must not restart from a ~1pp-lower planned EOH under the display value.
+    h1 = by_h[1]
+    h1_soc = float(h1["soc"])
+    h1_bat = float(h1.get("battery") or 0)
+    if h1_bat > 0.3:
+        assert h1_soc > float(by_h[0]["soc"]) + 0.3, (
+            f"H01 soc={h1_soc} after bat={h1_bat:+.2f} should rise above H00 "
+            f"display {by_h[0]['soc']}"
+        )
+    else:
+        # Even without a big charge, forward start is the display EOH — H01 end
+        # stays within ~1pp of H00 after ordinary house load.
+        assert abs(h1_soc - 23.7) < 2.5, f"H01 soc={h1_soc} drifted from display EOH"

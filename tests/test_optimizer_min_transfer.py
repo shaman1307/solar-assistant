@@ -106,7 +106,7 @@ def test_correct_keeps_export_at_or_above_floor():
 
 
 def test_correct_zeros_sub_threshold_hour_charge():
-    """Sub-min charge is promoted to the hour floor (not deleted)."""
+    """Sub-min charge is cleared — do not inflate to the hour floor."""
     controls = [
         HourControl(0.4, 0.0),
         HourControl(0.4, 0.0),
@@ -120,10 +120,7 @@ def test_correct_zeros_sub_threshold_hour_charge():
         min_hourly_kwh=2.0,
         epsilon=0.05,
     )
-    assert sum(c.grid_charge_kw for c in out) == pytest.approx(2.0)
-    assert out[0].grid_charge_kw == pytest.approx(1.0)
-    assert out[1].grid_charge_kw == pytest.approx(1.0)
-    assert out[2].grid_charge_kw == 0.0
+    assert sum(c.grid_charge_kw for c in out) == 0.0
 
 
 def test_plan_no_sub_threshold_battery_export():

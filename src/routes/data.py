@@ -192,15 +192,20 @@ async def api_history_month(month: str, refresh: bool = False) -> dict[str, Any]
 @router.get("/api/simulation")
 async def api_simulation(
     refresh: bool = False,
+    unlock_plan_soc: bool = False,
     date: str | None = None,
 ) -> dict[str, Any]:
     """Return EA plan for today, or a past day history view.
 
     ``?refresh=1`` — same path as :00/:15/:30/:45 (today only).
+    ``?refresh=1&unlock_plan_soc=1`` — also rebuild the as-if-00:00 solid SOC
+    curve (Forecast Overrides Refresh).
     ``?date=YYYY-MM-DD`` — past day from archive (timers) or Influx rebuild.
     """
     cfg = load_config()
-    return await get_simulation_for_date(cfg, date, refresh=refresh)
+    return await get_simulation_for_date(
+        cfg, date, refresh=refresh, unlock_plan_soc=unlock_plan_soc,
+    )
 
 
 @router.post("/api/plan/timer-schedule")

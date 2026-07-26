@@ -623,8 +623,13 @@ async def get_simulation_for_date(
     date_str: str | None = None,
     *,
     refresh: bool = False,
+    unlock_plan_soc: bool = False,
 ) -> dict[str, Any]:
-    """Today → live plan; past date → archive / Influx history view."""
+    """Today → live plan; past date → archive / Influx history view.
+
+    *unlock_plan_soc*: replace the frozen as-if-00:00 solid SOC curve (Forecast
+    Overrides Refresh / config). Ignored unless *refresh* is True.
+    """
     now = now_warsaw()
     today = now.strftime("%Y-%m-%d")
     day = (date_str or today).strip()
@@ -634,6 +639,6 @@ async def get_simulation_for_date(
         day = today
     if day == today:
         if refresh:
-            return await hourly_plan_refresh(cfg)
+            return await hourly_plan_refresh(cfg, unlock_plan_soc=unlock_plan_soc)
         return await build_plan_simulation(cfg, invalidate_inputs=False)
     return await build_past_day_simulation(cfg, day)
