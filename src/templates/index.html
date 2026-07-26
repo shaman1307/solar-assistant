@@ -2467,11 +2467,11 @@
           </div>
           <svg viewBox="0 0 1000 100" preserveAspectRatio="none"
                class="absolute inset-0 w-full h-full" id="acr-svg">
-            <polyline id="acr-line-pv"          fill="none" stroke="#f59e0b" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.9"/>
-            <polyline id="acr-line-load"         fill="none" stroke="#60a5fa" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.9"/>
-            <polyline id="acr-line-grid-buy"     fill="none" stroke="#f87171" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.85" stroke-dasharray="6 4"/>
-            <polyline id="acr-line-grid-sell"    fill="none" stroke="#4ade80" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.85" stroke-dasharray="6 4"/>
-            <polyline id="acr-line-soc"          fill="none" stroke="#c084fc" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.95"/>
+            <path id="acr-line-pv"          fill="none" stroke="#f59e0b" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+            <path id="acr-line-load"         fill="none" stroke="#60a5fa" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+            <path id="acr-line-grid-buy"     fill="none" stroke="#f87171" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" opacity="0.85" stroke-dasharray="6 4"/>
+            <path id="acr-line-grid-sell"    fill="none" stroke="#4ade80" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" opacity="0.85" stroke-dasharray="6 4"/>
+            <path id="acr-line-soc"          fill="none" stroke="#c084fc" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/>
           </svg>
         </div>
         <div class="absolute left-12 right-10 bottom-0 h-6 dash-chart-x overflow-hidden" id="acr-x-labels"></div>
@@ -6562,6 +6562,53 @@ function stepPath(pts) {
   return d.join(' ');
 }
 
+/** Monotone cubic (Fritsch–Carlson) — SA-like smooth lines without overshoot. */
+function monotoneCubicPath(pts) {
+  const n = pts.length;
+  if (n < 1) return '';
+  if (n === 1) return `M ${pts[0].x.toFixed(2)},${pts[0].y.toFixed(2)}`;
+  if (n === 2) {
+    return `M ${pts[0].x.toFixed(2)},${pts[0].y.toFixed(2)} L ${pts[1].x.toFixed(2)},${pts[1].y.toFixed(2)}`;
+  }
+  const dx = [];
+  const m = [];
+  for (let i = 0; i < n - 1; i++) {
+    dx[i] = pts[i + 1].x - pts[i].x;
+    m[i] = (pts[i + 1].y - pts[i].y) / (dx[i] || 1e-6);
+  }
+  const slopes = [m[0]];
+  for (let i = 1; i < n - 1; i++) {
+    slopes[i] = (m[i - 1] * m[i] <= 0) ? 0 : (m[i - 1] + m[i]) / 2;
+  }
+  slopes.push(m[n - 2]);
+  for (let i = 0; i < n - 1; i++) {
+    if (Math.abs(m[i]) < 1e-12) {
+      slopes[i] = 0;
+      slopes[i + 1] = 0;
+    } else {
+      const a = slopes[i] / m[i];
+      const b = slopes[i + 1] / m[i];
+      const s = a * a + b * b;
+      if (s > 9) {
+        const t = 3 / Math.sqrt(s);
+        slopes[i] = t * a * m[i];
+        slopes[i + 1] = t * b * m[i];
+      }
+    }
+  }
+  let d = `M ${pts[0].x.toFixed(2)},${pts[0].y.toFixed(2)}`;
+  for (let i = 0; i < n - 1; i++) {
+    const p0 = pts[i];
+    const p1 = pts[i + 1];
+    const cp1x = p0.x + dx[i] / 3;
+    const cp1y = p0.y + slopes[i] * dx[i] / 3;
+    const cp2x = p1.x - dx[i] / 3;
+    const cp2y = p1.y - slopes[i + 1] * dx[i] / 3;
+    d += ` C ${cp1x.toFixed(2)},${cp1y.toFixed(2)} ${cp2x.toFixed(2)},${cp2y.toFixed(2)} ${p1.x.toFixed(2)},${p1.y.toFixed(2)}`;
+  }
+  return d;
+}
+
 function bindRceTip(areaEl) {
   if (!areaEl || areaEl._rceTipBound) return;
   areaEl._rceTipBound = true;
@@ -7290,13 +7337,13 @@ function renderAccrualsChart(d) {
 
   function energyY(v) {
     if (v == null) return null;
-    return Math.max(2, Math.min(98, Math.round(energyAxisTop(v))));
+    return Math.max(2, Math.min(98, Number(energyAxisTop(v).toFixed(2))));
   }
   function socY(v) {
-    return Math.max(2, Math.round(100 - (v / 100) * 96));
+    return Math.max(2, Number((100 - (v / 100) * 96).toFixed(2)));
   }
   function xPos(i) {
-    return ((i + 0.5) / slotCount * 1000).toFixed(1);
+    return Number(((i + 0.5) / slotCount * 1000).toFixed(2));
   }
 
   function linePtsZeroBaseline(data, yFn) {
@@ -7306,20 +7353,47 @@ function renderAccrualsChart(d) {
       const raw = data[i];
       if (raw == null && !started) {
         const y = yFn(0);
-        if (y != null) pts.push(`${xPos(i)},${y}`);
+        if (y != null) pts.push({ x: xPos(i), y: Number(y) });
         continue;
       }
       if (raw == null) continue;
       started = true;
       const y = yFn(Number(raw));
-      if (y != null) pts.push(`${xPos(i)},${y}`);
+      if (y != null) pts.push({ x: xPos(i), y: Number(y) });
     }
-    return pts.join(' ');
+    return pts;
+  }
+
+  function applySmoothPath(el, pts) {
+    if (!el) return;
+    el.removeAttribute('points');
+    el.setAttribute('d', monotoneCubicPath(pts));
+  }
+
+  function applySmoothPathSegments(el, segments, segClass, style) {
+    if (!el) return;
+    const parent = el.parentNode;
+    parent.querySelectorAll('.' + segClass).forEach(n => n.remove());
+    el.removeAttribute('points');
+    el.setAttribute('d', segments[0] ? monotoneCubicPath(segments[0]) : '');
+    segments.slice(1).forEach(pts => {
+      const seg = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      seg.setAttribute('fill', 'none');
+      seg.setAttribute('stroke', style.stroke);
+      seg.setAttribute('stroke-width', DASH_CHART.lineWidth);
+      seg.setAttribute('vector-effect', 'non-scaling-stroke');
+      seg.setAttribute('stroke-linecap', 'round');
+      seg.setAttribute('stroke-linejoin', 'round');
+      seg.setAttribute('opacity', style.opacity);
+      if (style.dasharray) seg.setAttribute('stroke-dasharray', style.dasharray);
+      seg.setAttribute('d', monotoneCubicPath(pts));
+      seg.classList.add(segClass);
+      parent.insertBefore(seg, el.nextSibling);
+    });
   }
 
   const setLine = (id, data, yFn) => {
-    const el = document.getElementById(id);
-    if (el) el.setAttribute('points', linePtsZeroBaseline(data, yFn));
+    applySmoothPath(document.getElementById(id), linePtsZeroBaseline(data, yFn));
   };
 
   function setGridLine(id, data, yFn, segClass) {
@@ -7327,51 +7401,52 @@ function renderAccrualsChart(d) {
     if (!el) return;
     const parent = el.parentNode;
     parent.querySelectorAll('.' + segClass).forEach(n => n.remove());
-    el.setAttribute('points', linePtsZeroBaseline(data, yFn));
+    applySmoothPath(el, linePtsZeroBaseline(data, yFn));
   }
 
-  /** Positive samples only; break on null/~0. Never anchor to the zero baseline. */
-  function setPositiveLineSkipGaps(id, data, yFn, segClass, style) {
+  /** PV: hide only night zeros (before first / after last production > 0).
+   *  Once daytime production starts, keep drawing even through exact 0 dips. */
+  function setPvDayLine(id, data, yFn, segClass, style) {
     const el = document.getElementById(id);
     if (!el) return;
-    const parent = el.parentNode;
-    parent.querySelectorAll('.' + segClass).forEach(n => n.remove());
-    const NEAR_ZERO_KW = 0.05;
-    const yZero = yFn(0);
-    let segment = [];
-    const segments = [];
+    let first = -1;
+    let last = -1;
     for (let i = 0; i < data.length; i++) {
       const raw = data[i];
       const n = raw == null || raw === '' ? null : Number(raw);
-      const usable = n != null && Number.isFinite(n) && n > NEAR_ZERO_KW;
-      if (usable) {
-        const y = yFn(n);
-        // Skip values that round onto the zero axis (no zero pixels, no pull-to-zero).
-        if (y != null && y !== yZero) segment.push(`${xPos(i)},${y}`);
-        else if (segment.length) {
-          segments.push(segment.join(' '));
-          segment = [];
-        }
-      } else if (segment.length) {
-        segments.push(segment.join(' '));
-        segment = [];
+      if (n != null && Number.isFinite(n) && n > 0) {
+        if (first < 0) first = i;
+        last = i;
       }
     }
-    if (segment.length) segments.push(segment.join(' '));
-
-    el.setAttribute('points', segments[0] || '');
-    segments.slice(1).forEach(pts => {
-      const seg = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-      seg.setAttribute('fill', 'none');
-      seg.setAttribute('stroke', style.stroke);
-      seg.setAttribute('stroke-width', DASH_CHART.lineWidth);
-      seg.setAttribute('vector-effect', 'non-scaling-stroke');
-      seg.setAttribute('opacity', style.opacity);
-      if (style.dasharray) seg.setAttribute('stroke-dasharray', style.dasharray);
-      seg.setAttribute('points', pts);
-      seg.classList.add(segClass);
-      parent.insertBefore(seg, el.nextSibling);
-    });
+    if (first < 0) {
+      applySmoothPathSegments(el, [], segClass, style);
+      return;
+    }
+    let segment = [];
+    const segments = [];
+    for (let i = first; i <= last; i++) {
+      const raw = data[i];
+      const n = raw == null || raw === '' ? null : Number(raw);
+      if (n == null || !Number.isFinite(n)) {
+        if (segment.length) {
+          segments.push(segment);
+          segment = [];
+        }
+        continue;
+      }
+      const y = yFn(n);
+      if (y == null) {
+        if (segment.length) {
+          segments.push(segment);
+          segment = [];
+        }
+        continue;
+      }
+      segment.push({ x: xPos(i), y: Number(y) });
+    }
+    if (segment.length) segments.push(segment);
+    applySmoothPathSegments(el, segments, segClass, style);
   }
 
   /** Grid export only: draw positive bursts; rise from / return to zero only when
@@ -7379,8 +7454,6 @@ function renderAccrualsChart(d) {
   function setEnergyLineSkipZero(id, data, yFn, segClass, style) {
     const el = document.getElementById(id);
     if (!el) return;
-    const parent = el.parentNode;
-    parent.querySelectorAll('.' + segClass).forEach(n => n.remove());
     const yZero = yFn(0);
     const NEAR_ZERO_KW = 0.05;
     const isNearZero = (raw) => {
@@ -7412,45 +7485,33 @@ function renderAccrualsChart(d) {
         if (!inSeg) {
           if (yZero != null && canAnchorZero(i)) {
             const i0 = i > 0 ? i - 1 : i;
-            segment.push(`${xPos(i0)},${yZero}`);
+            segment.push({ x: xPos(i0), y: Number(yZero) });
           }
           inSeg = true;
         }
-        segment.push(`${xPos(i)},${y}`);
+        segment.push({ x: xPos(i), y: Number(y) });
         lastPosI = i;
       } else if (inSeg) {
         if (yZero != null && canAnchorZero(i)) {
-          segment.push(`${xPos(i)},${yZero}`);
+          segment.push({ x: xPos(i), y: Number(yZero) });
         }
-        segments.push(segment.join(' '));
+        segments.push(segment);
         segment = [];
         inSeg = false;
       }
     }
     if (inSeg && segment.length) {
       if (yZero != null && lastPosI >= 0 && canAnchorZero(lastPosI + 1)) {
-        segment.push(`${xPos(lastPosI + 1)},${yZero}`);
+        segment.push({ x: xPos(lastPosI + 1), y: Number(yZero) });
       }
-      segments.push(segment.join(' '));
+      segments.push(segment);
     }
 
-    el.setAttribute('points', segments[0] || '');
-    segments.slice(1).forEach(pts => {
-      const seg = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-      seg.setAttribute('fill', 'none');
-      seg.setAttribute('stroke', style.stroke);
-      seg.setAttribute('stroke-width', DASH_CHART.lineWidth);
-      seg.setAttribute('vector-effect', 'non-scaling-stroke');
-      seg.setAttribute('opacity', style.opacity);
-      if (style.dasharray) seg.setAttribute('stroke-dasharray', style.dasharray);
-      seg.setAttribute('points', pts);
-      seg.classList.add(segClass);
-      parent.insertBefore(seg, el.nextSibling);
-    });
+    applySmoothPathSegments(el, segments, segClass, style);
   }
 
-  // PV: skip ~0 samples and gaps; do not pull the line down to the zero axis.
-  setPositiveLineSkipGaps('acr-line-pv', h.pv || [], energyY, 'acr-pv-seg', {
+  // PV: continuous after sunrise; night zeros only (before first / after last > 0).
+  setPvDayLine('acr-line-pv', h.pv || [], energyY, 'acr-pv-seg', {
     stroke: '#f59e0b', opacity: '0.9',
   });
   setLine('acr-line-load',      h.load, energyY);
@@ -7463,29 +7524,16 @@ function renderAccrualsChart(d) {
   // SOC — separate segments so gaps do not draw diagonals.
   const socEl = document.getElementById('acr-line-soc');
   if (socEl) {
-    const parent = socEl.parentNode;
-    parent.querySelectorAll('.acr-soc-seg').forEach(n => n.remove());
-
     const socData = h.soc || [];
     let segment = [];
     const segments = [];
     socData.forEach((v, i) => {
-      if (v != null) segment.push(`${xPos(i)},${socY(v)}`);
-      else if (segment.length) { segments.push(segment.join(' ')); segment = []; }
+      if (v != null) segment.push({ x: xPos(i), y: Number(socY(v)) });
+      else if (segment.length) { segments.push(segment); segment = []; }
     });
-    if (segment.length) segments.push(segment.join(' '));
-
-    socEl.setAttribute('points', segments[0] || '');
-    segments.slice(1).forEach(pts => {
-      const seg = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-      seg.setAttribute('fill', 'none');
-      seg.setAttribute('stroke', '#c084fc');
-      seg.setAttribute('stroke-width', DASH_CHART.lineWidth);
-      seg.setAttribute('vector-effect', 'non-scaling-stroke');
-      seg.setAttribute('opacity', '0.95');
-      seg.setAttribute('points', pts);
-      seg.classList.add('acr-soc-seg');
-      parent.insertBefore(seg, socEl.nextSibling);
+    if (segment.length) segments.push(segment);
+    applySmoothPathSegments(socEl, segments, 'acr-soc-seg', {
+      stroke: '#c084fc', opacity: '0.95',
     });
   }
 
