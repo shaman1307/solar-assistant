@@ -1,27 +1,32 @@
 """Full-day replays guarding planned battery discharge power vs config.
 
 Ranked export fills middle hours of a multi-hour window at max config power.
-The last (or single) hour may run a partial-power tail so leftover SOC is still
-exported — e.g. ``Dis 23:00-23:30 4.0kW`` for ~2 kWh remaining above min SOC.
+The last hour in the run may be a partial-power Dis tail when leftover still
+exceeds the overnight survive floor; otherwise export stops earlier and hour 23
+only feeds the house so morning min SOC is reachable.
 
 These tests replay a whole day with today's real generation/consumption/RCE
 (2026-07-19 values from the Pi) and after every rebuild assert:
 
   P1. No Dis timer exceeds the configured discharge power.
   P2. DC draw never exceeds max_discharge_power_kw / 4 per quarter.
-  P3. Evening leftover SOC gets a last-hour Dis tail (may be < max kW).
+  P3. Evening Dis ends at post_dis(last); H23 need not export above that floor.
 """
 
 from __future__ import annotations
 
 import re
+from datetime import date, timedelta
 
 import pytest
 
 from src.debug_smart_plan import run_day_smart_q15_plan, timer_schedule_by_hour
 from src.grid_config import merge_grid_defaults
+from src.plan_optimizer import post_discharge_reserve_soc_kwh
 from src.simulation_config import (
+    get_simulation_params,
     merge_simulation_defaults,
+    plan_reserve_min_soc_kwh,
     plan_timer_discharge_power_kw,
 )
 
@@ -159,20 +164,81 @@ def test_lower_config_limit_is_respected_all_day():
             soc = float(hour_slots[-1]["soc_end"])
 
 
-def test_evening_leftover_soc_gets_last_hour_dis_tail():
-    """Last hour must keep a Dis tail instead of leaving exportable SOC idle.
+def test_evening_export_stops_at_overnight_survive_floor():
+    """Sell evening Dis down to post_dis(last); keep H23 for house/overnight.
 
-    Middle hours stay at 8kW; hour 23 may be a lower-kW 30-min slot.
+    On this fixture the ranked window is H20–H22 at 8kW (H22 may be a short
+    tail). Hour 23 must not grid-export: end-of-H22 SOC already equals
+    post_dis(22), and the next-day replay lands on min SOC before morning PV.
     """
     cfg = _cfg()
     cap = float(cfg["battery"]["capacity_kwh"])
+    min_kwh = plan_reserve_min_soc_kwh(cfg)
+    params = get_simulation_params(cfg)
+    eta_out = float(params["eta_battery_out"])
+    eta_pv = float(params["eta_pv_load"])
+    eps = float(params["epsilon_kwh"])
+
     res = _run_plan(cfg, from_hour=0, soc_kwh=0.30 * cap)
     timers = timer_schedule_by_hour(res["q15_by_hour"], cfg, res["epsilon"])
-    last_dis = timers.get(23) or ""
-    assert last_dis.startswith("Dis"), (
-        f"expected last-hour Dis tail for leftover SOC, got {last_dis!r}; "
+    evening = [h for h in range(19, 24) if (timers.get(h) or "").startswith("Dis")]
+    assert evening, (
+        f"expected evening Dis window, got timers="
+        f"{[timers.get(h) for h in range(19, 24)]}"
+    )
+    last_dis_h = max(evening)
+    assert last_dis_h < 23, (
+        f"H23 must stay idle for overnight reserve, got Dis through H{last_dis_h}; "
         f"timers={[timers.get(h) for h in range(19, 24)]}"
     )
-    slots = res["q15_by_hour"].get(23) or []
-    exp = sum(float(s.get("battery_export_kwh") or 0) for s in slots)
-    assert exp >= 0.5, f"last-hour Dis with negligible export {exp:.3f} kWh"
+    h23_exp = sum(
+        float(s.get("battery_export_kwh") or 0)
+        for s in (res["q15_by_hour"].get(23) or [])
+    )
+    assert h23_exp <= eps, f"H23 must not grid-export, got {h23_exp:.3f} kWh"
+
+    # Extended today+tomorrow q15 series matches optimizer overnight walk.
+    pv_ext = [PV_TODAY[h] / 4.0 for h in range(24) for _ in range(4)] * 2
+    load_ext = [LOAD_TODAY[h] / 4.0 for h in range(24) for _ in range(4)] * 2
+    floor = post_discharge_reserve_soc_kwh(
+        last_dis_h, pv_ext, load_ext, min_kwh, eta_out, eta_pv, eps,
+        slots_per_hour=4, global_step_offset=0,
+    )
+    last_slots = res["q15_by_hour"].get(last_dis_h) or []
+    assert last_slots, f"missing q15 slots for last Dis hour {last_dis_h}"
+    soc_after_last = float(last_slots[-1]["soc_end"])
+    assert abs(soc_after_last - floor) <= 0.15, (
+        f"after H{last_dis_h} SOC {soc_after_last:.3f} vs post_dis={floor:.3f}; "
+        f"timers={[timers.get(h) for h in range(19, 24)]}"
+    )
+
+    # Next calendar day from tonight end SOC: coast to min before morning PV cover.
+    end_soc = float(res["end_soc_kwh"])
+    tom = (date.fromisoformat(DATE) + timedelta(days=1)).isoformat()
+    res2 = run_day_smart_q15_plan(
+        date_str=tom,
+        pv_hourly=PV_TODAY,
+        load_hourly=LOAD_TODAY,
+        tomorrow_pv=PV_TODAY,
+        tomorrow_load=LOAD_TODAY,
+        cfg=cfg,
+        rce_quarters=list(RCE_Q),
+        initial_soc_kwh=end_soc,
+        from_hour=0,
+    )
+    assert res2 is not None
+    morning_floor_hours = []
+    for h in range(0, 8):
+        slots = res2["q15_by_hour"].get(h) or []
+        if not slots:
+            continue
+        soc_e = float(slots[-1]["soc_end"])
+        morning_floor_hours.append((h, soc_e))
+        if soc_e <= min_kwh + 0.15:
+            break
+    assert morning_floor_hours, "tomorrow morning SOC walk missing"
+    hit_h, hit_soc = morning_floor_hours[-1]
+    assert hit_soc <= min_kwh + 0.15, (
+        f"overnight from {100 * end_soc / cap:.1f}% should reach min by morning, "
+        f"last checked H{hit_h}={hit_soc:.3f} (min={min_kwh:.3f})"
+    )
