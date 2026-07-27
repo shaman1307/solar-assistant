@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -13,6 +14,7 @@ from .sqlite_store import load_ev_store_json, migrate_ev_json_to_sqlite, save_ev
 from .influxdb import now_warsaw
 
 log = logging.getLogger(__name__)
+_session_lock = threading.Lock()
 
 Q15_PER_DAY = 96
 HOURS_PER_DAY = 24
@@ -241,8 +243,8 @@ def get_session(date_str: str, cfg: dict) -> dict[str, Any] | None:
 
 
 def set_session(date_str: str, session: dict[str, Any], cfg: dict) -> dict[str, Any]:
+    """Persist one calendar session. Serialize read-modify-write against concurrent POSTs."""
     normalized = normalize_session(session, cfg)
-    data = _load_store_ready(cfg)
     today_str, tomorrow_str = _calendar_pair()
 
     if date_str == today_str:
@@ -252,10 +254,11 @@ def set_session(date_str: str, session: dict[str, Any], cfg: dict) -> dict[str, 
     else:
         raise ValueError("EV charging can only be set for today or tomorrow")
 
-    data[slot_key] = normalized
-
-    save_store(data)
-    prune_old_sessions(cfg)
+    with _session_lock:
+        data = _load_store_ready(cfg)
+        data[slot_key] = normalized
+        save_store(data)
+        prune_old_sessions(cfg)
     return normalized
 
 

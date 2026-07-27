@@ -4135,12 +4135,26 @@ function updateSimHistoryChrome(data) {
 }
 
 async function refreshSimView() {
-  const date = document.getElementById('sim-date')?.value || DEBUG_TODAY;
-  if (date === DEBUG_TODAY) {
-    await refreshQuarterCycle({ silent: false });
-    return;
+  const btn = document.getElementById('sim-refresh-btn');
+  const prevLabel = btn?.textContent;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Refreshing…';
   }
-  await loadSimulationForDate(date, { force: true });
+  try {
+    const date = document.getElementById('sim-date')?.value || DEBUG_TODAY;
+    if (date === DEBUG_TODAY) {
+      // Always force a plan rebuild (not a cached GET).
+      await refreshQuarterCycle({ silent: false, syncSliders: false, force: true });
+      return;
+    }
+    await loadSimulationForDate(date, { force: true });
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = prevLabel || 'Refresh';
+    }
+  }
 }
 
 async function loadSimulationForDate(dateStr, options = {}) {
@@ -5015,13 +5029,22 @@ async function saveOverrides() {
       body: JSON.stringify(readOverridePayload()),
     });
     if (!res.ok) return;
-    simData = null;
+    // Server already rebuilt EA with the new load — read it before painting
+    // the forecast chart so Load and Energy arbitrage stay in sync.
+    const simRes = await fetch('api/simulation');
+    if (simRes.ok) {
+      simData = await simRes.json();
+      applyPlanPricesFromSimulation(simData);
+    }
     await loadForecast(true, { syncSliders: false });
     ovPendingOverrides = { ...(forecastData.overrides_saved || {}) };
     applyOverrideSlidersForDay(currentForecastDay);
-    await preloadSimulation(true);
-    if (currentTab === 'simulation' && simData) renderSimulationBundle(simData);
-    else refreshEnergyOverviewPlanFill();
+    if (currentTab === 'simulation' && simData && simViewIsToday()) {
+      renderSimulationBundle(simData);
+    } else {
+      refreshEnergyOverviewPlanFill();
+    }
+    renderForecast();
   } catch (e) {
     console.warn('overrides save', e);
   } finally {
@@ -5075,6 +5098,7 @@ async function refreshForecastOverridesPlan() {
 let evChargingPayload = null;
 let evSaveTimer = null;
 let evSaveInFlight = false;
+let evFormDirty = false;
 let evPanelBound = false;
 
 function evMaxPowerKw() {
@@ -5394,6 +5418,8 @@ function refreshLoadOvDisplay() {
 
 function applyEvFormForDay(dayLabel) {
   if (!evChargingPayload) return;
+  // Do not clobber in-progress edits while a save is queued or in flight.
+  if (evFormDirty || evSaveInFlight || evSaveTimer) return;
   const block = evChargingPayload[dayLabel];
   const defaults = evChargingPayload.defaults || {};
   const s = block?.session || defaults;
@@ -5590,8 +5616,20 @@ function initEvChargingPanel(payload) {
 }
 
 function scheduleEvSave() {
+  evFormDirty = true;
   clearTimeout(evSaveTimer);
   evSaveTimer = setTimeout(saveEvCharging, 400);
+}
+
+function _applyEvSessionToPayload(date, session) {
+  if (!evChargingPayload || !session) return;
+  const today = evChargingPayload.today?.date;
+  const tomorrow = evChargingPayload.tomorrow?.date;
+  if (date === today && evChargingPayload.today) {
+    evChargingPayload.today.session = session;
+  } else if (date === tomorrow && evChargingPayload.tomorrow) {
+    evChargingPayload.tomorrow.session = session;
+  }
 }
 
 async function saveEvCharging() {
@@ -5601,24 +5639,43 @@ async function saveEvCharging() {
   }
   const date = evDateForDay(currentForecastDay);
   if (!date) return;
+  evSaveTimer = null;
   evSaveInFlight = true;
+  const session = readEvFormSession();
   try {
-    const session = readEvFormSession();
     const res = await fetch('api/ev-charging', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ date, day: session.day, night: session.night }),
     });
-    if (!res.ok) return;
-    simData = null;
-    await loadForecast(true, { syncSliders: false });
-    if (forecastData?.ev_charging) {
-      evChargingPayload = forecastData.ev_charging;
-      applyEvFormForDay(currentForecastDay);
+    if (!res.ok) {
+      console.warn('ev charging save HTTP', res.status);
+      return;
     }
-    await preloadSimulation(true);
-    if (currentTab === 'simulation' && simData) renderSimulationBundle(simData);
-    else refreshEnergyOverviewPlanFill();
+    const body = await res.json();
+    const saved = body?.session || session;
+    // Apply server session immediately so a concurrent forecast reload cannot
+    // uncheck the box while EA rebuild is still running.
+    _applyEvSessionToPayload(date, saved);
+    // Keep dirty if another edit was queued while this POST was in flight.
+    if (!evSaveTimer) evFormDirty = false;
+    applyEvFormForDay(currentForecastDay);
+    // Rebuild EA with the new load first, then refresh the forecast chart so
+    // Load and Energy arbitrage never diverge on screen.
+    const simRes = await fetch('api/simulation?refresh=1&unlock_plan_soc=1');
+    if (simRes.ok) {
+      simData = await simRes.json();
+      applyPlanPricesFromSimulation(simData);
+    } else {
+      console.warn('ev charging plan refresh HTTP', simRes.status);
+    }
+    await loadForecast(true, { syncSliders: false });
+    if (currentTab === 'simulation' && simData && simViewIsToday()) {
+      renderSimulationBundle(simData);
+    } else {
+      refreshEnergyOverviewPlanFill();
+    }
+    refreshEnergyOverviewCosts();
     renderForecast();
   } catch (e) {
     console.warn('ev charging save', e);
@@ -7679,7 +7736,7 @@ async function refreshQuarterCycle(options = {}) {
   const { silent = false, syncSliders = false, force = true } = options;
   if (silent === false && currentTab === 'simulation') {
     const bodyTotal = document.getElementById('sim-body-total');
-    if (bodyTotal && (!simData?.rows?.length || simData.cache_miss)) {
+    if (bodyTotal && (force || !simData?.rows?.length || simData.cache_miss)) {
       bodyTotal.innerHTML = `<tr><td colspan="${SIM_TABLE_COLS}" class="px-3 py-6 text-center text-gray-600">Loading…</td></tr>`;
       simHistoryApplyCachedFont(document.querySelector('.sim-table-ea'));
     }
