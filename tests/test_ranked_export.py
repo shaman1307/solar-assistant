@@ -7,7 +7,7 @@ from datetime import datetime
 from src.grid_config import merge_grid_defaults
 from src.plan_optimizer import (
     HourControl,
-    assign_ranked_battery_export,
+    plan_battery_grid_export,
     export_span_candidates,
     export_window_roles,
     hour_rce_rating,
@@ -129,7 +129,7 @@ def test_equal_rating_after_rich_hour_prefers_neighbor():
         assert hour_rce_rating(rce, 16) == hour_rce_rating(rce, 20) == 0.90
         assert hour_rce_rating(rce, 19) == 1.0
         base = [HourControl(0.0, 0.0) for _ in range(steps)]
-        assign_ranked_battery_export(
+        plan_battery_grid_export(
             base,
             steps=steps,
             pv_series=[0.0] * steps,
@@ -368,9 +368,9 @@ def test_floor_ignores_load_only_quarters_outside_export_span():
     in q1–q3 must NOT count as meeting min_hourly_transfer — otherwise the plan
     shows Feed-in/+PLN without a Dis timer.
     """
-    from src.plan_optimizer import _plan_hour_export_claim
+    from src.plan_optimizer import _plan_hour_battery_grid_export_claim
 
-    claim = _plan_hour_export_claim(
+    claim = _plan_hour_battery_grid_export_claim(
         hour=23,
         role="last",
         soc0=8.0,  # ~18.6% of 43 — only a thin slice above min+reserve
@@ -450,7 +450,7 @@ def test_middle_hour_is_full_four_quarters():
     # Direct span check via candidates
     assert export_span_candidates(roles[11]) == [(0, 4)]
     offset = 10 * 4
-    controls = assign_ranked_battery_export(
+    controls = plan_battery_grid_export(
         base,
         steps=12,
         pv_series=[0.0] * 12,

@@ -202,7 +202,7 @@ def battery_export_step_allowed(
     """Q15 neighbour RCE gate used by unit tests.
 
     Production export assignment uses ranked hourly average RCE
-    (``assign_ranked_battery_export``).
+    (``plan_battery_grid_export``).
     """
     if not _rce_at_or_above(rce_series, step, floor, epsilon=epsilon):
         return False
@@ -355,7 +355,7 @@ def _hour_steps_in_horizon(
 
 
 @dataclass(frozen=True)
-class _ExportHourClaim:
+class _BatteryGridExportHourClaim:
     """Export assignment for one clock hour (rank-order greedy)."""
 
     hour: int
@@ -368,8 +368,8 @@ class _ExportHourClaim:
         return float(sum(self.export_q))
 
 
-def _hold_soc_for_later_claims(
-    claims: dict[int, _ExportHourClaim],
+def _hold_soc_for_later_battery_grid_export_claims(
+    claims: dict[int, _BatteryGridExportHourClaim],
     *,
     from_hour: int,
     eta_out: float,
@@ -385,9 +385,9 @@ def _hold_soc_for_later_claims(
     return need_ac / eta_out
 
 
-def _apply_export_claims_chrono(
+def _apply_battery_grid_export_claims_chrono(
     base_controls: list[HourControl],
-    claims: dict[int, _ExportHourClaim],
+    claims: dict[int, _BatteryGridExportHourClaim],
     *,
     steps: int,
     pv_series: list[float],
@@ -426,6 +426,16 @@ def _apply_export_claims_chrono(
             and base.grid_charge_kw <= eps_step
         ):
             export = float(claim.export_q[q])
+        reserve_soc = float(reserves[step])
+        if claim is not None and claim.span[0] <= q < claim.span[1] and claim.span[1] >= 4:
+            next_idxs = _hour_steps_in_horizon(
+                hour=hour + 1,
+                steps=steps,
+                rce_step_offset=rce_step_offset,
+                slots_per_hour=slots,
+            )
+            if next_idxs:
+                reserve_soc = min(reserve_soc, float(reserves[next_idxs[0]]))
         ctrl = HourControl(base.grid_charge_kw, export, base.load_from_grid)
         phys = simulate_hour(
             soc, pv_series[step], load_series[step], ctrl,
@@ -434,7 +444,7 @@ def _apply_export_claims_chrono(
             eta_grid=eta_grid, eta_out=eta_out,
             eta_pv_load=eta_pv_load, eta_pv_grid=eta_pv_grid,
             eta_pv_battery=eta_pv_battery, epsilon=eps_step,
-            reserve_soc_kwh=reserves[step],
+            reserve_soc_kwh=reserve_soc,
         )
         delivered = min(ctrl.battery_export_kwh, phys.grid_export)
         out.append(HourControl(base.grid_charge_kw, delivered, base.load_from_grid))
@@ -443,7 +453,7 @@ def _apply_export_claims_chrono(
     return out, soc_starts
 
 
-def _sim_hour_export_at_cap(
+def _sim_hour_battery_grid_export_at_cap(
     *,
     soc0: float,
     pv_q: list[float],
@@ -453,6 +463,7 @@ def _sim_hour_export_at_cap(
     span: tuple[int, int],
     dc_cap_per_q: float,
     hold_soc_kwh: float,
+    hour_end_floor_kwh: float | None,
     battery_cap: float,
     min_kwh: float,
     discharge_dc_step: float,
@@ -479,8 +490,11 @@ def _sim_hour_export_at_cap(
         export = 0.0
         in_span = span[0] <= q < span[1]
         step_dc = dc_cap_per_q if in_span else discharge_dc_step
+        reserve_floor = float(reserve_q[q])
         if in_span and charge <= eps_step:
-            effective_reserve = max(float(reserve_q[q]), min_kwh) + hold_soc_kwh
+            if span[1] >= 4 and hour_end_floor_kwh is not None:
+                reserve_floor = min(reserve_floor, float(hour_end_floor_kwh))
+            effective_reserve = max(reserve_floor, min_kwh) + hold_soc_kwh
             export = _max_battery_export_kwh(
                 soc, pv_q[q], load_q[q],
                 min_kwh=min_kwh,
@@ -499,7 +513,7 @@ def _sim_hour_export_at_cap(
             eta_grid=eta_grid, eta_out=eta_out,
             eta_pv_load=eta_pv_load, eta_pv_grid=eta_pv_grid,
             eta_pv_battery=eta_pv_battery, epsilon=eps_step,
-            reserve_soc_kwh=float(reserve_q[q]),
+            reserve_soc_kwh=max(reserve_floor, min_kwh),
         )
         delivered = min(export, phys.grid_export)
         exports[q] = delivered
@@ -509,7 +523,7 @@ def _sim_hour_export_at_cap(
     return exports, bat_dis
 
 
-def _trim_span_to_active_exports(
+def _trim_span_to_active_battery_grid_exports(
     role: str,
     span: tuple[int, int],
     exports: list[float],
@@ -529,7 +543,7 @@ def _trim_span_to_active_exports(
     return trimmed
 
 
-def _plan_hour_export_claim(
+def _plan_hour_battery_grid_export_claim(
     *,
     hour: int,
     role: str,
@@ -539,6 +553,7 @@ def _plan_hour_export_claim(
     load_q: list[float],
     reserve_q: list[float],
     base_charge_q: list[float],
+    hour_end_floor_kwh: float | None = None,
     battery_cap: float,
     min_kwh: float,
     discharge_dc_step: float,
@@ -550,7 +565,7 @@ def _plan_hour_export_claim(
     eta_pv_battery: float,
     eps_step: float,
     min_hourly_kwh: float,
-) -> _ExportHourClaim | None:
+) -> _BatteryGridExportHourClaim | None:
     """Pick span + per-quarter export for one hour from remaining SOC budget.
 
     Prefers max DC power; if SOC cannot fill the span, tries a lower uniform
@@ -558,11 +573,12 @@ def _plan_hour_export_claim(
     use reduced power (not only the last hour).
     """
     legal = set(export_span_candidates(role))
-    best: _ExportHourClaim | None = None
+    best: _BatteryGridExportHourClaim | None = None
     best_key: tuple[float, int] = (-1.0, -1)
     common = dict(
         soc0=soc0, pv_q=pv_q, load_q=load_q, reserve_q=reserve_q,
         base_charge_q=base_charge_q, hold_soc_kwh=hold_soc_kwh,
+        hour_end_floor_kwh=hour_end_floor_kwh,
         battery_cap=battery_cap, min_kwh=min_kwh,
         discharge_dc_step=discharge_dc_step, inverter_ac_step=inverter_ac_step,
         eta_grid=eta_grid, eta_out=eta_out, eta_pv_load=eta_pv_load,
@@ -571,17 +587,17 @@ def _plan_hour_export_claim(
 
     for span in export_span_candidates(role):
         # 1) Max power, then trim trailing empty quarters to a legal sub-span.
-        exports, bat_dis = _sim_hour_export_at_cap(
+        exports, bat_dis = _sim_hour_battery_grid_export_at_cap(
             span=span, dc_cap_per_q=discharge_dc_step, **common,
         )
-        trimmed = _trim_span_to_active_exports(role, span, exports, eps=eps_step)
+        trimmed = _trim_span_to_active_battery_grid_exports(role, span, exports, eps=eps_step)
         if trimmed is not None and trimmed in legal:
             exp_trim = [
                 exports[q] if trimmed[0] <= q < trimmed[1] else 0.0 for q in range(4)
             ]
             ok_floor = min_hourly_kwh <= eps_step or bat_dis + eps_step >= min_hourly_kwh
             if trimmed != span:
-                exports2, bat_dis2 = _sim_hour_export_at_cap(
+                exports2, bat_dis2 = _sim_hour_battery_grid_export_at_cap(
                     span=trimmed, dc_cap_per_q=discharge_dc_step, **common,
                 )
                 exp_trim = exports2
@@ -593,7 +609,7 @@ def _plan_hour_export_claim(
                 key = (sum(exp_trim), trimmed[1] - trimmed[0])
                 if key > best_key:
                     best_key = key
-                    best = _ExportHourClaim(
+                    best = _BatteryGridExportHourClaim(
                         hour=hour, span=trimmed,
                         export_q=(exp_trim[0], exp_trim[1], exp_trim[2], exp_trim[3]),
                         bat_discharge_kwh=bat_dis,
@@ -607,7 +623,7 @@ def _plan_hour_export_claim(
             cap = discharge_dc_step * level / 20.0
             if cap <= eps_step:
                 break
-            exports, bat_dis = _sim_hour_export_at_cap(
+            exports, bat_dis = _sim_hour_battery_grid_export_at_cap(
                 span=span, dc_cap_per_q=cap, **common,
             )
             if any(exports[q] <= eps_step for q in range(span[0], span[1])):
@@ -617,7 +633,7 @@ def _plan_hour_export_claim(
             key = (sum(exports), span[1] - span[0])
             if key > best_key:
                 best_key = key
-                best = _ExportHourClaim(
+                best = _BatteryGridExportHourClaim(
                     hour=hour, span=span,
                     export_q=(exports[0], exports[1], exports[2], exports[3]),
                     bat_discharge_kwh=bat_dis,
@@ -627,7 +643,7 @@ def _plan_hour_export_claim(
     return best
 
 
-def assign_ranked_battery_export(
+def plan_battery_grid_export(
     base_controls: list[HourControl],
     *,
     steps: int,
@@ -651,14 +667,13 @@ def assign_ranked_battery_export(
     export_floor: float,
     min_hourly_kwh: float,
 ) -> list[HourControl]:
-    """Assign battery→grid export for hours above the RCE floor.
+    """Plan battery→grid export for hours above the RCE floor.
 
     Eligible hours are chosen by hourly avg-RCE rank (0.01 rating; ties prefer
     the neighbour of the last success). SOC is claimed in chronological order
-    inside each contiguous run: earlier Dis hours fill first down to
-    post_dis(h); a later hour opens when leftover SOC still exceeds
-    survive-if-stopped-after-(h-1) by at least one min-hourly transfer — so the
-    plan sells down toward morning min without orphan thin Dis blocks.
+    inside each contiguous run using the same per-step survive reserve in claim
+    planning and final replay. A later hour opens only when leftover SOC still
+    exceeds the next-hour reserve by at least one min-hourly transfer.
     """
     if steps <= 0:
         return list(base_controls)
@@ -677,7 +692,7 @@ def assign_ranked_battery_export(
         ]
 
     def _hour_inputs(hour: int, soc_starts: list[float]) -> tuple[
-        float, list[float], list[float], list[float], list[float],
+        float, list[float], list[float], list[float], list[float], float | None,
     ] | None:
         idxs = _hour_steps_in_horizon(
             hour=hour, steps=steps, rce_step_offset=rce_step_offset,
@@ -699,16 +714,14 @@ def assign_ranked_battery_export(
                 reserve_q[q] = float(reserves[step])
                 base = base_controls[step] if step < len(base_controls) else HourControl(0.0, 0.0)
                 charge_q[q] = float(base.grid_charge_kw)
-        # Export may drain to post_dis(H) = survive-from start of H+1, not the
-        # higher survive-from-start-of-H reserve (which double-counts H load).
         next_idxs = _hour_steps_in_horizon(
             hour=hour + 1, steps=steps, rce_step_offset=rce_step_offset,
             slots_per_hour=slots,
         )
-        if next_idxs:
-            post_dis_floor = float(reserves[next_idxs[0]])
-            reserve_q = [min(r, post_dis_floor) for r in reserve_q]
-        return soc0, pv_q, load_q, reserve_q, charge_q
+        hour_end_floor = float(reserves[next_idxs[0]]) if next_idxs else None
+        if hour_end_floor is not None:
+            reserve_q = [min(r, hour_end_floor) for r in reserve_q]
+        return soc0, pv_q, load_q, reserve_q, charge_q, hour_end_floor
 
     common = dict(
         steps=steps,
@@ -739,7 +752,7 @@ def assign_ranked_battery_export(
 
     # Pass 1: select hours by rating; equal ratings → closest to last success.
     selected: set[int] = set()
-    draft: dict[int, _ExportHourClaim] = {}
+    draft: dict[int, _BatteryGridExportHourClaim] = {}
     remaining = list(ratings.keys())
     last_assigned: int | None = None
     while remaining:
@@ -747,15 +760,16 @@ def assign_ranked_battery_export(
         remaining = [x for x in remaining if x != h]
         trial = selected | {h}
         roles = export_window_roles(trial)
-        _, soc_starts = _apply_export_claims_chrono(base_controls, draft, **common)
+        _, soc_starts = _apply_battery_grid_export_claims_chrono(base_controls, draft, **common)
         inputs = _hour_inputs(h, soc_starts)
         if inputs is None:
             continue
-        soc0, pv_q, load_q, reserve_q, charge_q = inputs
-        hold = _hold_soc_for_later_claims(draft, from_hour=h, eta_out=eta_out)
-        claim = _plan_hour_export_claim(
+        soc0, pv_q, load_q, reserve_q, charge_q, hour_end_floor = inputs
+        hold = _hold_soc_for_later_battery_grid_export_claims(draft, from_hour=h, eta_out=eta_out)
+        claim = _plan_hour_battery_grid_export_claim(
             hour=h, role=roles[h], soc0=soc0, hold_soc_kwh=hold,
             pv_q=pv_q, load_q=load_q, reserve_q=reserve_q, base_charge_q=charge_q,
+            hour_end_floor_kwh=hour_end_floor,
             **claim_kw,
         )
         if claim is None or claim.export_ac_kwh <= eps_step:
@@ -774,19 +788,18 @@ def assign_ranked_battery_export(
     # transfer — sell leftover down to post_dis(h), do not leave a fat morning
     # buffer, and do not open a razor-thin orphan Dis.
     roles = export_window_roles(selected)
-    claims: dict[int, _ExportHourClaim] = {}
+    claims: dict[int, _BatteryGridExportHourClaim] = {}
     min_next_dc = 0.0
     if min_hourly_kwh > eps_step and eta_out > 0:
         min_next_dc = float(min_hourly_kwh) / float(eta_out)
 
     for h in sorted(selected):
-        _, soc_starts = _apply_export_claims_chrono(base_controls, claims, **common)
+        _, soc_starts = _apply_battery_grid_export_claims_chrono(base_controls, claims, **common)
         inputs = _hour_inputs(h, soc_starts)
         if inputs is None:
             continue
-        soc0, pv_q, load_q, reserve_q, charge_q = inputs
+        soc0, pv_q, load_q, reserve_q, charge_q, hour_end_floor = inputs
         if (h - 1) in claims:
-            # Survive-if-stop-after-(h-1) is post_dis(h-1) ≈ reserve at start of h.
             stop_floor = min_kwh
             cur_idxs = _hour_steps_in_horizon(
                 hour=h, steps=steps, rce_step_offset=rce_step_offset,
@@ -797,10 +810,11 @@ def assign_ranked_battery_export(
             surplus_dc = max(0.0, soc0 - max(min_kwh, stop_floor))
             if surplus_dc + eps_step < min_next_dc:
                 continue
-        claim = _plan_hour_export_claim(
+        claim = _plan_hour_battery_grid_export_claim(
             hour=h, role=roles.get(h, "single"), soc0=soc0,
-            hold_soc_kwh=_hold_soc_for_later_claims(draft, from_hour=h, eta_out=eta_out),
+            hold_soc_kwh=_hold_soc_for_later_battery_grid_export_claims(draft, from_hour=h, eta_out=eta_out),
             pv_q=pv_q, load_q=load_q, reserve_q=reserve_q, base_charge_q=charge_q,
+            hour_end_floor_kwh=hour_end_floor,
             **claim_kw,
         )
         if claim is not None and claim.export_ac_kwh > eps_step:
@@ -819,22 +833,22 @@ def assign_ranked_battery_export(
         )
         if not idxs:
             break
-        _, soc_starts = _apply_export_claims_chrono(base_controls, claims, **common)
+        _, soc_starts = _apply_battery_grid_export_claims_chrono(base_controls, claims, **common)
         inputs = _hour_inputs(nxt, soc_starts)
         if inputs is None:
             break
-        soc0, pv_q, load_q, reserve_q, charge_q = inputs
+        soc0, pv_q, load_q, reserve_q, charge_q, hour_end_floor = inputs
         stop_floor = min_kwh
-        # post_dis(last_h) ≈ reserve at the first step of nxt
         if idxs:
             stop_floor = float(reserves[idxs[0]])
         surplus_dc = max(0.0, soc0 - max(min_kwh, stop_floor))
         if surplus_dc + eps_step < min_next_dc:
             break
         trial_roles = export_window_roles(set(claims) | {nxt})
-        claim = _plan_hour_export_claim(
+        claim = _plan_hour_battery_grid_export_claim(
             hour=nxt, role=trial_roles.get(nxt, "last"), soc0=soc0, hold_soc_kwh=0.0,
             pv_q=pv_q, load_q=load_q, reserve_q=reserve_q, base_charge_q=charge_q,
+            hour_end_floor_kwh=hour_end_floor,
             **claim_kw,
         )
         if claim is None or claim.export_ac_kwh <= eps_step:
@@ -845,25 +859,30 @@ def assign_ranked_battery_export(
     # Recompute roles for the hours that actually received a claim.
     if claims:
         roles = export_window_roles(set(claims))
-        final: dict[int, _ExportHourClaim] = {}
+        final: dict[int, _BatteryGridExportHourClaim] = {}
         for h in sorted(claims):
-            _, soc_starts = _apply_export_claims_chrono(base_controls, final, **common)
+            _, soc_starts = _apply_battery_grid_export_claims_chrono(base_controls, final, **common)
             inputs = _hour_inputs(h, soc_starts)
             if inputs is None:
                 continue
-            soc0, pv_q, load_q, reserve_q, charge_q = inputs
-            claim = _plan_hour_export_claim(
+            soc0, pv_q, load_q, reserve_q, charge_q, hour_end_floor = inputs
+            claim = _plan_hour_battery_grid_export_claim(
                 hour=h, role=roles.get(h, "single"), soc0=soc0,
-                hold_soc_kwh=_hold_soc_for_later_claims(claims, from_hour=h, eta_out=eta_out),
+                hold_soc_kwh=_hold_soc_for_later_battery_grid_export_claims(claims, from_hour=h, eta_out=eta_out),
                 pv_q=pv_q, load_q=load_q, reserve_q=reserve_q, base_charge_q=charge_q,
+                hour_end_floor_kwh=hour_end_floor,
                 **claim_kw,
             )
             if claim is not None and claim.export_ac_kwh > eps_step:
                 final[h] = claim
         claims = final
 
-    controls, _ = _apply_export_claims_chrono(base_controls, claims, **common)
+    controls, _ = _apply_battery_grid_export_claims_chrono(base_controls, claims, **common)
     return controls
+
+
+assign_ranked_battery_export = plan_battery_grid_export
+_plan_hour_export_claim = _plan_hour_battery_grid_export_claim
 
 
 def optimization_battery_export_value(
@@ -1492,7 +1511,7 @@ def _control_options(
     return out
 
 
-def _front_load_charge_step_ac(
+def _battery_grid_charge_step_ac(
     budget_ac: float,
     *,
     charge_ac_step: float,
@@ -1507,7 +1526,7 @@ def _front_load_charge_step_ac(
     02:00-02:30). Fill consecutive steps at max until the budget is spent so
     ~4 kWh fits in one clock hour when inverter/battery allow it. Timer
     ``min_block`` / ``min_hourly_transfer_kwh`` stay enforced in timer_plan /
-    ``_correct_min_hourly_transfer_controls``.
+    ``enforce_min_hourly_battery_grid_limits``.
     """
     del step_scale, min_block_minutes  # unused here; callers may still pass them
     if budget_ac <= eps_step or charge_ac_step <= eps_step:
@@ -1515,7 +1534,7 @@ def _front_load_charge_step_ac(
     return float(charge_ac_step)
 
 
-def _front_load_offpeak_grid_charge(
+def plan_battery_grid_charge(
     controls: list[HourControl],
     *,
     pv_series: list[float],
@@ -1541,7 +1560,7 @@ def _front_load_offpeak_grid_charge(
     min_block_minutes: int | None = None,
     min_hourly_kwh: float = 0.0,
 ) -> list[HourControl]:
-    """Move DP pre-peak grid charge to the earliest allowed offpeak steps.
+    """Plan battery grid-charge slots: move DP pre-peak volume to earliest offpeak steps.
 
     Default: skip the first clock hour of the horizon (current hour) so Chg is
     not placed in the in-progress hour. Pass ``skip_leading_slots=0`` when the
@@ -1615,7 +1634,7 @@ def _front_load_offpeak_grid_charge(
                 out_clear.append(prev)
         return out_clear
 
-    step_ac = _front_load_charge_step_ac(
+    step_ac = _battery_grid_charge_step_ac(
         budget_ac,
         charge_ac_step=charge_ac_step,
         step_scale=step_scale,
@@ -1676,7 +1695,7 @@ def _front_load_offpeak_grid_charge(
 
 
 
-def _correct_min_hourly_transfer_controls(
+def enforce_min_hourly_battery_grid_limits(
     controls: list[HourControl],
     *,
     rce_step_offset: int,
@@ -1684,7 +1703,7 @@ def _correct_min_hourly_transfer_controls(
     min_hourly_kwh: float,
     epsilon: float,
 ) -> list[HourControl]:
-    """Per clock hour: enforce min_hourly_transfer_kwh on battery↔grid flows.
+    """Enforce min_hourly_transfer_kwh on battery↔grid flows per clock hour.
 
     Export or charge below the floor is cleared. Do not scale a thin overnight
     top-up up to the floor — that forces an uneconomic min block (e.g. 2 kWh
@@ -1711,6 +1730,11 @@ def _correct_min_hourly_transfer_controls(
                 c = out[i]
                 out[i] = HourControl(0.0, c.battery_export_kwh, c.load_from_grid)
     return out
+
+
+_front_load_offpeak_grid_charge = plan_battery_grid_charge
+_front_load_charge_step_ac = _battery_grid_charge_step_ac
+_correct_min_hourly_transfer_controls = enforce_min_hourly_battery_grid_limits
 
 
 def offpeak_min_block_charge_is_worth(
@@ -2076,7 +2100,7 @@ def optimize_horizon(
         b = soc_bin
     controls.reverse()
 
-    controls = _front_load_offpeak_grid_charge(
+    controls = plan_battery_grid_charge(
         controls,
         pv_series=pv_series,
         load_series=load_series,
@@ -2102,7 +2126,7 @@ def optimize_horizon(
         min_hourly_kwh=min_hourly_transfer,
     )
 
-    controls = assign_ranked_battery_export(
+    controls = plan_battery_grid_export(
         controls,
         steps=steps,
         pv_series=pv_series,
@@ -2126,54 +2150,7 @@ def optimize_horizon(
         min_hourly_kwh=min_hourly_transfer,
     )
 
-    # End-of-Dis floor: each export hour H keeps post_dis(H); chrono re-claim
-    # sells leftover above post_dis(prev) into the next eligible hour down to
-    # that hour's own floor (morning land near min SOC).
-    reserves_before = list(reserves)
-    reserves, end_floor = apply_post_discharge_reserve_floor(
-        reserves,
-        controls,
-        pv_series=pv_for_reserve,
-        load_series=load_for_reserve,
-        reserve_floor_kwh=reserve_floor_kwh,
-        eta_out=eta_out,
-        eta_pv_load=eta_pv_load,
-        epsilon=eps_step,
-        rce_step_offset=rce_step_offset,
-        slots_per_hour=slots_per_hour,
-        buy_series=buy_for_reserve,
-        offpeak_buy=offpeak_buy,
-    )
-    if end_floor is not None and reserves != reserves_before:
-        controls = assign_ranked_battery_export(
-            [
-                HourControl(c.grid_charge_kw, 0.0, c.load_from_grid)
-                for c in controls
-            ],
-            steps=steps,
-            pv_series=pv_series,
-            load_series=load_series,
-            rce_series=rce_series,
-            rce_step_offset=rce_step_offset,
-            step_scale=step_scale,
-            initial_soc_kwh=initial_soc_kwh,
-            battery_cap=battery_cap,
-            min_kwh=min_kwh,
-            discharge_dc_step=discharge_dc_step,
-            inverter_ac_step=inverter_ac_step,
-            eta_grid=eta_grid,
-            eta_out=eta_out,
-            eta_pv_load=eta_pv_load,
-            eta_pv_grid=eta_pv_grid,
-            eta_pv_battery=eta_pv_battery,
-            eps_step=eps_step,
-            reserves=reserves,
-            export_floor=export_floor,
-            min_hourly_kwh=min_hourly_transfer,
-        )
-
-    # Sub-pass per clock hour: sum battery↔grid flows across 15-min slots; zero if below floor.
-    return _correct_min_hourly_transfer_controls(
+    return enforce_min_hourly_battery_grid_limits(
         controls,
         rce_step_offset=rce_step_offset,
         step_scale=step_scale,
