@@ -21,6 +21,7 @@ from ..plan_monthly_refresh import (
     rebuild_all_month_history,
 )
 from ..sqlite_store import (
+    load_all_deposits,
     load_month_history,
     read_cached_deposit_total,
     read_plan,
@@ -66,6 +67,15 @@ async def api_history_deposit_total() -> dict[str, Any]:
     total = await ensure_deposit_total_current(cfg)
     out = _deposit_total_payload()
     out["deposit_total"] = total
+    deposits = load_all_deposits()
+    out["months"] = [
+        {
+            "month": month_id,
+            "credited": round(float(row["initial"]), 4),
+            "remaining": round(float(row["current"]), 4),
+        }
+        for month_id, row in sorted(deposits.items())
+    ]
     return out
 
 

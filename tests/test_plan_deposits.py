@@ -6,9 +6,11 @@ from src.grid_config import BILLING_MODEL_VERSION
 from src.plan_deposits import (
     DEPOSIT_START_MONTH,
     compute_energy_deposit_total,
+    deposit_total_through_month,
     draw_import_from_deposits,
     iter_months,
     open_month_id,
+    previous_calendar_month,
     run_deposit_cascade,
 )
 from src.sqlite_store import (
@@ -133,6 +135,136 @@ def test_iter_months_inclusive():
 
 def test_open_month_id():
     assert open_month_id(date(2026, 7, 4)) == "2026-07"
+
+
+def test_previous_calendar_month():
+    assert previous_calendar_month("2026-08") == "2026-07"
+    assert previous_calendar_month("2026-01") == "2025-12"
+    assert previous_calendar_month(today=date(2026, 8, 9)) == "2026-07"
+
+
+def test_deposit_total_through_month_closed_june(tmp_path, monkeypatch):
+    """Pool at end of June = remaining May + June export credit after June import draw."""
+    db_path = tmp_path / "solar_smart.db"
+    monkeypatch.setattr("src.sqlite_store._DB_PATH", db_path)
+    reset_connection_for_tests()
+
+    june = {
+        "month": "2026-06",
+        "billing_model_version": BILLING_MODEL_VERSION,
+        "rows": [{
+            "date": "2026-06-01",
+            "export_revenue": 502.4514,
+            "import_energy_cost": 101.9208,
+            "energy_cost_total": 502.4514,
+            "import_cost_total": 29.4921,
+        }],
+        "totals": {
+            "export_revenue": 502.4514,
+            "import_energy_cost": 101.9208,
+            "energy_cost_total": 502.4514,
+            "import_cost_total": 95.7845,
+            "baseline_cost": 45.17,
+            "baseline_service_fee": 0.0,
+            "service_fee": 66.2924,
+            "service_cost": 29.4921,
+        },
+    }
+    save_month_history("2026-06", june)
+    # Stale mid-month credit must be replaced from history during through-month replay.
+    from src.sqlite_store import upsert_open_month_deposit
+    upsert_open_month_deposit("2026-06", 400.0)
+
+    monkeypatch.setattr("src.plan_deposits.open_month_id", lambda _today=None: "2026-07")
+    june_end = deposit_total_through_month("2026-06")
+    assert june_end == round(174.0 - 101.9208 + 502.4514, 4)
+
+
+def test_cascade_finalizes_stale_closed_month_deposit(tmp_path, monkeypatch):
+    """Closed July deposit_initial catches up to full-month export credit."""
+    db_path = tmp_path / "solar_smart.db"
+    monkeypatch.setattr("src.sqlite_store._DB_PATH", db_path)
+    reset_connection_for_tests()
+
+    from src.sqlite_store import upsert_open_month_deposit
+
+    june = {
+        "month": "2026-06",
+        "billing_model_version": BILLING_MODEL_VERSION,
+        "rows": [{
+            "date": "2026-06-01",
+            "export_revenue": 100.0,
+            "import_energy_cost": 20.0,
+            "energy_cost_total": 100.0,
+            "import_cost_total": 5.0,
+        }],
+        "totals": {
+            "export_revenue": 100.0,
+            "import_energy_cost": 20.0,
+            "energy_cost_total": 100.0,
+            "import_cost_total": 5.0,
+            "baseline_cost": 0.0,
+            "baseline_service_fee": 0.0,
+            "service_fee": 0.0,
+            "service_cost": 0.0,
+        },
+    }
+    july = {
+        "month": "2026-07",
+        "billing_model_version": BILLING_MODEL_VERSION,
+        "rows": [{
+            "date": "2026-07-01",
+            "export_revenue": 372.15,
+            "import_energy_cost": 76.92,
+            "energy_cost_total": 372.15,
+            "import_cost_total": 20.0,
+        }],
+        "totals": {
+            "export_revenue": 372.15,
+            "import_energy_cost": 76.92,
+            "energy_cost_total": 372.15,
+            "import_cost_total": 20.0,
+            "baseline_cost": 0.0,
+            "baseline_service_fee": 0.0,
+            "service_fee": 0.0,
+            "service_cost": 0.0,
+        },
+    }
+    save_month_history("2026-06", june)
+    save_month_history("2026-07", july)
+    upsert_open_month_deposit("2026-06", 100.0)
+    upsert_open_month_deposit("2026-07", 338.09)  # stale mid-July credit
+
+    august = {
+        "month": "2026-08",
+        "rows": [],
+        "totals": {
+            "export_revenue": 50.0,
+            "import_energy_cost": 10.0,
+            "import_cost_total": 2.0,
+            "baseline_cost": 0.0,
+            "baseline_service_fee": 0.0,
+            "service_fee": 0.0,
+            "service_cost": 0.0,
+        },
+    }
+    monkeypatch.setattr("src.plan_deposits.open_month_id", lambda _today=None: "2026-08")
+    _, total = run_deposit_cascade("2026-08", august, today=date(2026, 8, 9))
+    deposits = load_all_deposits()
+    assert deposits["2026-07"]["initial"] == 372.15
+    assert deposits[DEPOSIT_SEED_MONTH]["initial"] == DEPOSIT_SEED_AMOUNT
+    # End of July pool uses finalized July credit.
+    assert deposit_total_through_month("2026-07") == round(
+        174.0 - 20.0 - 76.92 + 100.0 + 372.15,
+        4,
+    )
+    assert total == round(
+        deposits[DEPOSIT_SEED_MONTH]["current"]
+        + deposits["2026-06"]["current"]
+        + deposits["2026-07"]["current"]
+        + 50.0,
+        4,
+    )
 
 
 def test_cascade_does_not_persist_empty_stub_months(tmp_path, monkeypatch):

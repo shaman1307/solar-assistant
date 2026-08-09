@@ -48,6 +48,58 @@ def open_month_id(today: date | None = None) -> str:
     return today.strftime("%Y-%m")
 
 
+def previous_calendar_month(
+    month_id: str | None = None,
+    *,
+    today: date | None = None,
+) -> str:
+    """Calendar month immediately before *month_id* (default: before open month)."""
+    mid = month_id or open_month_id(today)
+    y, m = month_sort_key(mid)
+    if m == 1:
+        return f"{y - 1}-12"
+    return f"{y:04d}-{m - 1:02d}"
+
+
+def deposit_total_through_month(through_month: str) -> float:
+    """Deposit pool after applying months through *through_month* (read-only).
+
+    Replays draws from month histories and applies each non-seed month's export
+    credit (same finalize rule as run_deposit_cascade), without writing SQLite.
+    """
+    if through_month < DEPOSIT_START_MONTH:
+        return 0.0
+    ensure_deposit_seed()
+    deposits = {
+        mid: {"initial": float(row["initial"]), "current": float(row["initial"])}
+        for mid, row in load_all_deposits().items()
+        if mid <= through_month
+    }
+    months = iter_months(DEPOSIT_START_MONTH, through_month)
+    for month_id in months:
+        cached = load_month_history(month_id)
+        totals = (cached or {}).get("totals") or {}
+        export = float(totals.get("export_revenue") or 0.0)
+        import_tariff = float(totals.get("import_energy_cost") or 0.0)
+        prior_ids = [m for m in months if m < month_id]
+        energy_total = compute_energy_deposit_total(
+            export,
+            import_tariff,
+            deposits,
+            prior_ids,
+        )
+        # Seed month keeps the fixed 174 PLN row; later months take full credit
+        # from history (not a stale mid-month deposit_initial).
+        if month_id != DEPOSIT_START_MONTH and (
+            cached is not None or month_id in deposits or abs(energy_total) > 0.0005
+        ):
+            deposits[month_id] = {
+                "initial": energy_total,
+                "current": energy_total,
+            }
+    return sum_deposit_current(deposits)
+
+
 def draw_import_from_deposits(
     import_energy_cost: float,
     deposits: dict[str, dict[str, float]],
@@ -165,7 +217,13 @@ def run_deposit_cascade(
         totals["energy_cost_total"] = energy_total
         _recalc_totals_savings(totals)
 
-        if month_id == current_open:
+        # Open month: refresh MTD credit. Closed months: finalize to full-month
+        # credit so a mid-month upsert is not left behind after month roll.
+        # Seed May keeps the fixed 174 PLN row (different tariff; not rewritten).
+        if month_id != DEPOSIT_START_MONTH and (
+            month_id == current_open
+            or (month_id < current_open and _month_has_billing_data(payload))
+        ):
             upsert_open_month_deposit(month_id, energy_total)
             deposits[month_id] = {
                 "initial": energy_total,

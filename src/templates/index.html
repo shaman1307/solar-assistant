@@ -885,8 +885,39 @@
       display: inline;
       white-space: normal;
     }
+    .sim-history-deposit-label {
+      background: none;
+      border: 0;
+      padding: 0;
+      margin: 0;
+      font: inherit;
+      font-weight: 600;
+      color: inherit;
+      cursor: pointer;
+      text-decoration: underline;
+      text-decoration-style: dotted;
+      text-underline-offset: 2px;
+    }
+    .sim-history-deposit-label:hover {
+      color: #4b5563;
+    }
     .sim-history-deposit-value {
       white-space: nowrap;
+    }
+    .sim-deposit-chart-wrap {
+      margin-top: 0.75rem;
+      width: 100%;
+      min-height: 220px;
+    }
+    .sim-deposit-chart-wrap svg {
+      width: 100%;
+      height: 220px;
+      display: block;
+    }
+    .sim-deposit-chart-empty {
+      margin-top: 0.75rem;
+      font-size: 0.75rem;
+      color: #6b7280;
     }
     @media (max-width: 767px) {
       .sim-history-head-row {
@@ -3245,7 +3276,9 @@
         <p class="mt-1 mb-0">
           <span class="sim-history-deposit ov-total-label text-sm font-semibold text-gray-500"
             title="Sum of remaining deposit balances across months. Each month credits export RCE into the pool; import tariff is paid from older months first (not subtracted from that month credit).">
-            Energy Deposit:
+            <button type="button" id="history-deposit-label" class="sim-history-deposit-label"
+              title="Show monthly deposit credits"
+              onclick="openHistoryDepositChart()">Energy Deposit:</button>
             <button type="button" id="history-deposit-total" onclick="rebuildHistoryFromSqlite()"
               class="sim-history-deposit-value tabular-nums font-semibold text-green-600 hover:text-green-700 underline decoration-dotted underline-offset-2 cursor-pointer disabled:opacity-60 disabled:cursor-wait"
               title="Click to full rebuild from Energy Arbitrage actuals (after SQLite edits)">— PLN</button>
@@ -8935,14 +8968,97 @@ function updateHistoryDepositTotal(value) {
   depEl.textContent = Number.isFinite(dep) ? fmt(dep, 2) + ' PLN' : '— PLN';
 }
 
+let _historyDepositMonths = [];
+
 async function loadHistoryDepositTotal() {
   try {
     const res = await fetch('api/history-deposit-total');
     const data = await res.json();
     updateHistoryDepositTotal(data?.deposit_total);
+    _historyDepositMonths = Array.isArray(data?.months) ? data.months : [];
   } catch (_) {
     /* keep last shown value */
   }
+}
+
+function closeHistoryDepositChart() {
+  const modal = document.getElementById('history-deposit-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function renderHistoryDepositChart(months) {
+  const wrap = document.getElementById('history-deposit-chart');
+  const empty = document.getElementById('history-deposit-chart-empty');
+  if (!wrap) return;
+  const rows = (months || []).filter(m => m && m.month != null);
+  if (!rows.length) {
+    wrap.innerHTML = '';
+    if (empty) empty.classList.remove('hidden');
+    return;
+  }
+  if (empty) empty.classList.add('hidden');
+
+  const vals = rows.map(r => Number(r.credited) || 0);
+  const maxAbs = Math.max(...vals.map(v => Math.abs(v)), 1);
+  const W = 640;
+  const H = 220;
+  const padL = 36;
+  const padR = 16;
+  const padT = 28;
+  const padB = 36;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+  const n = rows.length;
+  const gap = Math.min(18, chartW / (n * 4));
+  const barW = Math.max(18, (chartW - gap * (n + 1)) / n);
+  // Scale so positive goes up from mid if any negative, else from bottom.
+  const hasNeg = vals.some(v => v < 0);
+  const y0 = hasNeg ? padT + chartH / 2 : padT + chartH;
+  const yScale = hasNeg ? (chartH / 2) / maxAbs : chartH / maxAbs;
+
+  let bars = '';
+  rows.forEach((r, i) => {
+    const v = Number(r.credited) || 0;
+    const x = padL + gap + i * (barW + gap);
+    const h = Math.max(1, Math.abs(v) * yScale);
+    const y = v >= 0 ? y0 - h : y0;
+    const label = String(r.month).slice(2); // YY-MM
+    const valLbl = fmt(v, 1);
+    const valY = v >= 0 ? y - 6 : y + h + 12;
+    bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="#16a34a"/>`;
+    bars += `<text x="${(x + barW / 2).toFixed(1)}" y="${valY.toFixed(1)}" text-anchor="middle" font-size="11" font-weight="600" fill="#166534">${valLbl}</text>`;
+    bars += `<text x="${(x + barW / 2).toFixed(1)}" y="${(H - 12).toFixed(1)}" text-anchor="middle" font-size="11" fill="#6b7280">${label}</text>`;
+  });
+  if (hasNeg) {
+    bars += `<line x1="${padL}" y1="${y0.toFixed(1)}" x2="${W - padR}" y2="${y0.toFixed(1)}" stroke="#d1d5db" stroke-width="1"/>`;
+  }
+  wrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Monthly deposit credits">${bars}</svg>`;
+}
+
+async function openHistoryDepositChart() {
+  const modal = document.getElementById('history-deposit-modal');
+  if (!modal) return;
+  if (modal.dataset.bound !== '1') {
+    modal.dataset.bound = '1';
+    const backdrop = document.getElementById('history-deposit-modal-backdrop');
+    const closeBtn = document.getElementById('history-deposit-modal-close');
+    if (backdrop) backdrop.addEventListener('click', closeHistoryDepositChart);
+    if (closeBtn) closeBtn.addEventListener('click', closeHistoryDepositChart);
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && !modal.classList.contains('hidden')) {
+        closeHistoryDepositChart();
+      }
+    });
+  }
+  if (!_historyDepositMonths.length) {
+    await loadHistoryDepositTotal();
+  }
+  renderHistoryDepositChart(_historyDepositMonths);
+  modal.classList.remove('hidden');
+}
+
+function initHistoryDepositChart() {
+  /* Modal HTML is after the boot script; bind on first open. */
 }
 
 function renderHistoryMonthTable(data) {
@@ -9074,6 +9190,7 @@ async function rebuildHistoryFromSqlite() {
     }
     try { localStorage.removeItem(HISTORY_MONTH_CACHE_KEY); } catch (_) {}
     updateHistoryDepositTotal(data.deposit_total);
+    await loadHistoryDepositTotal();
     await loadHistoryMonth();
   } catch (_) {
     alert('Rebuild failed');
@@ -10735,6 +10852,7 @@ initAccrualsDate();
 initSimDate();
 initDebugDate();
 initHistoryMonth();
+initHistoryDepositChart();
 initDatePickerClickTargets();
 initCfgTemplateRowActions();
 initDraggableCardGrids();
@@ -10765,6 +10883,19 @@ setInterval(() => {
   );
 }, 15 * 60 * 1000);
 </script>
+
+<div id="history-deposit-modal" class="sim-timer-modal hidden" role="dialog" aria-modal="true" aria-labelledby="history-deposit-modal-title">
+  <div class="sim-timer-modal-backdrop" id="history-deposit-modal-backdrop"></div>
+  <div class="sim-timer-modal-panel" style="max-width: 36rem;">
+    <h3 id="history-deposit-modal-title" class="text-sm font-semibold text-gray-800">Monthly deposit credits</h3>
+    <p class="text-xs text-gray-500 mt-1">Export RCE credited into the pool each month (PLN).</p>
+    <div id="history-deposit-chart" class="sim-deposit-chart-wrap"></div>
+    <p id="history-deposit-chart-empty" class="sim-deposit-chart-empty hidden">No deposit months yet.</p>
+    <div class="sim-timer-modal-actions">
+      <button type="button" class="sim-timer-modal-btn sim-timer-modal-btn--primary" id="history-deposit-modal-close">Close</button>
+    </div>
+  </div>
+</div>
 
 <div id="sim-timer-edit-modal" class="sim-timer-modal hidden" role="dialog" aria-modal="true" aria-labelledby="sim-timer-edit-title">
   <div class="sim-timer-modal-backdrop" id="sim-timer-edit-backdrop"></div>
