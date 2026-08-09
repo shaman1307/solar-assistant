@@ -75,6 +75,7 @@ $files = @(
     "scripts\restore-sa-defaults.sh",
     "scripts\enable-smart-autostart.sh",
     "scripts\datafix_overnight_chg_soc.py",
+    "scripts\datafix_archive_q15_actuals.py",
     "smart.service",
     "smart-boot-guard.service",
     "smart-boot-guard.timer",

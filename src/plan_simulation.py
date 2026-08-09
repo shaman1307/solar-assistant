@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from . import forecast as forecast_mod
@@ -460,7 +460,7 @@ async def build_plan_simulation(
         )
         result["actual_soc_q15"] = extract_actual_soc_q15(result, now=now)
         if store_cache:
-            write_plan(result)
+            write_plan(result, now=now)
         return result
 
 
@@ -468,19 +468,23 @@ async def hourly_plan_refresh(
     cfg: dict,
     *,
     unlock_plan_soc: bool = False,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Scheduler / config refresh: incremental quarter merge or full rebuild at new day.
 
     *unlock_plan_soc*: when True (config / Forecast Overrides / EV / manual timer),
     replace the frozen solid SOC day-plan curve with the fresh simulator curve.
     Quarterly :00/:15/:30/:45 jobs keep the lock (default False).
+
+    *now*: quarter-tick clock for merge (scheduler passes the job-start tick so a
+    long Open-Meteo/sim run past :00 still finalizes previous-hour q3).
     """
     log.info(
         "Plan Simulation refresh%s …",
         " (unlock plan SOC)" if unlock_plan_soc else "",
     )
     cfg = merge_simulation_defaults(cfg)
-    now = now_warsaw()
+    now = now or now_warsaw()
     existing = read_plan()
 
     async with _get_plan_lock():
@@ -535,7 +539,7 @@ async def hourly_plan_refresh(
             rce_mod._refresh_current_price(result["rce"])
             result["rce_current"] = result["rce"].get("current_price_pln_kwh")
 
-        write_plan(result)
+        write_plan(result, now=now)
         log.info(
             "Plan updated %s — Δ=%.2f kWh, export_hours=%s",
             result["computed_at"],

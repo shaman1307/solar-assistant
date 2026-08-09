@@ -18,6 +18,7 @@ from .debug_smart_plan import (
     collect_q15_schedule_rows,
     merge_today_hourly_profile,
     run_day_smart_q15_plan,
+    run_rolling_smart_q15_plan,
     run_today_smart_q15_plan,
 )
 from .plan_hourly_actuals import (
@@ -533,21 +534,18 @@ def build_energy_arbitrage_plan(
         else None
     )
     # Current hour already has a Timer (e.g. Chg planned while it was future):
-    # do not re-optimize that hour — seed the rest of the day from its end SOC.
-    if committed_hour is not None and committed_end_soc is not None and plan_from_hour < 23:
-        smart_today = run_day_smart_q15_plan(
-            date_str=today_str,
-            pv_hourly=pv_merged,
-            load_hourly=load_merged,
-            tomorrow_pv=pv_tomorrow,
-            tomorrow_load=load_tomorrow,
-            cfg=cfg,
-            rce_quarters=rce_today if len(rce_today) >= Q15_PER_HOUR * 24 else None,
-            initial_soc_kwh=committed_end_soc,
-            from_hour=plan_from_hour + 1,
-            front_load_skip_leading_slots=0,
-        )
-    elif committed_hour is not None and committed_end_soc is not None:
+    # do not re-optimize that hour — seed the rest of the window from its end SOC.
+    smart_today: dict[str, Any] | None = None
+    smart_tomorrow: dict[str, Any] | None = None
+    hours_today_in_plan = max(0, 24 - plan_from_hour)
+    need_tomorrow_hours = max(0, hour_steps - hours_today_in_plan)
+    rce_today_full = rce_today if len(rce_today) >= Q15_PER_HOUR * 24 else None
+    rce_tomorrow_list = quarters_by_date.get(tomorrow_str) or []
+    rce_tomorrow_full = (
+        rce_tomorrow_list if len(rce_tomorrow_list) >= Q15_PER_HOUR * 24 else None
+    )
+
+    if committed_hour is not None and committed_end_soc is not None and plan_from_hour >= 23:
         # Hour 23 committed — only tomorrow is re-planned from this end SOC.
         smart_today = {
             "q15_by_hour": {h: [] for h in range(24)},
@@ -556,6 +554,68 @@ def build_energy_arbitrage_plan(
             "timer_schedule": {},
             "epsilon": epsilon,
         }
+        if need_tomorrow_hours > 0:
+            smart_tomorrow = run_day_smart_q15_plan(
+                date_str=tomorrow_str,
+                pv_hourly=[float(v) for v in pv_tomorrow],
+                load_hourly=[float(v) for v in load_tomorrow],
+                tomorrow_pv=[float(v) for v in pv_tomorrow],
+                tomorrow_load=[float(v) for v in load_tomorrow],
+                cfg=cfg,
+                rce_quarters=rce_tomorrow_full,
+                initial_soc_kwh=float(committed_end_soc),
+                from_hour=0,
+                front_load_skip_leading_slots=0,
+            )
+    elif committed_hour is not None and committed_end_soc is not None:
+        opt_from = plan_from_hour + 1
+        opt_horizon = max(0, hour_steps - 1)
+        if need_tomorrow_hours > 0 and opt_horizon > 0:
+            rolling = run_rolling_smart_q15_plan(
+                date_str=today_str,
+                pv_hourly=pv_merged,
+                load_hourly=load_merged,
+                tomorrow_pv=[float(v) for v in pv_tomorrow],
+                tomorrow_load=[float(v) for v in load_tomorrow],
+                cfg=cfg,
+                rce_quarters=rce_today_full,
+                rce_quarters_tomorrow=rce_tomorrow_full,
+                initial_soc_kwh=float(committed_end_soc),
+                from_hour=opt_from,
+                horizon_hours=opt_horizon,
+                front_load_skip_leading_slots=0,
+            )
+            smart_today = (rolling or {}).get("today")
+            smart_tomorrow = (rolling or {}).get("tomorrow")
+        elif opt_horizon > 0:
+            smart_today = run_day_smart_q15_plan(
+                date_str=today_str,
+                pv_hourly=pv_merged,
+                load_hourly=load_merged,
+                tomorrow_pv=pv_tomorrow,
+                tomorrow_load=load_tomorrow,
+                cfg=cfg,
+                rce_quarters=rce_today_full,
+                initial_soc_kwh=float(committed_end_soc),
+                from_hour=opt_from,
+                front_load_skip_leading_slots=0,
+            )
+    elif need_tomorrow_hours > 0:
+        rolling = run_rolling_smart_q15_plan(
+            date_str=today_str,
+            pv_hourly=pv_merged,
+            load_hourly=load_merged,
+            tomorrow_pv=[float(v) for v in pv_tomorrow],
+            tomorrow_load=[float(v) for v in load_tomorrow],
+            cfg=cfg,
+            rce_quarters=rce_today_full,
+            rce_quarters_tomorrow=rce_tomorrow_full,
+            initial_soc_kwh=soc_kwh,
+            from_hour=plan_from_hour,
+            horizon_hours=hour_steps,
+        )
+        smart_today = (rolling or {}).get("today")
+        smart_tomorrow = (rolling or {}).get("tomorrow")
     else:
         smart_today = run_today_smart_q15_plan(
             date_str=today_str,
@@ -564,7 +624,7 @@ def build_energy_arbitrage_plan(
             tomorrow_pv=pv_tomorrow,
             tomorrow_load=load_tomorrow,
             cfg=cfg,
-            rce_quarters=rce_today if len(rce_today) >= Q15_PER_HOUR * 24 else None,
+            rce_quarters=rce_today_full,
             plan_from_hour=plan_from_hour,
             day_start_soc_kwh=day_start_soc,
             live_soc_kwh=soc_kwh,
@@ -595,39 +655,8 @@ def build_energy_arbitrage_plan(
         soc_kwh,
     )
 
-    hours_today_in_plan = max(0, 24 - plan_from_hour)
-    need_tomorrow_hours = max(0, hour_steps - hours_today_in_plan)
-    smart_tomorrow: dict[str, Any] | None = None
-    if need_tomorrow_hours > 0 and smart_today:
-        rce_tomorrow = quarters_by_date.get(tomorrow_str) or []
-        # Prefer committed/locked current-hour end SOC (charge/discharge already fixed).
-        tomorrow_initial_soc = committed_end_soc
-        if tomorrow_initial_soc is None:
-            tomorrow_initial_soc = _locked_current_hour_end_soc_kwh(
-                plan_from_hour, today_str, battery_cap,
-            )
-        if tomorrow_initial_soc is None:
-            tomorrow_initial_soc = float(smart_today["end_soc_kwh"])
-        smart_tomorrow = run_day_smart_q15_plan(
-            date_str=tomorrow_str,
-            pv_hourly=[float(v) for v in pv_tomorrow],
-            load_hourly=[float(v) for v in load_tomorrow],
-            tomorrow_pv=[float(v) for v in pv_tomorrow],
-            tomorrow_load=[float(v) for v in load_tomorrow],
-            cfg=cfg,
-            rce_quarters=rce_tomorrow if len(rce_tomorrow) >= Q15_PER_HOUR * 24 else None,
-            initial_soc_kwh=tomorrow_initial_soc,
-        )
-
     today_timer_ov = get_timer_overrides_for_date(cfg, today_str)
     tomorrow_timer_ov = get_timer_overrides_for_date(cfg, tomorrow_str)
-    rce_today_full = rce_today if len(rce_today) >= Q15_PER_HOUR * 24 else None
-    rce_tomorrow_full = (
-        quarters_by_date.get(tomorrow_str) or []
-    )
-    rce_tomorrow_full = (
-        rce_tomorrow_full if len(rce_tomorrow_full) >= Q15_PER_HOUR * 24 else None
-    )
 
     if smart_today and today_timer_ov:
         ov_from = plan_from_hour + 1 if committed_hour is not None else plan_from_hour
@@ -641,19 +670,6 @@ def build_energy_arbitrage_plan(
             cfg=cfg,
             from_hour=ov_from,
             rce_quarters=rce_today_full,
-        )
-
-    if smart_tomorrow and today_timer_ov and smart_today:
-        smart_tomorrow = run_day_smart_q15_plan(
-            date_str=tomorrow_str,
-            pv_hourly=[float(v) for v in pv_tomorrow],
-            load_hourly=[float(v) for v in load_tomorrow],
-            tomorrow_pv=[float(v) for v in pv_tomorrow],
-            tomorrow_load=[float(v) for v in load_tomorrow],
-            cfg=cfg,
-            rce_quarters=rce_tomorrow_full,
-            initial_soc_kwh=float(smart_today["end_soc_kwh"]),
-            from_hour=0,
         )
 
     if smart_tomorrow and tomorrow_timer_ov:
@@ -1100,10 +1116,11 @@ def _tomorrow_remainder_rows(
     quarters_by_date: dict[str, list[float | None]],
     cfg: dict,
 ) -> list[dict[str, Any]]:
-    """Rows for the *uncalculated* remainder of tomorrow after the 24h horizon.
+    """Rows for tomorrow after the rolling 24h plan window.
 
-    This is a UI affordance only: show PV/Load + prices for the rest of tomorrow,
-    without any simulated flows, SOC, cost, or actions.
+    UI affordance only: PV/Load + prices for hours past the plan horizon.
+    Those hours were used as forecast lookahead for reserve/charge-target, but
+    are not simulated as EA plan rows (no flows, SOC, cost, or actions).
     """
     tomorrow_date = (start_dt + timedelta(days=1)).date()
     tomorrow_str = (start_dt + timedelta(days=1)).strftime("%Y-%m-%d")

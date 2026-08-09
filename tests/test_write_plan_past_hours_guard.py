@@ -101,9 +101,9 @@ def test_guard_keeps_history_and_rewrites_future_hours():
     for h, row in enumerate(guarded["history_rows"]):
         assert row["action"] == f"LOCKED-{h}"
     cur = next(r for r in guarded["rows"] if int(r["hour"]) == 14)
-    # :30 → quarters 0,1 past; 2,3 from incoming
+    # :30 → only q0 freeze-ready; q1–q3 from incoming
     assert cur["q15"][0]["production"] == 1.0
-    assert cur["q15"][1]["production"] == 1.0
+    assert cur["q15"][1]["production"] == 2.0
     assert cur["q15"][2]["production"] == 2.0
     assert cur["q15"][3]["production"] == 2.0
     assert cur["action"] == "LIVE-14"  # locked labels kept
@@ -148,9 +148,9 @@ def test_write_plan_blocks_past_hour_overwrite():
 
 
 def test_write_plan_does_not_overwrite_past_quarters():
-    """write_plan must not rewrite completed / past q15 slots in SQLite.
+    """write_plan must not rewrite freeze-ready q15 slots in SQLite.
 
-    At 14:30 quarters 0–1 are past (frozen); 2–3 may take the incoming plan.
+    At 14:30 only q0 is freeze-ready (:00-:15); q1–q3 may take the incoming plan.
     from_actual slots stay immutable even if incoming tries to mutate them.
     """
     now = _now(14, 30)
@@ -171,7 +171,7 @@ def test_write_plan_does_not_overwrite_past_quarters():
         ]
 
     seed_row = _live_row(14, marker="LOCKED-CUR", q_marker=1.0, locked=True)
-    seed_row["q15"] = _marked_q15(prod=[1.1, 1.2, 1.3, 1.4], actual_until=1)
+    seed_row["q15"] = _marked_q15(prod=[1.1, 1.2, 1.3, 1.4], actual_until=0)
     write_plan(
         {
             "today_date": TODAY,
@@ -210,12 +210,11 @@ def test_write_plan_does_not_overwrite_past_quarters():
     cur = next(r for r in stored["rows"] if int(r["hour"]) == 14)
     assert cur["action"] == "LOCKED-CUR"
     assert cur["timer_schedule"].startswith("Dis 14:00")
-    # Past / from_actual quarters 0–1 stay as seeded.
+    # Freeze-ready q0 stays as seeded.
     assert cur["q15"][0]["production"] == 1.1
-    assert cur["q15"][1]["production"] == 1.2
     assert cur["q15"][0]["from_actual"] is True
-    assert cur["q15"][1]["from_actual"] is True
-    # Future quarters 2–3 may come from the incoming write.
+    # Open / lagging quarters 1–3 may come from the incoming write.
+    assert cur["q15"][1]["production"] == 9.2
     assert cur["q15"][2]["production"] == 9.3
     assert cur["q15"][3]["production"] == 9.4
 

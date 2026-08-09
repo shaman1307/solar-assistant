@@ -1769,21 +1769,59 @@ def offpeak_min_block_charge_is_worth(
     return cost_charge <= cost_avoided + epsilon
 
 
-def _should_extend_reserve_horizon(
+def _should_extend_forecast_lookahead(
     *,
     step_scale: float,
     end_dt: datetime,
     today_date,
     forecast: dict[str, Any] | None,
 ) -> bool:
-    """True when same-calendar-day q15 horizon should append tomorrow for reserve."""
+    """True when q15 reserve/charge should append forecast through end of tomorrow."""
     forecast_data = forecast or {}
-    return (
-        step_scale < 1.0
-        and end_dt.date() == today_date
-        and bool((forecast_data.get("tomorrow") or {}).get("pv"))
-        and bool((forecast_data.get("tomorrow") or {}).get("load"))
-    )
+    tomorrow = (forecast_data.get("tomorrow") or {})
+    if step_scale >= 1.0:
+        return False
+    if not tomorrow.get("pv") or not tomorrow.get("load"):
+        return False
+    tomorrow_date = today_date + timedelta(days=1)
+    return end_dt.date() <= tomorrow_date
+
+
+def _tomorrow_lookahead_start_hour(
+    *,
+    end_dt: datetime,
+    today_date,
+    series_len: int = 0,
+    global_step_offset: int = 0,
+    step_scale: float = 0.25,
+) -> int | None:
+    """First clock hour of tomorrow not yet in the optimized series (0..23), or None.
+
+    Prefer series coverage (offset + length) over *end_dt* alone so a mismatched
+    end timestamp cannot invent or skip tomorrow hours.
+    """
+    tomorrow_date = today_date + timedelta(days=1)
+    slots = slots_per_hour_from_scale(step_scale)
+    if series_len > 0:
+        last_abs_hour = (global_step_offset + series_len - 1) // slots
+        if last_abs_hour < HOURS_PER_DAY:
+            # Series still on today — classic overnight append when end is today.
+            if end_dt.date() == today_date:
+                return 0
+            return None
+        last_tom_h = last_abs_hour - HOURS_PER_DAY
+        nxt = last_tom_h + 1
+        return nxt if nxt < HOURS_PER_DAY else None
+
+    # Fallback when callers omit series length: end_dt marks the last plan slot.
+    if end_dt.date() == today_date:
+        return 0
+    if end_dt.date() == tomorrow_date:
+        nxt = int(end_dt.hour) + 1
+        if nxt >= HOURS_PER_DAY:
+            return None
+        return nxt
+    return None
 
 
 def build_extended_pv_load_for_reserve(
@@ -1794,22 +1832,37 @@ def build_extended_pv_load_for_reserve(
     end_dt: datetime,
     today_date,
     forecast: dict[str, Any] | None,
+    global_step_offset: int = 0,
 ) -> tuple[list[float], list[float]]:
-    """Extend PV/load into tomorrow for reserve when the horizon ends same calendar day."""
+    """Append PV/load through end of tomorrow for reserve / charge-target walks.
+
+    Optimized steps stay unchanged. Only hours after the series up to tomorrow
+    23:00 are appended (full tomorrow when the plan still ends today; otherwise
+    the missing tomorrow tail after a rolling 24h window).
+    """
     forecast_data = forecast or {
         "today": {"pv": [], "load": []},
         "tomorrow": {"pv": [], "load": []},
     }
-    if not _should_extend_reserve_horizon(
+    if not _should_extend_forecast_lookahead(
         step_scale=step_scale, end_dt=end_dt, today_date=today_date, forecast=forecast_data,
     ):
+        return pv_series, load_series
+    start_h = _tomorrow_lookahead_start_hour(
+        end_dt=end_dt,
+        today_date=today_date,
+        series_len=len(pv_series),
+        global_step_offset=global_step_offset,
+        step_scale=step_scale,
+    )
+    if start_h is None:
         return pv_series, load_series
     rep = slots_per_hour_from_scale(step_scale)
     pv_tomorrow = [float(v) for v in (forecast_data["tomorrow"]["pv"] or [])][:HOURS_PER_DAY]
     load_tomorrow = [float(v) for v in (forecast_data["tomorrow"]["load"] or [])][:HOURS_PER_DAY]
     pv_ext = list(pv_series)
     load_ext = list(load_series)
-    for h in range(HOURS_PER_DAY):
+    for h in range(start_h, HOURS_PER_DAY):
         pv_h = pv_tomorrow[h] if h < len(pv_tomorrow) else 0.0
         load_h = load_tomorrow[h] if h < len(load_tomorrow) else 0.0
         pv_ext.extend([pv_h * step_scale] * rep)
@@ -1825,24 +1878,38 @@ def build_extended_buy_for_reserve(
     today_date,
     forecast: dict[str, Any] | None,
     cfg: dict,
+    global_step_offset: int = 0,
 ) -> list[float]:
-    """Extend buy prices into tomorrow in lockstep with extended reserve PV/load."""
+    """Extend buy prices through end of tomorrow in lockstep with PV/load lookahead."""
     forecast_data = forecast or {
         "today": {"pv": [], "load": []},
         "tomorrow": {"pv": [], "load": []},
     }
     buy_for_reserve = list(buy_series)
-    if not _should_extend_reserve_horizon(
+    if not _should_extend_forecast_lookahead(
         step_scale=step_scale, end_dt=end_dt, today_date=today_date, forecast=forecast_data,
     ):
+        return buy_for_reserve
+    start_h = _tomorrow_lookahead_start_hour(
+        end_dt=end_dt,
+        today_date=today_date,
+        series_len=len(buy_series),
+        global_step_offset=global_step_offset,
+        step_scale=step_scale,
+    )
+    if start_h is None:
         return buy_for_reserve
     rep = slots_per_hour_from_scale(step_scale)
     tomorrow = today_date + timedelta(days=1)
     base = datetime(tomorrow.year, tomorrow.month, tomorrow.day)
-    for h in range(HOURS_PER_DAY):
+    for h in range(start_h, HOURS_PER_DAY):
         price, _ = get_buy_price(base.replace(hour=h), cfg)
         buy_for_reserve.extend([float(price)] * rep)
     return buy_for_reserve
+
+
+# Back-compat alias for callers/tests that still use the old name.
+_should_extend_reserve_horizon = _should_extend_forecast_lookahead
 
 
 def reserve_soc_per_step(
@@ -1868,6 +1935,7 @@ def reserve_soc_per_step(
     pv_r, load_r = build_extended_pv_load_for_reserve(
         pv_series, load_series,
         step_scale=step_scale, end_dt=end, today_date=today_date, forecast=forecast,
+        global_step_offset=global_step_offset,
     )
     buy_r = list(buy_prices) if buy_prices is not None else []
     if cfg is not None and buy_prices is not None:
@@ -1875,6 +1943,7 @@ def reserve_soc_per_step(
             buy_prices,
             step_scale=step_scale, end_dt=end, today_date=today_date,
             forecast=forecast, cfg=cfg,
+            global_step_offset=global_step_offset,
         )
     off = float(offpeak_buy) if offpeak_buy is not None else (
         float(cfg["grid"]["g12"]["offpeak_price_pln_kwh"]) if cfg is not None else 0.0
@@ -1977,19 +2046,19 @@ def optimize_horizon(
         tail_start_hour=tail_start,
     )
 
-    # Reserve for battery export must cover the night until PV can carry the house load again.
-    # In rolling production simulation, pv_series/load_series already include next-day hours.
-    # In daily debug replay, optimization stops at 23:45, so we extend *only for reserve*
-    # into tomorrow using forecast, otherwise the plan can over-export in the evening and
-    # hit min SOC before morning.
+    # Reserve / charge-target walks use forecast through end of tomorrow when the
+    # rolling plan window is shorter (e.g. ends at tomorrow H04). Optimized DP
+    # steps stay within the plan window only.
     pv_for_reserve, load_for_reserve = build_extended_pv_load_for_reserve(
         pv_series, load_series,
         step_scale=step_scale, end_dt=end_dt, today_date=today_date, forecast=forecast_data,
+        global_step_offset=rce_step_offset,
     )
     buy_for_reserve = build_extended_buy_for_reserve(
         buy_prices,
         step_scale=step_scale, end_dt=end_dt, today_date=today_date,
         forecast=forecast_data, cfg=cfg,
+        global_step_offset=rce_step_offset,
     )
     slots_per_hour = slots_per_hour_from_scale(step_scale)
 

@@ -169,7 +169,7 @@ def test_hourly_refresh_mid_hour_preserves_locked_timer(monkeypatch):
         "q15": [
             {"quarter": q, "production": 0.0, "consumption": 0.1, "soc": 50.0,
              "battery": 0.0, "grid_import": 0.0, "grid_export": 0.0,
-             "from_actual": q < 1}
+             "from_actual": False}
             for q in range(4)
         ],
     }]
@@ -207,9 +207,8 @@ def test_hourly_refresh_mid_hour_preserves_locked_timer(monkeypatch):
     assert cur["timer_schedule"] == "Dis 22:00-22:45 8.0kW cap16%"
     assert cur["action"] == "Discharging to Grid and Load"
     assert cur["hour_labels_locked"] is True
-    assert cur["q15"][0]["from_actual"] is True
-    assert cur["q15"][0]["production"] == 0.0
-    assert cur["q15"][1]["from_actual"] is False
+    # :28 — current-hour q0 not freeze-ready until :30
+    assert cur["q15"][0]["from_actual"] is False
 
 def test_invalidate_all_caches_keeps_sqlite_plan(monkeypatch):
     from src.cache_registry import invalidate_all_caches

@@ -386,9 +386,11 @@ def read_plan() -> dict[str, Any] | None:
 def write_plan(plan: dict[str, Any], *, now: datetime | None = None) -> None:
     """Sole writer for Energy arbitrage plan (plan_latest).
 
-    Never deletes the plan. On the same Warsaw day, only future quarters are
-    taken from *plan*; past hours and completed q15 slots stay from SQLite
-    (see ``guard_future_quarters_on_write``).
+    Never deletes the plan. On the same Warsaw day the JSON blob is replaced,
+    but ``guard_future_quarters_on_write`` keeps frozen past hours / from_actual
+    q15 from SQLite; only the just-completed tick (newly frozen) and open
+    future quarters come from *plan*. Explicit archive datapatch scripts write
+    via ``save_plan_day_archive`` / direct SQL — not this path.
 
     When the calendar day rolls, the previous day's rows (with Timer Schedule)
     are archived to ``plan_day_archive`` for history browsing.

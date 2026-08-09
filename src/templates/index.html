@@ -3284,46 +3284,46 @@
         <thead>
           <tr class="border-b border-gray-200 text-gray-500 text-left">
             <th class="font-medium mh-bg-import-part">Day</th>
-            <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Production</th>
-            <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Consumption</th>
-            <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Grid import</th>
-            <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Grid export</th>
-            <th class="font-medium text-right mh-bg-export mh-col-import-detail" title="RCE Cost (PLN)">Energy Export</th>
-            <th class="font-medium text-right mh-bg-import-tariff mh-col-import-detail" title="Tariff Cost (PLN)">Energy Import</th>
-            <th class="font-medium text-right mh-bg-energy-total" title="(PLN)">Energy Cost Total</th>
-            <th class="font-medium text-right mh-bg-import-part mh-bg-import-part--first mh-col-import-detail" title="Service Cost (PLN)">Energy Import</th>
-            <th class="font-medium text-right mh-bg-import-part mh-col-import-detail" title="Service Fee (PLN)">Energy Import</th>
-            <th class="font-medium text-right mh-bg-import-total mh-col-import-detail" title="Cost Total (To be paid) (PLN)">Energy Import</th>
+            <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Production<br><span class="font-normal">kWh</span></th>
+            <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Consumption<br><span class="font-normal">kWh</span></th>
+            <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Grid import<br><span class="font-normal">kWh</span></th>
+            <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Grid export<br><span class="font-normal">kWh</span></th>
+            <th class="font-medium text-right mh-bg-export mh-col-import-detail" title="RCE Cost (PLN)">Energy Export<br><span class="font-normal">RCE</span></th>
+            <th class="font-medium text-right mh-bg-import-tariff mh-col-import-detail" title="Tariff Cost (PLN)">Energy Import<br><span class="font-normal">Tariff</span></th>
+            <th class="font-medium text-right mh-bg-energy-total" title="(PLN)">Energy Cost Total<br><span class="font-normal">Deposit</span></th>
+            <th class="font-medium text-right mh-bg-import-part mh-bg-import-part--first mh-col-import-detail" title="Service Cost (PLN)">Energy Import<br><span class="font-normal">Service</span></th>
+            <th class="font-medium text-right mh-bg-import-part mh-col-import-detail" title="Service Fee (PLN)">Energy Import<br><span class="font-normal">Fee</span></th>
+            <th class="font-medium text-right mh-bg-import-total mh-col-import-detail" title="Cost Total (To be paid) (PLN)">Energy Import<br><span class="font-normal">To pay</span></th>
             <th class="font-medium text-right mh-bg-export mh-col-import-detail" title="(PLN)
 Physics baseline (no timer control)
 Charge: PV only
 Discharge to grid: battery overflow only
 House load: battery while SOC &gt; min
-SOC chains day-to-day within the month">Baseline Export</th>
+SOC chains day-to-day within the month">Baseline Export<br><span class="font-normal">Exp</span></th>
             <th class="font-medium text-right mh-bg-import-tariff mh-col-import-detail" title="(PLN)
 Physics baseline (no timer control)
 Charge: PV only
 Discharge to grid: battery overflow only
 House load: battery while SOC &gt; min
-SOC chains day-to-day within the month">Baseline Import</th>
+SOC chains day-to-day within the month">Baseline Import<br><span class="font-normal">Imp</span></th>
             <th class="font-medium text-right mh-bg-energy-total" title="(PLN)
-Baseline Export − Baseline Import">Baseline Cost</th>
+Baseline Export − Baseline Import">Baseline Cost<br><span class="font-normal">Net</span></th>
             <th class="font-medium text-right mh-bg-import-total" title="(PLN)
-Actual Energy Cost Total − Baseline Cost">Saved</th>
+Actual Energy Cost Total − Baseline Cost">Saved<br><span class="font-normal">PLN</span></th>
             <th class="font-medium text-right mh-bg-export mh-col-dis-baseline" title="(PLN)
 Evening Dis baseline (hardcoded)
 Dis 8 kW 19:00–22:00 down to SOC 30%
 Other hours: physics only (PV charge, overflow export)
-SOC chains day-to-day within the month">Dis Export</th>
+SOC chains day-to-day within the month">Dis Export<br><span class="font-normal">Exp</span></th>
             <th class="font-medium text-right mh-bg-import-tariff mh-col-dis-baseline" title="(PLN)
 Evening Dis baseline (hardcoded)
 Dis 8 kW 19:00–22:00 down to SOC 30%
 Other hours: physics only (PV charge, overflow export)
-SOC chains day-to-day within the month">Dis Import</th>
+SOC chains day-to-day within the month">Dis Import<br><span class="font-normal">Imp</span></th>
             <th class="font-medium text-right mh-bg-energy-total mh-col-dis-baseline" title="(PLN)
-Dis Export − Dis Import">Dis Cost</th>
+Dis Export − Dis Import">Dis Cost<br><span class="font-normal">Net</span></th>
             <th class="font-medium text-right mh-bg-import-total mh-col-dis-baseline" title="(PLN)
-Actual Energy Cost Total − Dis Cost">Saved vs Dis</th>
+Actual Energy Cost Total − Dis Cost">Saved vs Dis<br><span class="font-normal">Saved</span></th>
           </tr>
         </thead>
         <tbody id="history-month-body-total">

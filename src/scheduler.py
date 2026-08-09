@@ -24,6 +24,7 @@ from .hour_boundary_scheduler import (
     run_hour_boundary_start,
 )
 from .plan_monthly_refresh import maybe_run_daily_month_history
+from .plan_cache_merge import quarter_tick_now
 from .plan_simulation import fetch_plan_inputs, hourly_plan_refresh
 from .simulation import compute_balance_delta
 
@@ -51,10 +52,14 @@ def _smart_mode_enabled(cfg: dict) -> bool:
     return bool(cfg.get("smart_mode_enabled", False))
 
 
-async def _refresh_stored_plan(cfg: dict) -> dict[str, Any]:
+async def _refresh_stored_plan(
+    cfg: dict,
+    *,
+    now=None,
+) -> dict[str, Any]:
     """Recompute Energy arbitrage plan and persist to SQLite plan_latest."""
     log.info("Plan refresh — recompute simulation, RCE, forecast, buy tariff …")
-    return await hourly_plan_refresh(cfg)
+    return await hourly_plan_refresh(cfg, now=now)
 
 
 async def run_daily_month_history() -> dict[str, Any]:
@@ -107,9 +112,13 @@ async def run_quarter_plan_refresh(*, sync_sa: bool | None = None) -> dict[str, 
 
     try:
         cfg = load_config()
-        next_hour = (now.hour + 1) % 24
+        # Floor to the scheduled :00/:15/:30/:45 before long OM/sim work so
+        # merge still finalizes the just-completed tick (esp. previous-hour q3).
+        tick_now = quarter_tick_now(now)
+        next_hour = (tick_now.hour + 1) % 24
         status["smart_mode_enabled"] = _smart_mode_enabled(cfg)
         status["next_hour"] = next_hour
+        status["quarter_tick"] = tick_now.strftime("%Y-%m-%d %H:%M")
 
         try:
             om_cache = await forecast_mod.run_hourly_pv_refresh(cfg)
@@ -120,7 +129,7 @@ async def run_quarter_plan_refresh(*, sync_sa: bool | None = None) -> dict[str, 
             status["last_om_refresh"] = None
             log.warning("Open-Meteo PV refresh failed: %s", exc)
 
-        sim_result = await _refresh_stored_plan(cfg)
+        sim_result = await _refresh_stored_plan(cfg, now=tick_now)
         status["plan_cache_refreshed"] = True
         status["plan_computed_at"] = sim_result.get("computed_at")
         schedule = sim_result["next_hour_schedule"]
@@ -128,9 +137,9 @@ async def run_quarter_plan_refresh(*, sync_sa: bool | None = None) -> dict[str, 
         status["next_hour_schedule"] = schedule
 
         if _smart_mode_enabled(cfg):
-            if now.minute == 0:
+            if tick_now.minute == 0:
                 status["hour_boundary"] = await run_hour_boundary_start()
-            elif now.minute in (15, 30, 45):
+            elif tick_now.minute in (15, 30, 45):
                 status["hour_boundary"] = await run_hour_boundary_limit_home()
 
         _last_hourly_sync = status

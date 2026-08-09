@@ -5,8 +5,19 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-# Plan a full calendar day (24 hours).
+# Rolling Energy arbitrage plan window (displayed / stored rows).
 PLAN_HORIZON_HOURS = 24
+_HOURS_PER_DAY = 24
+
+
+def hours_until_end_of_tomorrow(from_hour: int) -> int:
+    """Hours of forecast from *from_hour* today through 23:00 tomorrow (inclusive).
+
+    Used as lookahead length for reserve / charge-target — longer than the
+    rolling plan window when *from_hour* > 0.
+    """
+    h = max(0, min(23, int(from_hour)))
+    return (_HOURS_PER_DAY - h) + _HOURS_PER_DAY
 
 DEFAULT_SIMULATION: dict[str, Any] = {
     "min_soc_pct": 15,

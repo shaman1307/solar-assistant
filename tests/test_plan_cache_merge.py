@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -12,9 +13,12 @@ from src.plan_cache_merge import (
     _ensure_q15_length,
     _merge_current_hour_q15,
     attach_immutable_history,
+    datafix_completed_quarters_from_live,
+    freeze_ready_quarter_tick,
     last_completed_quarter_tick,
     merge_incremental_plan,
     plan_needs_full_rebuild,
+    quarter_tick_now,
 )
 
 
@@ -68,6 +72,16 @@ def test_last_completed_quarter_tick():
     assert last_completed_quarter_tick(datetime(2026, 7, 7, 8, 15, tzinfo=tz)) == (0, 0)
     assert last_completed_quarter_tick(datetime(2026, 7, 7, 8, 30, tzinfo=tz)) == (0, 1)
     assert last_completed_quarter_tick(datetime(2026, 7, 7, 8, 45, tzinfo=tz)) == (0, 2)
+
+
+def test_freeze_ready_quarter_tick_lags_one_tick():
+    """Influx-ready freeze is the previous completed q15, not the just-ended one."""
+    tz = ZoneInfo("Europe/Warsaw")
+    assert freeze_ready_quarter_tick(datetime(2026, 7, 7, 8, 0, tzinfo=tz)) == (-1, 2)
+    assert freeze_ready_quarter_tick(datetime(2026, 7, 7, 8, 5, tzinfo=tz)) == (0, -1)
+    assert freeze_ready_quarter_tick(datetime(2026, 7, 7, 8, 15, tzinfo=tz)) == (-1, 3)
+    assert freeze_ready_quarter_tick(datetime(2026, 7, 7, 8, 30, tzinfo=tz)) == (0, 0)
+    assert freeze_ready_quarter_tick(datetime(2026, 7, 7, 8, 45, tzinfo=tz)) == (0, 1)
 
 
 def test_plan_needs_full_rebuild_on_new_day():
@@ -680,12 +694,13 @@ def _fresh_q15_row(hour: int, *, soc: float = 55.0) -> dict:
 
 
 def test_merge_q15_keeps_actual_and_takes_fresh_for_future():
-    """At :30: q0 already actual → stays; q1 gets actual; q2,q3 from fresh sim."""
+    """At :30: q0 freeze-ready stays; q1+ from fresh (q1 Influx not ready yet)."""
     cfg = _cfg()
     now = datetime(2026, 7, 7, 8, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
 
     existing = _row(8)
-    # q0 was written at :15
+    # q0 was written at previous :30? or wait - at :30 we freeze q0 first time.
+    # Pre-seed as already frozen from an earlier apply.
     existing["q15"][0] = {
         "quarter": 0, "production": 0.5, "consumption": 0.2, "soc": 50.0,
         "battery": 0.0, "grid_import": 0.0, "grid_export": 0.0, "from_actual": True,
@@ -707,9 +722,10 @@ def test_merge_q15_keeps_actual_and_takes_fresh_for_future():
     # q0 — unchanged actual
     assert q15[0]["from_actual"] is True
     assert q15[0]["production"] == 0.5
-    # q1 — written from Influx at :30
-    assert q15[1]["from_actual"] is True
-    # q2, q3 — from fresh optimizer (weather / plan), not stale :00 SQLite
+    # q1 — still plan (freeze at :45)
+    assert q15[1]["from_actual"] is False
+    assert q15[1]["production"] == 0.3
+    # q2, q3 — from fresh optimizer
     assert q15[2]["from_actual"] is False
     assert q15[2]["production"] == 0.3
     assert q15[3]["from_actual"] is False
@@ -742,7 +758,7 @@ def test_merge_q15_at_hour_start_no_actuals():
 # ---------------------------------------------------------------------------
 
 def test_merge_incremental_at_30_quarter_pattern():
-    """At :30: existing has q0 actual; merge writes q1 actual; q2,q3 from fresh."""
+    """At :30: freeze q0 (:00-:15) only; q1 still open (Influx :15-:30 incomplete)."""
     cfg = _cfg()
     now = datetime(2026, 7, 7, 8, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
 
@@ -779,16 +795,16 @@ def test_merge_incremental_at_30_quarter_pattern():
     # timer/action locked — not overwritten by optimizer
     assert cur["timer_schedule"] == "Dis 08:00-08:45"
     assert cur["action"] == "Discharging to Grid"
-    # q0 — still the original actual
+    # q0 — freeze-ready at :30
     assert cur["q15"][0]["from_actual"] is True
     assert cur["q15"][0]["production"] == 0.5
-    # q1 — written from Influx at :30
-    assert cur["q15"][1]["from_actual"] is True
-    # q2, q3 — from fresh optimizer (not stale :00 SQLite)
+    # q1 — not frozen yet (Influx lag); still from fresh plan
+    assert cur["q15"][1]["from_actual"] is False
+    assert cur["q15"][1]["production"] == 0.3
+    # q2, q3 — from fresh optimizer
     assert cur["q15"][2]["from_actual"] is False
     assert cur["q15"][2]["production"] == 0.3
     assert cur["q15"][3]["production"] == 0.3
-    assert float(cur["soc"]) == 49.0
     # future hour gets optimizer value
     future = next(r for r in merged["rows"] if r["hour"] == 9)
     assert future["timer_schedule"] == "FUTURE_9"
@@ -877,4 +893,134 @@ def test_datafix_after_quarter_rechains_from_hour_start_not_live():
     out = next(r for r in merged["rows"] if r["hour"] == 8)
     assert float(out["soc"]) == pytest.approx(22.4, abs=0.15)
     assert float(out["soc"]) != pytest.approx(24.0, abs=0.05)
+
+
+def test_quarter_tick_now_floors_to_boundary():
+    tz = ZoneInfo("Europe/Warsaw")
+    assert quarter_tick_now(datetime(2026, 8, 1, 20, 0, 40, tzinfo=tz)).minute == 0
+    assert quarter_tick_now(datetime(2026, 8, 1, 20, 16, 5, tzinfo=tz)).minute == 15
+    assert quarter_tick_now(datetime(2026, 8, 1, 20, 47, tzinfo=tz)).minute == 45
+
+
+def test_late_promote_finalizes_q3_from_influx():
+    """Missed exact :00 still Influx-updates then freezes q3 on late promote."""
+    tz = ZoneInfo("Europe/Warsaw")
+    now = datetime(2026, 8, 1, 20, 15, tzinfo=tz)
+    cfg = _cfg()
+
+    def slot(q, fa=False, gi=0.2, soc=40.0):
+        return {
+            "quarter": q, "production": 0.0, "consumption": 0.1, "soc": soc,
+            "battery": 0.05, "grid_import": gi, "grid_export": 0.0,
+            "from_actual": fa,
+        }
+
+    prev_q15 = [slot(q, fa=(q < 3), gi=1.0 if q < 3 else 0.2, soc=30 + q) for q in range(4)]
+    prev = _row(19, timer="Dis 19:00-19:45", action="Discharging to Grid", locked=True)
+    prev["plan_date"] = "2026-08-01"
+    prev["q15"] = prev_q15
+    cur = _row(20, locked=True)
+    cur["plan_date"] = "2026-08-01"
+    for r in (prev, cur):
+        r["start"] = f"01-08-2026 {int(r['hour']) + 1:02d}:00"
+
+    series = _make_series_10min(
+        hour=19, pv_kwh_per_q=0.0, load_kwh_per_q=0.2,
+        grid_import_kwh_per_q=1.5,
+    )
+    # Fill all six 10-min slots so q3 has Influx energy (helper only seeds q0 window).
+    base = 19 * 6
+    for i in range(6):
+        series["grid_buy"][base + i] = -9.0
+        series["load"][base + i] = 0.2
+
+    existing = {
+        "today_date": "2026-08-01",
+        "plan_from_hour": 19,
+        "history_rows": [],
+        "rows": [prev, cur],
+    }
+    fresh_cur = _row(20)
+    fresh_cur["plan_date"] = "2026-08-01"
+    fresh_next = _row(21)
+    fresh_next["plan_date"] = "2026-08-01"
+    fresh = {
+        "today_date": "2026-08-01",
+        "plan_from_hour": 20,
+        "delta_kwh": 0.0,
+        "history_rows": [],
+        "rows": [fresh_cur, fresh_next],
+        "live_soc_pct": 40.0,
+    }
+    metrics = {
+        "series_10min": series,
+        "today_hourly": {"soc": [None] * 24},
+        "sa_online": True,
+    }
+    merged = merge_incremental_plan(existing, fresh, now=now, metrics=metrics, cfg=cfg)
+    h19 = next(r for r in merged["history_rows"] if int(r["hour"]) == 19)
+    assert all(s["from_actual"] for s in h19["q15"]), h19["q15"]
+    assert float(h19["q15"][3]["grid_import"]) > 0.5
+
+
+def test_datafix_does_not_rewrite_frozen_earlier_quarter():
+    """At :30, freeze-ready is q0 only — do not touch q1 yet."""
+    tz = ZoneInfo("Europe/Warsaw")
+    now = datetime(2026, 7, 7, 8, 30, tzinfo=tz)
+    cfg = _cfg()
+    row = _row(8, locked=True)
+    row["q15"][0] = {
+        "quarter": 0, "production": 0.4, "consumption": 0.1, "soc": 48.0,
+        "battery": 0.2, "grid_import": 1.23, "grid_export": 0.0, "from_actual": True,
+    }
+    series = _make_series_10min(
+        hour=8, grid_import_kwh_per_q=9.0, pv_kwh_per_q=0.5, load_kwh_per_q=0.2,
+    )
+    datafix_completed_quarters_from_live(
+        row, hour=8, now=now, series_10min=series, today_hourly=None,
+        cfg=cfg, battery_cap=20.0, live_soc_kwh=10.0,
+    )
+    assert row["q15"][0]["from_actual"] is True
+    assert row["q15"][0]["grid_import"] == 1.23
+    assert row["q15"][1]["from_actual"] is False
+
+
+def test_write_guard_absorbs_newly_frozen_q3():
+    """Past-hour immutability still allows Influx-finalized q3 into history."""
+    from src.plan_cache_merge import guard_future_quarters_on_write
+
+    tz = ZoneInfo("Europe/Warsaw")
+    now = datetime(2026, 8, 1, 20, 15, tzinfo=tz)
+    hist = _row(19, timer="Dis 19:00-19:45", locked=True)
+    hist["plan_date"] = "2026-08-01"
+    hist["history_hour"] = True
+    for q, slot in enumerate(hist["q15"]):
+        slot["from_actual"] = q < 3
+        slot["grid_import"] = 1.0 if q < 3 else 0.2
+    incoming_hist = copy.deepcopy(hist)
+    incoming_hist["q15"][3] = {
+        "quarter": 3, "production": 0.0, "consumption": 0.1, "soc": 35.0,
+        "battery": 0.1, "grid_import": 1.4, "grid_export": 0.0, "from_actual": True,
+    }
+    existing = {
+        "today_date": "2026-08-01",
+        "plan_from_hour": 20,
+        "history_rows": [hist],
+        "rows": [_row(20)],
+    }
+    existing["rows"][0]["plan_date"] = "2026-08-01"
+    incoming = {
+        "today_date": "2026-08-01",
+        "plan_from_hour": 20,
+        "history_rows": [incoming_hist],
+        "rows": [_row(20), _row(21)],
+        "delta_kwh": 0.0,
+    }
+    for r in incoming["rows"]:
+        r["plan_date"] = "2026-08-01"
+    guarded = guard_future_quarters_on_write(incoming, existing, now=now)
+    h19 = next(r for r in guarded["history_rows"] if int(r["hour"]) == 19)
+    assert h19["timer_schedule"] == "Dis 19:00-19:45"
+    assert all(s["from_actual"] for s in h19["q15"])
+    assert float(h19["q15"][3]["grid_import"]) == pytest.approx(1.4)
 

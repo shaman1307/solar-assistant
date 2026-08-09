@@ -15,6 +15,7 @@ from .plan_hourly_actuals import (
     _actual_q15_slice_kwh,
     _clamp_soc_pct,
     _soc_kwh_after_battery_delta,
+    apply_open_pull_quarter_to_row,
     apply_q15_physics_to_row,
     hour_start_soc_kwh,
     refresh_row_grid_cash,
@@ -149,6 +150,8 @@ def last_completed_quarter_tick(now: datetime) -> tuple[int, int]:
     """Return (hour_offset, quarter) for the q15 slot that just ended.
 
     hour_offset 0 = current clock hour; -1 = previous hour (only at :00).
+    Clock boundary only — Influx 10-min data for this slot is usually incomplete.
+    Use `freeze_ready_quarter_tick` to decide what may be frozen into SQLite.
     """
     minute = now.minute
     if minute == 0:
@@ -160,6 +163,64 @@ def last_completed_quarter_tick(now: datetime) -> tuple[int, int]:
     if minute < 45:
         return 0, 1
     return 0, 2
+
+
+def freeze_ready_quarter_tick(now: datetime) -> tuple[int, int]:
+    """Return (hour_offset, quarter) ready to freeze from Influx (one-tick lag).
+
+    At a clock boundary Influx typically has finished 10-min buckets only through
+    the *previous* q15. Example at :30: series has :00-:10 and :10-:20, enough
+    for :00-:15 (q0), not yet a full :15-:30 (q1).
+
+      :30 → (0, 0)  current q0 (:00-:15)
+      :45 → (0, 1)  current q1 (:15-:30)
+      :00 → (-1, 2) previous q2 (:30-:45)
+      :15 → (-1, 3) previous q3 (:45-:00)
+      :01-:14 → (0, -1) no new freeze this window
+    """
+    hour_offset, tick_q = last_completed_quarter_tick(now)
+    if hour_offset == 0 and tick_q < 0:
+        return 0, -1
+    if hour_offset == -1 and tick_q == 3:
+        return -1, 2
+    if hour_offset == 0 and tick_q == 0:
+        return -1, 3
+    if hour_offset == 0 and tick_q >= 1:
+        return 0, tick_q - 1
+    return 0, -1
+
+
+def max_freeze_quarter_for_hour(
+    now: datetime,
+    *,
+    hour: int,
+    current_hour: int,
+) -> int:
+    """Highest q15 index that may be frozen for *hour* at *now* (-1 = none)."""
+    if hour < current_hour - 1:
+        return Q15_PER_HOUR - 1
+    if hour == current_hour - 1:
+        fo, fq = freeze_ready_quarter_tick(now)
+        if fo == -1 and fq >= 0:
+            return fq
+        return Q15_PER_HOUR - 1
+    if hour == current_hour:
+        fo, fq = freeze_ready_quarter_tick(now)
+        if fo == 0 and fq >= 0:
+            return fq
+        return -1
+    return -1
+
+
+def quarter_tick_now(now: datetime) -> datetime:
+    """Floor *now* to the :00/:15/:30/:45 tick that the job belongs to.
+
+    Long Open-Meteo / sim work can push wall-clock past the minute; merge must
+    still treat the scheduled quarter boundary as the tick (so :00 still
+    finalizes previous-hour q3 after a delayed start).
+    """
+    minute = (int(now.minute) // 15) * 15
+    return now.replace(minute=minute, second=0, microsecond=0)
 
 
 def _row_key(row: dict[str, Any]) -> tuple[str, int]:
@@ -240,19 +301,14 @@ def _apply_actual_quarter_if_needed(
     cfg: dict,
     battery_cap: float,
     live_soc_kwh: float | None = None,
-    force: bool = False,
 ) -> bool:
-    """Write one actual q15 slot when not yet frozen. Returns True if row changed.
+    """Write one actual q15 slot from Influx when not yet frozen.
 
-    *force*: rewrite an already-frozen completed quarter (energy from Influx,
-    SOC chained from live / prior actuals). Past hours stay locked.
+    Freeze-once: if `from_actual` is already set, leave the slot untouched.
+    There is no rewrite path for frozen quarters on the live tick.
     """
     q15 = _ensure_q15_length(list(row.get("q15") or []))
-    if _q15_slot_actual(q15[quarter]) and not force:
-        return False
-
-    # Force-rewrite only when Influx has a real slice; otherwise keep planned Δ.
-    if force and not series_10min:
+    if _q15_slot_actual(q15[quarter]):
         return False
 
     min_soc_pct = plan_min_soc_pct(cfg)
@@ -300,6 +356,93 @@ def _apply_actual_quarter_if_needed(
     return True
 
 
+
+def _finalize_hour_actual_quarters(
+    row: dict[str, Any],
+    hour: int,
+    *,
+    through_quarter: int,
+    series_10min: dict[str, list[float | None]] | None,
+    today_hourly: dict[str, list[float | None]] | None,
+    cfg: dict,
+    battery_cap: float,
+    live_soc_kwh: float | None = None,
+) -> bool:
+    """Update unfrozen q15 slots 0..through_quarter from Influx, then freeze each.
+
+    Already-frozen slots are left untouched. Call after the Influx series for
+    this tick is available — freeze is the write that sets `from_actual`.
+    """
+    if through_quarter < 0:
+        return False
+    changed = False
+    for q in range(min(through_quarter, Q15_PER_HOUR - 1) + 1):
+        if _apply_actual_quarter_if_needed(
+            row,
+            hour,
+            q,
+            series_10min=series_10min,
+            today_hourly=today_hourly,
+            cfg=cfg,
+            battery_cap=battery_cap,
+            live_soc_kwh=live_soc_kwh,
+        ):
+            changed = True
+    return changed
+
+
+def _finalize_history_actual_quarters(
+    history: list[dict[str, Any]],
+    *,
+    now: datetime,
+    today_str: str,
+    current_hour: int,
+    series_10min: dict[str, list[float | None]] | None,
+    today_hourly: dict[str, list[float | None]] | None,
+    cfg: dict,
+    battery_cap: float,
+) -> int:
+    """Fill Influx-ready unfrozen q15 on today's past history hours.
+
+    Respects one-tick lag (e.g. previous-hour q3 only from :15). Does not
+    rewrite already-frozen slots.
+    """
+    fixed = 0
+    for row in history:
+        if str(row.get("plan_date") or "") != today_str:
+            continue
+        try:
+            hour = int(row.get("hour", -1))
+        except (TypeError, ValueError):
+            continue
+        if hour < 0 or hour >= current_hour:
+            continue
+        through_q = max_freeze_quarter_for_hour(
+            now, hour=hour, current_hour=current_hour,
+        )
+        if through_q < 0:
+            continue
+        q15 = _ensure_q15_length(list(row.get("q15") or []))
+        # Only recover gaps after a partial freeze (e.g. missed :15 q3).
+        # Untouched plan/meter stubs stay as-is.
+        if not any(_q15_slot_actual(s) for s in q15):
+            continue
+        ready = q15[: through_q + 1]
+        if ready and all(_q15_slot_actual(s) for s in ready):
+            continue
+        if _finalize_hour_actual_quarters(
+            row,
+            hour,
+            through_quarter=through_q,
+            series_10min=series_10min,
+            today_hourly=today_hourly,
+            cfg=cfg,
+            battery_cap=battery_cap,
+        ):
+            fixed += 1
+    return fixed
+
+
 def datafix_completed_quarters_from_live(
     row: dict[str, Any],
     *,
@@ -311,39 +454,35 @@ def datafix_completed_quarters_from_live(
     battery_cap: float,
     live_soc_kwh: float,
 ) -> bool:
-    """Rewrite completed quarters from Influx; rechain later slots to end-of-hour.
+    """Update Influx-ready completed quarters; rechain later slots.
 
-    Before the first quarter ends (:00–:14), keep the :00 end-of-hour SOC chain —
-    live meter SOC is mid-hour and must not replace the hour-end column.
-    After a completed quarter, rechain remaining slots from that quarter's end
-    (hour-start from Influx / planned slot, not live-as-:00).
+    One-tick lag: at :30 freeze only q0 (:00-:15). Earlier frozen slots stay.
+    Before :30 in the current hour, nothing is freeze-ready here.
     """
     del live_soc_kwh  # mid-hour meter; never treat as hour-start for EOH display
     min_soc_pct = plan_min_soc_pct(cfg)
     min_kwh = plan_min_soc_kwh(cfg)
-    hour_offset, tick_q = last_completed_quarter_tick(now)
-    completed_through = tick_q if (hour_offset == 0 and tick_q >= 0) else -1
-    if completed_through < 0:
+    # One-tick lag: freeze only the quarter whose Influx 10-min windows are ready.
+    fo, fq = freeze_ready_quarter_tick(now)
+    freeze_through = fq if (fo == 0 and fq >= 0) else -1
+    if freeze_through < 0:
         return False
 
-    changed = False
-    for q in range(completed_through + 1):
-        if _apply_actual_quarter_if_needed(
-            row,
-            hour,
-            q,
-            series_10min=series_10min,
-            today_hourly=today_hourly,
-            cfg=cfg,
-            battery_cap=battery_cap,
-            live_soc_kwh=None,
-            force=True,
-        ):
-            changed = True
+    # Influx first, then freeze — only unfrozen slots through freeze-ready.
+    changed = _finalize_hour_actual_quarters(
+        row,
+        hour,
+        through_quarter=freeze_through,
+        series_10min=series_10min,
+        today_hourly=today_hourly,
+        cfg=cfg,
+        battery_cap=battery_cap,
+        live_soc_kwh=None,
+    )
 
     q15 = _ensure_q15_length(list(row.get("q15") or []))
-    soc_kwh = (float(q15[completed_through].get("soc") or 0) / 100.0) * battery_cap
-    for q in range(completed_through + 1, Q15_PER_HOUR):
+    soc_kwh = (float(q15[freeze_through].get("soc") or 0) / 100.0) * battery_cap
+    for q in range(freeze_through + 1, Q15_PER_HOUR):
         bat = float(q15[q].get("battery") or 0.0)
         soc_kwh = _soc_kwh_after_battery_delta(
             soc_kwh, bat, min_kwh=min_kwh, battery_cap=battery_cap,
@@ -417,17 +556,19 @@ def _merge_current_hour_q15(
     live_soc_kwh: float | None = None,
     fresh_row: dict[str, Any] | None = None,
 ) -> None:
-    """Apply completed-quarter actuals; rebuild remaining q15 from *fresh_row*.
+    """Apply freeze-ready actuals; rebuild open pull + tail q15 from *fresh_row*.
 
     Timer Schedule / Action are left untouched (caller keeps them locked).
-    Future / in-progress quarters take Production, battery, grid, SOC from the
-    fresh optimizer (weather + plan); hour Energy Cost is recomputed from flows.
+    Freeze-ready quarters get Influx once (`from_actual=True`). The open pull
+    quarter and future quarters take Production, battery, grid, SOC from the
+    fresh optimizer blend (Influx partial + forecast fill on the pull tick).
 
     Before the first quarter ends, keep the :00 end-of-hour SOC chain on the
     locked row — do not replace it with a mid-hour live-seeded fresh curve —
     unless the locked timer implies Chg/Dis that the stored q15 never applied.
     """
     hour_offset, tick_q = last_completed_quarter_tick(now)
+    fo, fq = freeze_ready_quarter_tick(now)
     if hour_offset == 0 and tick_q < 0 and row.get("q15"):
         if not _locked_timer_q15_mismatch(row, fresh_row):
             # :00–:14 — preserve locked hour-end SOC from the :00 plan.
@@ -444,11 +585,12 @@ def _merge_current_hour_q15(
             refresh_row_grid_cash(row, cfg)
             return
 
-    if hour_offset == 0 and tick_q >= 0:
+    # Freeze only the lag-ready quarter in this hour (Influx 10-min settled).
+    if fo == 0 and fq >= 0:
         _apply_actual_quarter_if_needed(
             row,
             hour,
-            tick_q,
+            fq,
             series_10min=series_10min,
             today_hourly=today_hourly,
             cfg=cfg,
@@ -456,12 +598,13 @@ def _merge_current_hour_q15(
             live_soc_kwh=live_soc_kwh,
         )
 
-    from_q = (tick_q + 1) if hour_offset == 0 and tick_q >= 0 else 0
+    # Open pull + tail from fresh (pull index = freeze_ready + 1 when same hour).
+    from_q = (fq + 1) if (fo == 0 and fq >= 0) else 0
     if fresh_row is not None:
         eq = _ensure_q15_length(list(row.get("q15") or []))
-        fq = _ensure_q15_length(list(fresh_row.get("q15") or []))
+        fq_slots = _ensure_q15_length(list(fresh_row.get("q15") or []))
         for q in range(from_q, Q15_PER_HOUR):
-            slot = copy.deepcopy(fq[q])
+            slot = copy.deepcopy(fq_slots[q])
             slot["quarter"] = q
             slot["from_actual"] = False
             eq[q] = slot
@@ -605,38 +748,57 @@ def merge_incremental_plan(
     }
 
     hour_offset, tick_q = last_completed_quarter_tick(now)
+    fo, fq = freeze_ready_quarter_tick(now)
 
-    # :00 — patch last quarter of the hour that just ended, then move to history.
-    if hour_offset == -1 and tick_q == 3 and current_hour > 0:
+    # :00 — freeze previous-hour q2 (Influx-ready), move hour to history; q3 at :15.
+    if fo == -1 and fq == 2 and current_hour > 0:
         prev_hour = current_hour - 1
         prev_key = (today_str, prev_hour)
         prev_row = existing_by_key.get(prev_key) or _find_row(history, today_str, prev_hour)
         if prev_row is not None:
-            prev_copy = _as_history_row(prev_row)
-            _apply_actual_quarter_if_needed(
-                prev_copy,
-                prev_hour,
-                3,
-                series_10min=series_10min,
-                today_hourly=today_hourly,
-                cfg=cfg,
-                battery_cap=battery_cap,
+            through_q = max_freeze_quarter_for_hour(
+                now, hour=prev_hour, current_hour=current_hour,
             )
             if not _history_has(history, today_str, prev_hour):
+                prev_copy = _as_history_row(prev_row)
+                _finalize_hour_actual_quarters(
+                    prev_copy,
+                    prev_hour,
+                    through_quarter=through_q,
+                    series_10min=series_10min,
+                    today_hourly=today_hourly,
+                    cfg=cfg,
+                    battery_cap=battery_cap,
+                )
+                # Open-pull q3 (Influx + forecast fill); freeze at :15.
+                apply_open_pull_quarter_to_row(
+                    prev_copy,
+                    prev_hour,
+                    3,
+                    series_10min=series_10min,
+                    cfg=cfg,
+                )
                 history.append(prev_copy)
             else:
-                # Hour already in history — freeze missing q3 only; never rewrite
-                # timer_schedule / action (I4).
+                # Hour already in history — freeze missing ready quarters only; never
+                # rewrite timer_schedule / action (I4).
                 for hrow in history:
                     if _row_key(hrow) == prev_key:
-                        _apply_actual_quarter_if_needed(
+                        _finalize_hour_actual_quarters(
                             hrow,
                             prev_hour,
-                            3,
+                            through_quarter=through_q,
                             series_10min=series_10min,
                             today_hourly=today_hourly,
                             cfg=cfg,
                             battery_cap=battery_cap,
+                        )
+                        apply_open_pull_quarter_to_row(
+                            hrow,
+                            prev_hour,
+                            3,
+                            series_10min=series_10min,
+                            cfg=cfg,
                         )
                         break
 
@@ -648,7 +810,21 @@ def merge_incremental_plan(
             continue
         if _history_has(history, plan_date, hour):
             continue
-        history.append(_as_history_row(row))
+        promoted = _as_history_row(row)
+        through_q = max_freeze_quarter_for_hour(
+            now, hour=hour, current_hour=current_hour,
+        )
+        if through_q >= 0:
+            _finalize_hour_actual_quarters(
+                promoted,
+                hour,
+                through_quarter=through_q,
+                series_10min=series_10min,
+                today_hourly=today_hourly,
+                cfg=cfg,
+                battery_cap=battery_cap,
+            )
+        history.append(promoted)
         log.warning(
             "History promote (late) — hour %02d was not moved at :00, recovered from rows",
             hour,
@@ -662,6 +838,19 @@ def merge_incremental_plan(
         current_hour=current_hour,
     )
     _sort_history(history)
+    # Recover any still-unfrozen q15 on past hours (missed :00 / delayed tick).
+    fixed = _finalize_history_actual_quarters(
+        history,
+        now=now,
+        today_str=today_str,
+        current_hour=current_hour,
+        series_10min=series_10min,
+        today_hourly=today_hourly,
+        cfg=cfg,
+        battery_cap=battery_cap,
+    )
+    if fixed:
+        log.info("History q15 finalized from Influx for %d past hour(s)", fixed)
 
     out_rows: list[dict[str, Any]] = []
     for key, fresh_row in sorted(fresh_by_key.items(), key=lambda x: (x[0][0], x[0][1])):
@@ -705,17 +894,17 @@ def merge_incremental_plan(
                 live_soc_kwh=live_soc_kwh,
                 fresh_row=fresh_row,
             )
-            if live_soc_kwh is not None:
-                datafix_completed_quarters_from_live(
-                    row,
-                    hour=hour,
-                    now=now,
-                    series_10min=series_10min,
-                    today_hourly=today_hourly,
-                    cfg=cfg,
-                    battery_cap=battery_cap,
-                    live_soc_kwh=live_soc_kwh,
-                )
+            # Influx update then freeze the just-completed tick (live SOC unused).
+            datafix_completed_quarters_from_live(
+                row,
+                hour=hour,
+                now=now,
+                series_10min=series_10min,
+                today_hourly=today_hourly,
+                cfg=cfg,
+                battery_cap=battery_cap,
+                live_soc_kwh=live_soc_kwh if live_soc_kwh is not None else 0.0,
+            )
             # Violet live-SOC highlight: always the in-progress hour.
             row["soc_blended"] = True
             # Locked Dis stays for the hour. Locked Chg may be dropped when the
@@ -1019,14 +1208,13 @@ def _merge_current_hour_future_quarters(
     now: datetime,
     cfg: dict | None = None,
 ) -> dict[str, Any]:
-    """Keep completed clock quarters (+ meter actuals); rest from incoming.
+    """Keep Influx-frozen quarters; open / lagging quarters from incoming.
 
-    At :30, quarters 0–1 stay from SQLite unless *incoming* supplies a newer
-    ``from_actual`` (Influx datafix). Quarters still in progress / future
-    take the incoming plan.
+    At :30 only q0 is freeze-ready (:00-:15); q1+ take the incoming plan until
+    later ticks when their Influx 10-min windows have settled.
     """
-    hour_offset, tick_q = last_completed_quarter_tick(now)
-    from_q = (tick_q + 1) if hour_offset == 0 and tick_q >= 0 else 0
+    fo, fq = freeze_ready_quarter_tick(now)
+    from_q = (fq + 1) if (fo == 0 and fq >= 0) else 0
     return _merge_hour_from_quarter(
         existing_row, incoming_row, from_q=from_q, cfg=cfg,
     )
@@ -1037,17 +1225,45 @@ def _in_progress_quarter(now: datetime) -> int:
     return min(Q15_PER_HOUR - 1, max(0, now.minute // 15))
 
 
+
+def _absorb_incoming_q15_actuals(dst: dict[str, Any], src: dict[str, Any]) -> bool:
+    """Copy Influx-frozen q15 from *src* onto still-unfrozen slots in *dst*.
+
+    Timer Schedule / Action stay on *dst*. Used by write_plan guard so a
+    just-finalized q3 is not discarded when past hours are otherwise immutable.
+    """
+    dq = _ensure_q15_length(list(dst.get("q15") or []))
+    # Only fill gaps after a partial freeze; do not replace untouched history.
+    if not any(_q15_slot_actual(s) for s in dq):
+        return False
+    sq = _ensure_q15_length(list(src.get("q15") or []))
+    changed = False
+    for q in range(Q15_PER_HOUR):
+        if _q15_slot_actual(dq[q]):
+            continue
+        if not _q15_slot_actual(sq[q]):
+            continue
+        dq[q] = copy.deepcopy(sq[q])
+        changed = True
+    if changed:
+        dst["q15"] = dq
+        apply_q15_physics_to_row(dst, dq)
+    return changed
+
+
 def guard_future_quarters_on_write(
     incoming: dict[str, Any],
     existing: dict[str, Any] | None,
     *,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Hard gate for plan_latest: only future quarters may change.
+    """Hard gate for plan_latest: frozen past stays; only open future may change.
 
     Same Warsaw day with an existing plan:
-      - past hours (today, hour < now.hour) stay verbatim in history_rows
-      - current hour: completed/from_actual q15 kept; current+future q15 from incoming
+      - past hours in history_rows stay as frozen (timer/action/energy)
+      - exception: absorb newly frozen Influx q15 into still-unfrozen slots
+        (just-completed tick / recovered q3) — never rewrite from_actual
+      - current hour: completed/from_actual q15 kept; open q15 from incoming
       - future hours / tomorrow: taken from incoming
     Empty SQLite or new calendar day: deep-copy of *incoming* (first seed only).
     """
@@ -1088,6 +1304,12 @@ def guard_future_quarters_on_write(
                 continue
             if _history_has(history, today_str, hour):
                 blocked += 1
+                # Keep past-hour immutability, but absorb newly frozen Influx q15
+                # (e.g. recovered q3 after a delayed :00 tick).
+                for hrow in history:
+                    if _row_key(hrow) == (plan_date, hour):
+                        _absorb_incoming_q15_actuals(hrow, row)
+                        break
                 continue
             history.append(_as_history_row(row))
 

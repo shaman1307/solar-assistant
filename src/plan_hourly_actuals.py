@@ -564,8 +564,22 @@ def _actual_energy_for_quarter(
     )
 
 
+# 10-min slot weights covering one q15 (1.5 × 10 min = 15 min).
+_OPEN_Q15_SLOT_WEIGHTS: tuple[tuple[tuple[int, float], ...], ...] = (
+    ((0, 1.0), (1, 0.5)),  # q0 :00-:15
+    ((1, 0.5), (2, 1.0)),  # q1 :15-:30
+    ((3, 1.0), (4, 0.5)),  # q2 :30-:45
+    ((4, 0.5), (5, 1.0)),  # q3 :45-:00
+)
+_OPEN_Q15_FULL_WEIGHT = 1.5
+
+
 def _refresh_slot_index(now: datetime, hour: int) -> int:
-    """Index of the q15 slot receiving fresh DB data at this refresh (-1 = all forecast)."""
+    """Open/pull q15 index for this hour (-1 = none yet).
+
+    Pulls the just-ended quarter every tick (Influx partial + forecast fill).
+    Freezing uses `_freeze_through_index` (one-tick lag), not this index.
+    """
     if now.hour != hour:
         return -1
     if now.minute < 15:
@@ -577,11 +591,129 @@ def _refresh_slot_index(now: datetime, hour: int) -> int:
     return 2
 
 
+def _freeze_through_index(now: datetime, hour: int) -> int:
+    """Highest q15 index frozen for this hour (-1 = none).
+
+    One-tick lag: at :30 only q0; at :45 q0–q1. Previous-hour q2/q3 are
+    handled by merge via `freeze_ready_quarter_tick`, not here.
+    """
+    if now.hour != hour:
+        return -1
+    if now.minute < 30:
+        return -1
+    if now.minute < 45:
+        return 0
+    return 1
+
+
 def _frozen_q0_kwh(series: list[float | None] | None, hour: int) -> float:
-    """q1 at :15 — first 10 min of hour scaled to 15 min."""
+    """q0 energy when only the first 10-min bucket is available (scaled)."""
     if not series:
         return 0.0
     return _ten_min_energy_kwh(series, hour, 0, 1, scale=PARTIAL_Q15_SCALE)
+
+
+def _weighted_ten_min_kwh(
+    series: list[float | None] | None,
+    hour: int,
+    slot_i: int,
+    weight: float,
+    *,
+    grid_mode: str | None = None,
+) -> float:
+    if grid_mode == "import":
+        return _ten_min_grid_import_kwh(series, hour, slot_i, 1, scale=weight)
+    if grid_mode == "export":
+        return _ten_min_grid_export_kwh(series, hour, slot_i, 1, scale=weight)
+    return _ten_min_energy_kwh(series, hour, slot_i, 1, scale=weight)
+
+
+def _open_quarter_missing_frac(
+    series: list[float | None] | None,
+    hour: int,
+    q: int,
+) -> float:
+    """Fraction of the 15-min window still missing from Influx (0..1)."""
+    if not (0 <= q < Q15_PER_HOUR):
+        return 1.0
+    present = 0.0
+    for slot_i, weight in _OPEN_Q15_SLOT_WEIGHTS[q]:
+        if _ten_min_slot_present(series, hour, slot_i):
+            present += weight
+    return max(0.0, (_OPEN_Q15_FULL_WEIGHT - present) / _OPEN_Q15_FULL_WEIGHT)
+
+
+def _open_quarter_partial_kwh(
+    series: list[float | None] | None,
+    hour: int,
+    q: int,
+    *,
+    grid_mode: str | None = None,
+) -> float:
+    """Influx energy already available inside one open q15 (no scale invention)."""
+    if not (0 <= q < Q15_PER_HOUR) or not series:
+        return 0.0
+    total = 0.0
+    for slot_i, weight in _OPEN_Q15_SLOT_WEIGHTS[q]:
+        if _ten_min_slot_present(series, hour, slot_i):
+            total += _weighted_ten_min_kwh(
+                series, hour, slot_i, weight, grid_mode=grid_mode,
+            )
+    return total
+
+
+def _open_quarter_blend_kwh(
+    series: list[float | None] | None,
+    hour: int,
+    q: int,
+    forecast_kwh: float,
+    *,
+    grid_mode: str | None = None,
+) -> float:
+    """Open tick: influx partial + forecast × (missing_min / 15)."""
+    partial = _open_quarter_partial_kwh(series, hour, q, grid_mode=grid_mode)
+    missing = _open_quarter_missing_frac(series, hour, q)
+    return partial + float(forecast_kwh) * missing
+
+
+def _open_q15_battery_grid(
+    series_10min: dict[str, list[float | None]] | None,
+    hour: int,
+    q: int,
+    *,
+    forecast_bat: float,
+    forecast_import: float,
+    forecast_export: float,
+) -> tuple[float, float, float]:
+    """Open-tick bat/grid: Influx partial + forecast × missing fraction."""
+    s = series_10min or {}
+    ref = s.get("pv") or s.get("load") or s.get("grid_buy") or s.get("grid_sell")
+    missing = _open_quarter_missing_frac(ref, hour, q) if ref else 1.0
+
+    bat_in = _open_quarter_partial_kwh(s.get("bat_charge"), hour, q)
+    bat_out = _open_quarter_partial_kwh(s.get("bat_discharge"), hour, q)
+    grid_import = _open_quarter_partial_kwh(
+        s.get("grid_buy"), hour, q, grid_mode="import",
+    )
+    grid_export = _open_quarter_partial_kwh(
+        s.get("grid_sell"), hour, q, grid_mode="export",
+    )
+    bat_delta = bat_in - bat_out
+    if abs(bat_delta) < 1e-6:
+        pv = _open_quarter_partial_kwh(s.get("pv"), hour, q)
+        load = _open_quarter_partial_kwh(s.get("load"), hour, q)
+        if (
+            abs(pv) > 1e-6
+            or abs(load) > 1e-6
+            or grid_import > 1e-6
+            or grid_export > 1e-6
+        ):
+            bat_delta = pv - load + grid_import - grid_export
+
+    bat_delta = bat_delta + float(forecast_bat) * missing
+    grid_import = grid_import + float(forecast_import) * missing
+    grid_export = grid_export + float(forecast_export) * missing
+    return round(bat_delta, 4), round(grid_import, 4), round(grid_export, 4)
 
 
 def _blended_q15_slot_kwh(
@@ -592,22 +724,18 @@ def _blended_q15_slot_kwh(
     forecast_q15: list[float] | None,
     hourly_fallback: float,
 ) -> float:
-    """One q15 slot kWh: frozen earlier slots, DB on refresh slot, forecast on tail."""
-    refresh = _refresh_slot_index(now, hour)
-    if refresh < 0:
-        return _q15_slot_energy(forecast_q15, hour, q, hourly_fallback)
+    """One q15 slot: frozen Influx, open pull (fact+forecast fill), or forecast tail."""
+    forecast = _q15_slot_energy(forecast_q15, hour, q, hourly_fallback)
+    freeze_through = _freeze_through_index(now, hour)
+    pull = _refresh_slot_index(now, hour)
 
-    if q < refresh:
-        if q == 0:
-            return _frozen_q0_kwh(series, hour)
+    if freeze_through >= 0 and q <= freeze_through:
         return _actual_q15_slice_kwh(series, hour, q)
 
-    if q == refresh:
-        if refresh == 0:
-            return _frozen_q0_kwh(series, hour)
-        return _actual_q15_slice_kwh(series, hour, q)
+    if pull >= 0 and q == pull:
+        return _open_quarter_blend_kwh(series, hour, q, forecast)
 
-    return _q15_slot_energy(forecast_q15, hour, q, hourly_fallback)
+    return forecast
 
 
 def blended_q15_pv_load_slots(
@@ -714,7 +842,7 @@ def simulate_blended_current_hour_q15(
     *,
     sa_timer_txt: str | None = None,
 ) -> tuple[list[dict[str, Any]], float]:
-    """Blended hour: DB bat/grid on frozen+refresh q slots; sim on tail; SOC chains both."""
+    """Blended hour: frozen Influx, open pull (fact+forecast), sim tail; SOC chains."""
     from .plan_optimizer import simulate_hour
     from .plan_timer_override import hour_control_from_timer_override
     from .timer_plan import timer_covers_quarter
@@ -739,7 +867,8 @@ def simulate_blended_current_hour_q15(
     eta_pv_grid = float(params["eta_pv_grid"])
     eta_pv_battery = float(params["eta_pv_battery"])
 
-    refresh = _refresh_slot_index(now, hour)
+    freeze_through = _freeze_through_index(now, hour)
+    pull = _refresh_slot_index(now, hour)
     soc_kwh = soc_start_kwh
     q15: list[dict[str, Any]] = []
 
@@ -747,7 +876,7 @@ def simulate_blended_current_hour_q15(
         pv = float(pv_by_q[q]) if q < len(pv_by_q) else 0.0
         load = float(load_by_q[q]) if q < len(load_by_q) else 0.0
 
-        if refresh >= 0 and q <= refresh:
+        if freeze_through >= 0 and q <= freeze_through:
             bat_delta, grid_import, grid_export = _actual_q15_battery_grid(
                 series_10min, hour, q,
             )
@@ -769,7 +898,7 @@ def simulate_blended_current_hour_q15(
         if sa_timer_txt and (
             timer_covers_quarter(sa_timer_txt, hour, q)
             or (
-                q > refresh >= 0
+                q > pull >= 0
                 and any(
                     float(s.get("grid_export") or 0) > epsilon
                     for s in q15
@@ -797,6 +926,63 @@ def simulate_blended_current_hour_q15(
             epsilon=eps_q,
             reserve_soc_kwh=float(reserve) if reserve is not None else None,
         )
+
+        if pull >= 0 and q == pull:
+            s10 = series_10min or {}
+            ref = s10.get("pv") or s10.get("load")
+            missing = _open_quarter_missing_frac(ref, hour, q) if ref else 1.0
+            if missing < 1e-9:
+                bat_delta, grid_import, grid_export = _open_q15_battery_grid(
+                    series_10min,
+                    hour,
+                    q,
+                    forecast_bat=0.0,
+                    forecast_import=0.0,
+                    forecast_export=0.0,
+                )
+            else:
+                # Recover full-quarter forecast from blended PV/load, then fill bat/grid.
+                partial_pv = _open_quarter_partial_kwh(s10.get("pv"), hour, q)
+                partial_load = _open_quarter_partial_kwh(s10.get("load"), hour, q)
+                forecast_pv = (pv - partial_pv) / missing
+                forecast_load = (load - partial_load) / missing
+                phys_fc = simulate_hour(
+                    soc_kwh, forecast_pv, forecast_load, ctrl,
+                    battery_cap=battery_cap,
+                    min_kwh=min_kwh,
+                    ac_cap_kw=inverter_ac_kw / Q15_PER_HOUR,
+                    discharge_dc_cap_kwh=discharge_dc_kw / Q15_PER_HOUR,
+                    eta_grid=eta_grid,
+                    eta_out=eta_out,
+                    eta_pv_load=eta_pv_load,
+                    eta_pv_grid=eta_pv_grid,
+                    eta_pv_battery=eta_pv_battery,
+                    epsilon=eps_q,
+                    reserve_soc_kwh=float(reserve) if reserve is not None else None,
+                )
+                bat_delta, grid_import, grid_export = _open_q15_battery_grid(
+                    series_10min,
+                    hour,
+                    q,
+                    forecast_bat=phys_fc.battery_delta,
+                    forecast_import=phys_fc.grid_import,
+                    forecast_export=phys_fc.grid_export,
+                )
+            soc_kwh = _soc_kwh_after_battery_delta(
+                soc_kwh, bat_delta, min_kwh=min_kwh, battery_cap=battery_cap,
+            )
+            q15.append({
+                "quarter": q,
+                "production": round(pv, 4),
+                "consumption": round(load, 4),
+                "soc": _clamp_soc_pct((soc_kwh / battery_cap) * 100.0, min_soc_pct),
+                "battery": bat_delta,
+                "grid_import": grid_import,
+                "grid_export": grid_export,
+                "from_actual": False,
+            })
+            continue
+
         soc_kwh = phys.soc_end
         q15.append({
             "quarter": q,
@@ -876,6 +1062,86 @@ def simulate_q15_slots(
             "grid_export": round(phys.grid_export, 4),
         })
     return q15, soc_kwh
+
+
+def apply_open_pull_quarter_to_row(
+    row: dict[str, Any],
+    hour: int,
+    quarter: int,
+    *,
+    series_10min: dict[str, list[float | None]] | None,
+    cfg: dict,
+) -> bool:
+    """Refresh one open quarter from Influx + forecast fill; keep from_actual=False.
+
+    Used for previous-hour q3 at :00 (freeze at :15). Skips already-frozen slots.
+    Forecast is the slot's current production/consumption/battery/grid values.
+    """
+    if not (0 <= quarter < Q15_PER_HOUR):
+        return False
+
+    q15 = list(row.get("q15") or [])
+    while len(q15) < Q15_PER_HOUR:
+        prev_soc = q15[-1].get("soc", 0.0) if q15 else 0.0
+        q15.append({
+            "quarter": len(q15),
+            "production": 0.0,
+            "consumption": 0.0,
+            "soc": prev_soc,
+            "battery": 0.0,
+            "grid_import": 0.0,
+            "grid_export": 0.0,
+            "from_actual": False,
+        })
+    slot = q15[quarter]
+    if slot.get("from_actual"):
+        return False
+
+    from .simulation_config import plan_min_soc_kwh, plan_min_soc_pct
+
+    battery_cap = float(cfg["battery"]["capacity_kwh"])
+    min_soc_pct = plan_min_soc_pct(cfg)
+    min_kwh = plan_min_soc_kwh(cfg)
+
+    forecast_pv = float(slot.get("production") or 0.0)
+    forecast_load = float(slot.get("consumption") or 0.0)
+    forecast_bat = float(slot.get("battery") or 0.0)
+    forecast_gi = float(slot.get("grid_import") or 0.0)
+    forecast_ge = float(slot.get("grid_export") or 0.0)
+
+    s10 = series_10min or {}
+    pv = _open_quarter_blend_kwh(s10.get("pv"), hour, quarter, forecast_pv)
+    load = _open_quarter_blend_kwh(s10.get("load"), hour, quarter, forecast_load)
+    bat_delta, grid_import, grid_export = _open_q15_battery_grid(
+        series_10min,
+        hour,
+        quarter,
+        forecast_bat=forecast_bat,
+        forecast_import=forecast_gi,
+        forecast_export=forecast_ge,
+    )
+
+    if quarter > 0:
+        soc_start_kwh = (float(q15[quarter - 1].get("soc") or 0) / 100.0) * battery_cap
+    else:
+        soc_start_kwh = (float(slot.get("soc") or 0) / 100.0) * battery_cap - bat_delta
+
+    soc_kwh = _soc_kwh_after_battery_delta(
+        soc_start_kwh, bat_delta, min_kwh=min_kwh, battery_cap=battery_cap,
+    )
+    q15[quarter] = {
+        "quarter": quarter,
+        "production": round(pv, 4),
+        "consumption": round(load, 4),
+        "soc": _clamp_soc_pct((soc_kwh / battery_cap) * 100.0, min_soc_pct),
+        "battery": bat_delta,
+        "grid_import": grid_import,
+        "grid_export": grid_export,
+        "from_actual": False,
+    }
+    apply_q15_physics_to_row(row, q15)
+    refresh_row_grid_cash(row, cfg)
+    return True
 
 
 def blend_current_hour_end(

@@ -383,11 +383,13 @@ def run_day_smart_q15_plan(
     pv_r, load_r = build_extended_pv_load_for_reserve(
         pv_q, load_q,
         step_scale=STEP_SCALE, end_dt=end_dt, today_date=today_date, forecast=forecast,
+        global_step_offset=start_step,
     )
     buy_r = build_extended_buy_for_reserve(
         buy_q,
         step_scale=STEP_SCALE, end_dt=end_dt, today_date=today_date,
         forecast=forecast, cfg=cfg,
+        global_step_offset=start_step,
     )
     reserves, _ = apply_post_discharge_reserve_floor(
         reserves,
@@ -434,6 +436,286 @@ def run_day_smart_q15_plan(
         "timer_schedule": derive_timer_schedule_q15(q15_plan_rows, cfg),
         "epsilon": epsilon,
     }
+
+
+def run_rolling_smart_q15_plan(
+    *,
+    date_str: str,
+    pv_hourly: list[float],
+    load_hourly: list[float],
+    tomorrow_pv: list[float],
+    tomorrow_load: list[float],
+    cfg: dict,
+    rce_quarters: list[float | None] | None = None,
+    rce_quarters_tomorrow: list[float | None] | None = None,
+    initial_soc_kwh: float,
+    from_hour: int = 0,
+    horizon_hours: int = 24,
+    front_load_skip_leading_slots: int | None = None,
+) -> dict[str, Any] | None:
+    """One continuous optimize across midnight for the rolling plan window.
+
+    Controls cover *horizon_hours* from *from_hour* today (into tomorrow as
+    needed). Full tomorrow PV/load stay in *forecast* so reserve / charge-target
+    look ahead through end of tomorrow after the plan window.
+    """
+    from .simulation_config import PLAN_HORIZON_HOURS
+
+    cfg = merge_simulation_defaults(cfg)
+    params = get_simulation_params(cfg)
+    battery_cap = float(cfg["battery"]["capacity_kwh"])
+    min_kwh = plan_min_soc_kwh(cfg)
+    discharge_dc_kw = plan_timer_discharge_power_kw(cfg)
+    inverter_ac_kw = float(cfg["inverter"]["ac_capacity_kw"])
+    epsilon = float(params["epsilon_kwh"])
+    eps_q = eps_step_kwh(epsilon, STEP_SCALE)
+    eta_grid = float(params["eta_grid_battery"])
+    eta_out = float(params["eta_battery_out"])
+    eta_pv_load = float(params["eta_pv_load"])
+    eta_pv_grid = float(params["eta_pv_grid"])
+    eta_pv_battery = float(params["eta_pv_battery"])
+
+    if sum(pv_hourly) + sum(load_hourly) <= epsilon:
+        return None
+
+    from_hour = max(0, min(23, int(from_hour)))
+    horizon_hours = max(1, min(48, int(horizon_hours or PLAN_HORIZON_HOURS)))
+    hours_today = list(range(from_hour, 24))
+    need_tomorrow = max(0, horizon_hours - len(hours_today))
+    hours_tomorrow = list(range(0, need_tomorrow))
+
+    if need_tomorrow <= 0:
+        # Entire window fits on today — same as day plan with lookahead tomorrow.
+        return {
+            "today": run_day_smart_q15_plan(
+                date_str=date_str,
+                pv_hourly=pv_hourly,
+                load_hourly=load_hourly,
+                tomorrow_pv=tomorrow_pv,
+                tomorrow_load=tomorrow_load,
+                cfg=cfg,
+                rce_quarters=rce_quarters,
+                initial_soc_kwh=initial_soc_kwh,
+                from_hour=from_hour,
+                front_load_skip_leading_slots=front_load_skip_leading_slots,
+            ),
+            "tomorrow": None,
+        }
+
+    start_step = from_hour * Q15_PER_HOUR
+    pv_today_q = _split_energy_hourly_to_q15(pv_hourly)
+    load_today_q = _split_energy_hourly_to_q15(load_hourly)
+    pv_tom_q = _split_energy_hourly_to_q15([float(v) for v in tomorrow_pv])
+    load_tom_q = _split_energy_hourly_to_q15([float(v) for v in tomorrow_load])
+
+    pv_q = list(pv_today_q[start_step:])
+    load_q = list(load_today_q[start_step:])
+    for h in hours_tomorrow:
+        base = h * Q15_PER_HOUR
+        pv_q.extend(pv_tom_q[base:base + Q15_PER_HOUR])
+        load_q.extend(load_tom_q[base:base + Q15_PER_HOUR])
+
+    buy_today = [0.0] * 24
+    start_dt = datetime.strptime(date_str, "%Y-%m-%d")
+    today_date = start_dt.date()
+    tomorrow_date = today_date + timedelta(days=1)
+    tomorrow_str = tomorrow_date.strftime("%Y-%m-%d")
+    for h in range(24):
+        buy_today[h] = get_buy_price(start_dt.replace(hour=h), cfg)[0]
+    buy_tom = [0.0] * 24
+    tom_base = datetime(tomorrow_date.year, tomorrow_date.month, tomorrow_date.day)
+    for h in range(24):
+        buy_tom[h] = get_buy_price(tom_base.replace(hour=h), cfg)[0]
+
+    buy_q = [b for h in hours_today for b in [buy_today[h]] * Q15_PER_HOUR]
+    buy_q.extend(b for h in hours_tomorrow for b in [buy_tom[h]] * Q15_PER_HOUR)
+
+    steps = len(pv_q)
+    last_tom_h = hours_tomorrow[-1]
+    end_dt = tom_base.replace(hour=last_tom_h, minute=45)
+
+    rce_today = _resolve_rce_quarters(date_str, rce_quarters)
+    rce_tom = _resolve_rce_quarters(tomorrow_str, rce_quarters_tomorrow)
+    # Global RCE index continues past midnight (offset + step may exceed 96).
+    rce_q = list(rce_today) + list(rce_tom)
+
+    rce_map: dict[tuple[str, int], float | None] = {}
+    for d_str, series in ((date_str, rce_today), (tomorrow_str, rce_tom)):
+        for h in range(24):
+            chunk = series[h * Q15_PER_HOUR:(h + 1) * Q15_PER_HOUR]
+            vals = [float(v) for v in chunk if v is not None]
+            rce_map[(d_str, h)] = round(sum(vals) / len(vals), 4) if vals else None
+
+    forecast: dict[str, Any] = {
+        "today": {
+            "pv": list(pv_hourly),
+            "load": list(load_hourly),
+            "pv_total": round(sum(float(v) for v in pv_hourly), 3),
+            "load_total": round(sum(float(v) for v in load_hourly), 3),
+        },
+        "tomorrow": {
+            "pv": [float(v) for v in tomorrow_pv],
+            "load": [float(v) for v in tomorrow_load],
+            "pv_total": round(sum(float(v) for v in tomorrow_pv), 3),
+            "load_total": round(sum(float(v) for v in tomorrow_load), 3),
+        },
+    }
+
+    controls = optimize_horizon(
+        steps=steps,
+        pv_series=pv_q,
+        load_series=load_q,
+        buy_prices=buy_q,
+        rce_series=rce_q,
+        initial_soc_kwh=initial_soc_kwh,
+        cfg=cfg,
+        params=params,
+        end_dt=end_dt,
+        today_date=today_date,
+        rce_map=rce_map,
+        forecast=forecast,
+        step_scale=STEP_SCALE,
+        rce_step_offset=start_step,
+        front_load_skip_leading_slots=front_load_skip_leading_slots,
+    )
+
+    from .plan_optimizer import (
+        build_extended_buy_for_reserve,
+        build_extended_pv_load_for_reserve,
+        g12_tariff_from_cfg,
+    )
+
+    reserve_floor = plan_reserve_min_soc_kwh(cfg)
+    reserves = reserve_soc_per_step(
+        steps, pv_q, load_q,
+        reserve_floor_kwh=reserve_floor,
+        eta_out=eta_out, eta_pv_load=eta_pv_load, epsilon=epsilon,
+        step_scale=STEP_SCALE, end_dt=end_dt, today_date=today_date, forecast=forecast,
+        global_step_offset=start_step,
+        buy_prices=buy_q,
+        cfg=cfg,
+    )
+    pv_r, load_r = build_extended_pv_load_for_reserve(
+        pv_q, load_q,
+        step_scale=STEP_SCALE, end_dt=end_dt, today_date=today_date, forecast=forecast,
+        global_step_offset=start_step,
+    )
+    buy_r = build_extended_buy_for_reserve(
+        buy_q,
+        step_scale=STEP_SCALE, end_dt=end_dt, today_date=today_date,
+        forecast=forecast, cfg=cfg,
+        global_step_offset=start_step,
+    )
+    reserves, _ = apply_post_discharge_reserve_floor(
+        reserves,
+        controls,
+        pv_series=pv_r,
+        load_series=load_r,
+        reserve_floor_kwh=reserve_floor,
+        eta_out=eta_out,
+        eta_pv_load=eta_pv_load,
+        epsilon=eps_q,
+        rce_step_offset=start_step,
+        slots_per_hour=Q15_PER_HOUR,
+        buy_series=buy_r,
+        offpeak_buy=g12_tariff_from_cfg(cfg).offpeak_full,
+    )
+
+    q15_today: dict[int, list[dict[str, Any]]] = {h: [] for h in range(24)}
+    q15_tomorrow: dict[int, list[dict[str, Any]]] = {h: [] for h in range(24)}
+    rows_today: list[dict[str, Any]] = []
+    rows_tomorrow: list[dict[str, Any]] = []
+    soc = initial_soc_kwh
+
+    for step in range(steps):
+        global_step = start_step + step
+        abs_hour = global_step // Q15_PER_HOUR
+        day_i = abs_hour // 24
+        h = abs_hour % 24
+        quarter = global_step % Q15_PER_HOUR
+        ctrl = controls[step] if step < len(controls) else HourControl(0.0, 0.0)
+        phys = simulate_hour(
+            soc, pv_q[step], load_q[step], ctrl,
+            battery_cap=battery_cap,
+            min_kwh=min_kwh,
+            ac_cap_kw=inverter_ac_kw * STEP_SCALE,
+            discharge_dc_cap_kwh=discharge_dc_kw * STEP_SCALE,
+            eta_grid=eta_grid,
+            eta_out=eta_out,
+            eta_pv_load=eta_pv_load,
+            eta_pv_grid=eta_pv_grid,
+            eta_pv_battery=eta_pv_battery,
+            epsilon=eps_q,
+            reserve_soc_kwh=reserves[step],
+        )
+        batt_exp = min(ctrl.battery_export_kwh, phys.grid_export)
+        soc_pct = (phys.soc_end / battery_cap) * 100.0 if battery_cap else 0.0
+        action = timer_classify_action(
+            bat_charge=max(0.0, phys.battery_delta),
+            bat_discharge=max(0.0, -phys.battery_delta),
+            grid_import=phys.grid_import,
+            grid_export=phys.grid_export,
+            production=pv_q[step],
+            epsilon=eps_q,
+        )
+        day_base = start_dt if day_i == 0 else tom_base
+        dt = day_base.replace(hour=h, minute=quarter * 15)
+        reserve_kwh = float(reserves[step]) if step < len(reserves) else float(min_kwh)
+        reserve_soc_pct = (reserve_kwh / battery_cap) * 100.0 if battery_cap else 0.0
+        slot = {
+            "hour": h,
+            "quarter": quarter,
+            "action": action,
+            "pv": pv_q[step],
+            "load": load_q[step],
+            "grid_import": phys.grid_import,
+            "grid_export": phys.grid_export,
+            "battery_delta": phys.battery_delta,
+            "battery_export_kwh": batt_exp,
+            "grid_charge_kw": ctrl.grid_charge_kw,
+            "load_from_grid": ctrl.load_from_grid,
+            "ctrl_battery_export_kwh": ctrl.battery_export_kwh,
+            "soc_pct": soc_pct,
+            "soc_end": phys.soc_end,
+            "reserve_kwh": reserve_kwh,
+            "reserve_soc_pct": reserve_soc_pct,
+            "rce": rce_q[global_step] if global_step < len(rce_q) else None,
+        }
+        bucket = q15_today if day_i == 0 else q15_tomorrow
+        rows = rows_today if day_i == 0 else rows_tomorrow
+        bucket[h] = [
+            s for s in bucket.get(h, []) if int(s.get("quarter", -1)) != quarter
+        ]
+        bucket[h].append(slot)
+        bucket[h].sort(key=lambda s: int(s.get("quarter", 0)))
+        rows.append({
+            "start": dt.strftime("%d-%m-%Y %H:%M"),
+            "hour": h,
+            "action": action,
+            "soc": soc_pct,
+            "grid_import": round(phys.grid_import, 4),
+            "grid_export": round(phys.grid_export, 4),
+            "battery": round(phys.battery_delta, 4),
+            "reserve_kwh": round(reserve_kwh, 4),
+            "reserve_soc_pct": round(reserve_soc_pct, 2),
+        })
+        soc = phys.soc_end
+
+    today_plan = {
+        "q15_by_hour": q15_today,
+        "q15_plan_rows": rows_today,
+        "end_soc_kwh": round(soc, 3),
+        "timer_schedule": derive_timer_schedule_q15(rows_today, cfg),
+        "epsilon": epsilon,
+    }
+    tomorrow_plan = {
+        "q15_by_hour": q15_tomorrow,
+        "q15_plan_rows": rows_tomorrow,
+        "end_soc_kwh": round(soc, 3),
+        "timer_schedule": derive_timer_schedule_q15(rows_tomorrow, cfg),
+        "epsilon": epsilon,
+    }
+    return {"today": today_plan, "tomorrow": tomorrow_plan}
 
 
 def _merge_smart_day_plans(

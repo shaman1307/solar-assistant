@@ -5,7 +5,6 @@ from datetime import datetime
 import yaml
 
 from src.plan_hourly_actuals import (
-    PARTIAL_Q15_SCALE,
     TEN_MIN_KWH_PER_KW,
     blend_current_hour_end,
     blended_q15_pv_load_slots,
@@ -16,10 +15,11 @@ from src.plan_hourly_actuals import (
 from src.simulation_config import merge_simulation_defaults
 
 
-def _flat_10m_kw(hour: int, kw: float) -> dict[str, list[float | None]]:
+def _series_through_slots(hour: int, kw: float, n_slots: int) -> dict[str, list[float | None]]:
+    """Populate only the first n_slots 10-min buckets of the hour (realistic lag)."""
     series: list[float | None] = [None] * 144
     base = hour * 6
-    for i in range(6):
+    for i in range(n_slots):
         series[base + i] = kw
     return {"pv": list(series), "load": list(series), "soc": list(series)}
 
@@ -53,16 +53,19 @@ def test_at_hour_start_uses_full_forecast():
     assert load == 2.0
 
 
-def test_at_15_blends_first_10m_scaled_and_last_q15():
+def test_at_15_open_pull_q0_not_frozen():
+    """At :15 pull q0 (fact :00-:10 + forecast/3); freeze only at :30."""
     now = datetime(2026, 6, 26, 18, 15)
     hour = 18
     kw = 6.0
-    series = _flat_10m_kw(hour, kw)
-    pv_q = _q15_hour(hour, 0.1)
+    series = _series_through_slots(hour, kw, n_slots=1)
+    per_q = 0.1
+    pv_q = _q15_hour(hour, per_q)
     load_q = _q15_hour(hour, 0.2)
 
-    actual_pv = kw * TEN_MIN_KWH_PER_KW * PARTIAL_Q15_SCALE
-    forecast_pv = 0.1 * 3
+    partial = kw * TEN_MIN_KWH_PER_KW  # 10 min
+    open_q0 = partial + per_q * (5.0 / 15.0)
+    forecast_tail = per_q * 3
     pv, load = blend_current_hour_end(
         hour,
         now,
@@ -72,8 +75,10 @@ def test_at_15_blends_first_10m_scaled_and_last_q15():
         forecast_load_hourly=99.0,
         series_10min=series,
     )
-    assert pv == round(actual_pv + forecast_pv, 3)
-    assert load == round(actual_pv + 0.2 * 3, 3)
+    assert pv == round(open_q0 + forecast_tail, 3)
+    assert load == round(
+        (kw * TEN_MIN_KWH_PER_KW + 0.2 * (5.0 / 15.0)) + 0.2 * 3, 3,
+    )
 
     slots = blended_q15_pv_load_slots(
         hour, now,
@@ -83,21 +88,22 @@ def test_at_15_blends_first_10m_scaled_and_last_q15():
         pv_hourly=99.0,
         load_hourly=99.0,
     )
-    assert slots[0][0] == round(actual_pv, 4)
+    assert slots[0][0] == round(open_q0, 4)
     assert slots[1][0] == 0.1
-    assert round(sum(s[0] for s in slots), 3) == pv
 
 
-def test_at_30_blends_first_three_10m_and_last_two_q15():
+def test_at_30_freezes_q0_open_pulls_q1():
+    """At :30 freeze q0; open-pull q1 = fact :15-:20 + forecast×(10/15)."""
     now = datetime(2026, 6, 26, 18, 30)
     hour = 18
     kw = 3.0
-    series = _flat_10m_kw(hour, kw)
+    series = _series_through_slots(hour, kw, n_slots=2)  # through :20
     per_q = 0.15
     pv_q = _q15_hour(hour, per_q)
 
-    actual = kw * TEN_MIN_KWH_PER_KW * 3
-    forecast = per_q * 2
+    frozen_q0 = kw * TEN_MIN_KWH_PER_KW + 0.5 * kw * TEN_MIN_KWH_PER_KW
+    open_q1 = 0.5 * kw * TEN_MIN_KWH_PER_KW + per_q * (10.0 / 15.0)
+    forecast_tail = per_q * 2
     pv, _ = blend_current_hour_end(
         hour,
         now,
@@ -107,7 +113,7 @@ def test_at_30_blends_first_three_10m_and_last_two_q15():
         forecast_load_hourly=0.0,
         series_10min=series,
     )
-    assert pv == round(actual + forecast, 3)
+    assert pv == round(frozen_q0 + open_q1 + forecast_tail, 3)
 
     slots = blended_q15_pv_load_slots(
         hour, now,
@@ -115,27 +121,27 @@ def test_at_30_blends_first_three_10m_and_last_two_q15():
         forecast_load_q15=pv_q,
         series_10min=series,
     )
-    assert slots[0][0] == round(kw * TEN_MIN_KWH_PER_KW * PARTIAL_Q15_SCALE, 4)
-    assert slots[1][0] == round(kw * TEN_MIN_KWH_PER_KW * PARTIAL_Q15_SCALE, 4)
+    assert slots[0][0] == round(frozen_q0, 4)
+    assert slots[1][0] == round(open_q1, 4)
     assert slots[2][0] == 0.15
     assert slots[3][0] == 0.15
 
 
-def test_at_45_blends_half_hour_plus_partial_10m():
+def test_at_45_freezes_q0_q1_open_pulls_q2():
+    """At :45 freeze q0–q1; open-pull q2 = fact :30-:40 + forecast/3."""
     now = datetime(2026, 6, 26, 18, 45)
     hour = 18
-    series: list[float | None] = [None] * 144
-    base = hour * 6
-    for i in range(4):
-        series[base + i] = 2.0
-    series[base + 3] = 4.0
-    s10 = {"pv": list(series), "load": list(series), "soc": list(series)}
+    kw = 2.0
+    series = _series_through_slots(hour, kw, n_slots=4)  # through :40
     per_q = 0.2
     pv_q = _q15_hour(hour, per_q)
 
-    first = 2.0 * TEN_MIN_KWH_PER_KW * 3
-    partial = 4.0 * TEN_MIN_KWH_PER_KW * PARTIAL_Q15_SCALE
-    forecast = per_q
+    from src.plan_hourly_actuals import _actual_q15_slice_kwh
+
+    q0 = _actual_q15_slice_kwh(series["pv"], hour, 0)
+    q1 = _actual_q15_slice_kwh(series["pv"], hour, 1)
+    open_q2 = kw * TEN_MIN_KWH_PER_KW + per_q / 3.0
+    forecast_q3 = per_q
     pv, _ = blend_current_hour_end(
         hour,
         now,
@@ -143,27 +149,35 @@ def test_at_45_blends_half_hour_plus_partial_10m():
         forecast_load_q15=pv_q,
         forecast_pv_hourly=0.0,
         forecast_load_hourly=0.0,
-        series_10min=s10,
+        series_10min=series,
     )
-    assert pv == round(first + partial + forecast, 3)
+    assert pv == round(q0 + q1 + open_q2 + forecast_q3, 3)
+
+    slots = blended_q15_pv_load_slots(
+        hour, now,
+        forecast_pv_q15=pv_q,
+        forecast_load_q15=pv_q,
+        series_10min=series,
+    )
+    assert slots[2][0] == round(open_q2, 4)
+    assert slots[3][0] == per_q
 
 
-def test_at_30_blended_battery_db_on_completed_q_sim_on_tail():
-    """At :30 q0-q1 bat/grid from DB; q2-q3 from sim (frozen q0 is deterministic)."""
+def test_at_30_blended_battery_db_on_frozen_open_on_pull():
+    """At :30 q0 from_actual; q1 open pull (not frozen); q2–q3 sim."""
     from src.plan_hourly_actuals import simulate_blended_current_hour_q15
 
     cfg = _minimal_cfg()
     hour = 18
     now = datetime(2026, 6, 26, 18, 30)
     kw = 2.0
-    series = _flat_10m_kw(hour, kw)
+    series = _series_through_slots(hour, kw, n_slots=2)
     for key in ("bat_charge", "bat_discharge", "grid_buy", "grid_sell"):
         series[key] = [None] * 144
     base = hour * 6
     series["bat_charge"][base] = 1.0
     series["bat_charge"][base + 1] = 1.0
-    series["bat_charge"][base + 2] = 0.5
-    series["grid_buy"][base + 2] = -2.0
+    series["grid_buy"][base + 1] = -2.0
 
     pv_by_q = [0.2, 0.2, 0.3, 0.3]
     load_by_q = [0.1, 0.1, 0.1, 0.1]
@@ -174,11 +188,10 @@ def test_at_30_blended_battery_db_on_completed_q_sim_on_tail():
     )
 
     assert q15[0]["from_actual"] is True
-    assert q15[1]["from_actual"] is True
+    assert q15[1]["from_actual"] is False
     assert q15[2]["from_actual"] is False
     assert q15[3]["from_actual"] is False
-    assert q15[1]["battery"] > 0
-    assert q15[2]["battery"] != q15[1]["battery"] or q15[2]["production"] != q15[1]["production"]
+    assert q15[0]["battery"] > 0
 
 
 def test_sim_chain_soc_accumulates_from_start():
@@ -200,9 +213,10 @@ def test_sim_chain_soc_accumulates_from_start():
 
 
 def test_build_blended_uses_sim_not_influx_battery():
+    """Before :15 current-hour Influx pull has not started — all q15 from forecast/sim."""
     cfg = _minimal_cfg()
     hour = 17
-    now = datetime(2026, 6, 28, 17, 20)
+    now = datetime(2026, 6, 28, 17, 10)
     series = {
         "pv": [None] * 144,
         "load": [None] * 144,
@@ -233,7 +247,8 @@ def test_build_blended_uses_sim_not_influx_battery():
         cfg=cfg,
     )
 
-    assert q15[0]["production"] == round(3.0 * TEN_MIN_KWH_PER_KW * PARTIAL_Q15_SCALE, 4)
+    assert q15[0]["production"] == 0.25
+    assert q15[0]["from_actual"] is False
     assert q15[0]["battery"] != 1.5
     assert q15[0]["soc"] != 0.0
 
