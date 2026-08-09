@@ -59,6 +59,9 @@ def _deposit_total_payload() -> dict[str, Any]:
     return dict(cached)
 
 
+_DEPOSIT_CHART_MAX_MONTHS = 24
+
+
 @router.get("/api/history-deposit-total")
 async def api_history_deposit_total() -> dict[str, Any]:
     """Cached deposit pool total — updated daily or via rebuild, not on month pick."""
@@ -68,7 +71,7 @@ async def api_history_deposit_total() -> dict[str, Any]:
     out = _deposit_total_payload()
     out["deposit_total"] = total
     deposits = load_all_deposits()
-    out["months"] = [
+    month_rows = [
         {
             "month": month_id,
             "credited": round(float(row["initial"]), 4),
@@ -76,6 +79,7 @@ async def api_history_deposit_total() -> dict[str, Any]:
         }
         for month_id, row in sorted(deposits.items())
     ]
+    out["months"] = month_rows[-_DEPOSIT_CHART_MAX_MONTHS:]
     return out
 
 

@@ -8969,13 +8969,15 @@ function updateHistoryDepositTotal(value) {
 }
 
 let _historyDepositMonths = [];
+const HISTORY_DEPOSIT_CHART_MAX_MONTHS = 24;
 
 async function loadHistoryDepositTotal() {
   try {
     const res = await fetch('api/history-deposit-total');
     const data = await res.json();
     updateHistoryDepositTotal(data?.deposit_total);
-    _historyDepositMonths = Array.isArray(data?.months) ? data.months : [];
+    const months = Array.isArray(data?.months) ? data.months : [];
+    _historyDepositMonths = months.slice(-HISTORY_DEPOSIT_CHART_MAX_MONTHS);
   } catch (_) {
     /* keep last shown value */
   }
@@ -8990,7 +8992,9 @@ function renderHistoryDepositChart(months) {
   const wrap = document.getElementById('history-deposit-chart');
   const empty = document.getElementById('history-deposit-chart-empty');
   if (!wrap) return;
-  const rows = (months || []).filter(m => m && m.month != null);
+  const rows = (months || [])
+    .filter(m => m && m.month != null)
+    .slice(-HISTORY_DEPOSIT_CHART_MAX_MONTHS);
   if (!rows.length) {
     wrap.innerHTML = '';
     if (empty) empty.classList.remove('hidden');
