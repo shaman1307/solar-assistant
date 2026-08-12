@@ -649,7 +649,30 @@ def _as_history_row(row: dict[str, Any]) -> dict[str, Any]:
     hist = copy.deepcopy(row)
     hist["history_hour"] = True
     hist.pop("soc_blended", None)
+    # Freeze Timer/Action once the hour leaves the live plan.
+    if str(hist.get("timer_schedule") or "").strip() or hist.get("timer_schedule_manual"):
+        hist["hour_labels_locked"] = True
     return hist
+
+
+def _effective_plan_boundary_hour(plan: dict[str, Any] | None, now: datetime) -> int:
+    """Wall hour, or plan_from_hour when the sim already crossed into the next hour.
+
+    write_plan guard must use the same boundary as merge_incremental_plan /
+    attach_immutable_history — otherwise a straddle refresh that finishes after
+    :00 with now still HH:59 drops the completed hour from history (meters
+    backfill later without Timer Schedule).
+    """
+    current_hour = int(now.hour)
+    if not isinstance(plan, dict):
+        return current_hour
+    try:
+        sim_from = int(plan.get("plan_from_hour"))
+    except (TypeError, ValueError):
+        return current_hour
+    if sim_from > current_hour:
+        return sim_from
+    return current_hour
 
 
 def _strip_blended_flags(history: list[dict]) -> None:
@@ -1266,10 +1289,21 @@ def guard_future_quarters_on_write(
       - current hour: completed/from_actual q15 kept; open q15 from incoming
       - future hours / tomorrow: taken from incoming
     Empty SQLite or new calendar day: deep-copy of *incoming* (first seed only).
+
+    Boundary hour is max(wall clock, incoming.plan_from_hour) so a straddle
+    refresh that finishes after :00 cannot drop the completed hour (and its
+    Timer Schedule) before it is written to SQLite.
     """
     now = now or now_warsaw()
     today_str = now.strftime("%Y-%m-%d")
-    current_hour = now.hour
+    current_hour = _effective_plan_boundary_hour(incoming, now)
+    if current_hour > int(now.hour):
+        log.warning(
+            "write_plan guard — sim crossed hour boundary (%02d -> %02d); "
+            "promoting gap into history",
+            now.hour,
+            current_hour,
+        )
     result = copy.deepcopy(incoming)
 
     if existing is None or str(existing.get("today_date") or "") != today_str:
@@ -1357,6 +1391,11 @@ def guard_future_quarters_on_write(
     result["rows"] = live_rows
     result["has_history_rows"] = bool(history)
     result["today_date"] = today_str
+    # Keep plan_from aligned with the boundary used for promote/strip.
+    try:
+        result["plan_from_hour"] = max(int(result.get("plan_from_hour") or 0), current_hour)
+    except (TypeError, ValueError):
+        result["plan_from_hour"] = current_hour
 
     today_plan = [
         r for r in live_rows
