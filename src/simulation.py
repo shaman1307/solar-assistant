@@ -115,10 +115,9 @@ def rebuild_tomorrow_plan_soc_from_ea_end(
         return plan_soc_q15
 
     battery_cap = float(cfg["battery"]["capacity_kwh"])
-    min_soc_pct = plan_min_soc_pct(cfg)
-    end_pct = max(float(min_soc_pct), min(100.0, float(ea_end_soc_pct)))
+    end_pct = max(0.0, min(100.0, float(ea_end_soc_pct)))
     seed_kwh = max(
-        (float(min_soc_pct) / 100.0) * battery_cap,
+        0.0,
         min(battery_cap, (end_pct / 100.0) * battery_cap),
     )
     quarters = quarter_rce_for_dates(tomorrow_str).get(tomorrow_str) or []
@@ -221,7 +220,7 @@ def _hourly_soc_kwh(
     soc_series = hourly.get("soc") or [None] * 24
     if hour >= len(soc_series) or soc_series[hour] is None:
         return None
-    pct = max(min_soc_pct, min(100.0, float(soc_series[hour])))
+    pct = max(0.0, min(100.0, float(soc_series[hour])))
     return (pct / 100.0) * battery_cap
 
 
@@ -484,13 +483,13 @@ def build_energy_arbitrage_plan(
 
     live_raw = live_metrics.get("battery_soc")
     if live_raw is not None:
-        initial_soc_pct = max(min_soc_pct, min(100.0, float(live_raw)))
+        initial_soc_pct = max(0.0, min(100.0, float(live_raw)))
     else:
         fallback_pct = last_available_soc_pct(today_hourly, series_10min)
         if fallback_pct is None:
             fallback_pct = last_available_soc_pct(prev_day_hourly, prev_day_series_10min)
         initial_soc_pct = (
-            max(min_soc_pct, min(100.0, float(fallback_pct)))
+            max(0.0, min(100.0, float(fallback_pct)))
             if fallback_pct is not None
             else float(min_soc_pct)
         )
@@ -965,7 +964,7 @@ def build_energy_arbitrage_plan(
             soc_pct = float(r["soc"])
         if soc_pct is None:
             continue
-        pct = max(float(min_soc_pct), min(100.0, soc_pct))
+        pct = max(0.0, min(100.0, soc_pct))
         tom_seed_kwh = (pct / 100.0) * battery_cap
         break
     if tom_seed_kwh is None and smart_today and smart_today.get("end_soc_kwh") is not None:
@@ -973,7 +972,7 @@ def build_energy_arbitrage_plan(
     if tom_seed_kwh is None:
         tom_seed_kwh = float(day_start_soc)
     tom_seed_kwh = max(
-        (float(min_soc_pct) / 100.0) * battery_cap,
+        0.0,
         min(battery_cap, float(tom_seed_kwh)),
     )
     day_plan_tomorrow_for_soc = run_day_smart_q15_plan(

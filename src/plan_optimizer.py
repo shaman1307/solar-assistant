@@ -17,7 +17,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 from .g12_pricing import get_buy_price
-from .grid_config import grid_export_threshold_pln_kwh
+from .grid_config import export_window_start_hour, grid_export_threshold_pln_kwh
 from .plan_spill import build_tail_hour_arrays, pv_load_energy_split, tail_balance_cost_pln
 from .simulation_config import (
     plan_min_soc_kwh,
@@ -260,9 +260,8 @@ def rank_hours_by_avg_rce(
 ) -> list[int]:
     """Hours with rating ≥ floor, richest first (ties: earlier hour).
 
-    Rating is avg RCE rounded to hundredths. Prefer
-    ``pick_next_export_hour`` during allocation so equal ratings prefer
-    proximity to the last successfully assigned hour.
+    Rating is avg RCE rounded to hundredths. Allocation uses
+    ``pick_next_export_hour``: seed the peak, then grow both edges.
     """
     scored: list[tuple[float, int]] = []
     for h in hours:
@@ -277,16 +276,30 @@ def pick_next_export_hour(
     remaining: list[int],
     ratings: dict[int, float],
     *,
-    last_hour: int | None,
+    selected: set[int] | list[int] = (),
+    last_hour: int | None = None,
 ) -> int:
-    """Next hour to try: highest rating; ties → closest to *last_hour* (else earliest)."""
+    """Next hour: grow the current run from the richer edge, else seed the peak.
+
+    Adjacent means absolute hour ± 1 (23 then 24 = next-day H00). Ties on an
+    edge prefer the neighbour of *last_hour*, else the earlier hour. A new
+    window seeds the richest remaining hour (ties: earliest).
+    """
     if not remaining:
         raise ValueError("remaining hours empty")
+    sel = {int(h) for h in selected}
+    if sel:
+        lo, hi = min(sel), max(sel)
+        adj = [h for h in remaining if int(h) == lo - 1 or int(h) == hi + 1]
+        if adj:
+            best = max(float(ratings[h]) for h in adj)
+            tied = [h for h in adj if float(ratings[h]) == best]
+            if last_hour is None:
+                return min(tied)
+            return min(tied, key=lambda h: (abs(int(h) - int(last_hour)), int(h)))
     best = max(float(ratings[h]) for h in remaining)
     tied = [h for h in remaining if float(ratings[h]) == best]
-    if last_hour is None:
-        return min(tied)
-    return min(tied, key=lambda h: (abs(int(h) - int(last_hour)), int(h)))
+    return min(tied)
 
 
 def export_window_roles(selected_hours: set[int] | list[int]) -> dict[int, str]:
@@ -354,6 +367,81 @@ def _hour_steps_in_horizon(
     return out
 
 
+def _hour_pv_covers_load(
+    hour: int,
+    *,
+    pv_series: list[float],
+    load_series: list[float],
+    rce_step_offset: int,
+    slots: int,
+    steps: int,
+    eta_pv_load: float,
+    epsilon: float,
+) -> bool:
+    """Whether this clock hour's PV covers house load (generation underway)."""
+    idxs = _hour_steps_in_horizon(
+        hour=hour, steps=steps, rce_step_offset=rce_step_offset,
+        slots_per_hour=slots,
+    )
+    if not idxs:
+        return False
+    pv_h = sum(float(pv_series[i]) for i in idxs)
+    load_h = sum(float(load_series[i]) for i in idxs)
+    if eta_pv_load <= 0:
+        return False
+    return pv_h * float(eta_pv_load) >= load_h - float(epsilon)
+
+
+def _evening_export_window_hours(
+    hours: list[int],
+    *,
+    pv_series: list[float],
+    load_series: list[float],
+    rce_step_offset: int,
+    slots: int,
+    steps: int,
+    eta_pv_load: float,
+    epsilon: float,
+    export_window_start_hour: int = 16,
+) -> set[int]:
+    """Hours from *export_window_start_hour* until morning PV covers house load.
+
+    Clock hours start–23 are in the sale window even if PV still covers. Overnight
+    00–11 stay in until the first hour where PV covers load. Hours from noon up
+    to (but not including) the start hour stay out.
+    """
+    start = max(0, min(HOURS_PER_DAY - 1, int(export_window_start_hour)))
+    ordered = sorted({int(h) for h in hours})
+    if not ordered:
+        return set()
+    covers = {
+        h: _hour_pv_covers_load(
+            h, pv_series=pv_series, load_series=load_series,
+            rce_step_offset=rce_step_offset, slots=slots, steps=steps,
+            eta_pv_load=eta_pv_load, epsilon=epsilon,
+        )
+        for h in ordered
+    }
+    in_window: set[int] = set()
+    days = sorted({h // HOURS_PER_DAY for h in ordered})
+    for day in days:
+        day_hours = [h for h in ordered if h // HOURS_PER_DAY == day]
+        evening = [
+            h for h in day_hours
+            if h % HOURS_PER_DAY >= start
+        ]
+        morning = [
+            h for h in day_hours
+            if h % HOURS_PER_DAY < _ALL_OFFPEAK_COVER_HOUR_END
+        ]
+        in_window.update(evening)
+        for h in morning:
+            if covers[h]:
+                break
+            in_window.add(h)
+    return in_window
+
+
 @dataclass(frozen=True)
 class _BatteryGridExportHourClaim:
     """Export assignment for one clock hour (rank-order greedy)."""
@@ -368,24 +456,41 @@ class _BatteryGridExportHourClaim:
         return float(sum(self.export_q))
 
 
-def _export_hours_same_run(hours: set[int] | list[int], hour: int) -> set[int]:
-    """Contiguous run containing *hour* (same evening window; not next evening)."""
-    ordered = sorted({int(h) for h in hours} | {int(hour)})
-    if not ordered:
-        return {int(hour)}
-    run = [ordered[0]]
-    runs: list[list[int]] = []
-    for h in ordered[1:]:
-        if h == run[-1] + 1:
-            run.append(h)
-        else:
-            runs.append(run)
-            run = [h]
-    runs.append(run)
-    for block in runs:
-        if int(hour) in block:
-            return set(block)
-    return {int(hour)}
+def _same_sale_window(
+    hour_a: int,
+    hour_b: int,
+    *,
+    export_window_start_hour: int = 16,
+) -> bool:
+    """Whether two absolute hours sit in one start-hour→morning sale window.
+
+    Daytime from noon until *export_window_start_hour* is a gap, so tonight and
+    tomorrow evening are distinct.
+    """
+    start = max(0, min(HOURS_PER_DAY - 1, int(export_window_start_hour)))
+    lo, hi = (int(hour_a), int(hour_b)) if int(hour_a) <= int(hour_b) else (int(hour_b), int(hour_a))
+    for h in range(lo, hi + 1):
+        clock = h % HOURS_PER_DAY
+        if _ALL_OFFPEAK_COVER_HOUR_END <= clock < start:
+            return False
+    return True
+
+
+def _export_hours_same_run(
+    hours: set[int] | list[int],
+    hour: int,
+    *,
+    export_window_start_hour: int = 16,
+) -> set[int]:
+    """Hours in the same start-hour→morning sale window as *hour* (not next evening)."""
+    target = int(hour)
+    out = {target}
+    for h in hours:
+        if _same_sale_window(
+            int(h), target, export_window_start_hour=export_window_start_hour,
+        ):
+            out.add(int(h))
+    return out
 
 
 def _hold_soc_for_later_battery_grid_export_claims(
@@ -394,16 +499,21 @@ def _hold_soc_for_later_battery_grid_export_claims(
     from_hour: int,
     eta_out: float,
     ratings: dict[int, float] | None = None,
+    export_window_start_hour: int = 16,
 ) -> float:
-    """DC kWh to hold for richer later hours in the same evening export run.
+    """DC kWh to hold for richer later hours in the same start-hour→morning window.
 
     Survive-until-morning is already in per-step reserves. Do not hold SOC for a
-    later evening across overnight — that window is re-planned after daytime PV.
+    later evening across the noon→start-hour gap — that window is re-planned after
+    daytime PV. A hole (hour with no Dis) does not split tonight's window.
     Within tonight, only strictly higher-rated later hours may shrink this hour.
     """
     if not claims:
         return 0.0
-    same_run = _export_hours_same_run(set(claims) | {int(from_hour)}, int(from_hour))
+    same_run = _export_hours_same_run(
+        set(claims) | {int(from_hour)}, int(from_hour),
+        export_window_start_hour=export_window_start_hour,
+    )
     from_rating = (
         float(ratings[int(from_hour)])
         if ratings is not None and int(from_hour) in ratings
@@ -734,14 +844,16 @@ def plan_battery_grid_export(
     reserves: list[float],
     export_floor: float,
     min_hourly_kwh: float,
+    export_window_start_hour: int = 16,
 ) -> list[HourControl]:
-    """Plan battery→grid export for hours above the RCE floor.
+    """Plan battery→grid export from the config start hour until morning PV cover.
 
-    Eligible hours are chosen by hourly avg-RCE rank (0.01 rating; ties prefer
-    the neighbour of the last success). SOC is claimed in chronological order
-    inside each contiguous run using the same per-step survive reserve in claim
-    planning and final replay. A later hour opens only when leftover SOC still
-    exceeds the next-hour reserve by at least one min-hourly transfer.
+    Eligible hours are clock start–23 plus overnight until PV covers again, with
+    hourly avg-RCE rating ≥ *export_floor*. Seed the richest hour, then grow
+    both edges by descending rating. SOC is claimed chronologically inside each
+    contiguous run using the same per-step survive reserve in claim planning
+    and final replay. A later hour opens only when leftover SOC still exceeds
+    the next-hour reserve by at least one min-hourly transfer.
     """
     if steps <= 0:
         return list(base_controls)
@@ -749,8 +861,21 @@ def plan_battery_grid_export(
     hours = sorted({
         (rce_step_offset + i) // slots for i in range(steps)
     })
+    window = _evening_export_window_hours(
+        list(hours),
+        pv_series=pv_series,
+        load_series=load_series,
+        rce_step_offset=rce_step_offset,
+        slots=slots,
+        steps=steps,
+        eta_pv_load=eta_pv_load,
+        epsilon=eps_step,
+        export_window_start_hour=export_window_start_hour,
+    )
     ratings: dict[int, float] = {}
     for h in hours:
+        if int(h) not in window:
+            continue
         rating = hour_rce_rating(rce_series, h, slots_per_hour=slots)
         if rating is not None and rating + eps_step >= export_floor:
             ratings[int(h)] = float(rating)
@@ -823,13 +948,15 @@ def plan_battery_grid_export(
         eps_step=eps_step, min_hourly_kwh=min_hourly_kwh,
     )
 
-    # Pass 1: select hours by rating; equal ratings → closest to last success.
+    # Pass 1: seed the richest eligible hour, then grow both edges by rating.
     selected: set[int] = set()
     draft: dict[int, _BatteryGridExportHourClaim] = {}
     remaining = list(ratings.keys())
     last_assigned: int | None = None
     while remaining:
-        h = pick_next_export_hour(remaining, ratings, last_hour=last_assigned)
+        h = pick_next_export_hour(
+            remaining, ratings, selected=selected, last_hour=last_assigned,
+        )
         remaining = [x for x in remaining if x != h]
         trial = selected | {h}
         roles = export_window_roles(trial)
@@ -840,6 +967,7 @@ def plan_battery_grid_export(
         soc0, pv_q, load_q, reserve_q, charge_q, rce_q, hour_end_floor = inputs
         hold = _hold_soc_for_later_battery_grid_export_claims(
             draft, from_hour=h, eta_out=eta_out, ratings=ratings,
+            export_window_start_hour=export_window_start_hour,
         )
         claim = _plan_hour_battery_grid_export_claim(
             hour=h, role=roles[h], soc0=soc0, hold_soc_kwh=hold,
@@ -885,13 +1013,16 @@ def plan_battery_grid_export(
             surplus_dc = max(0.0, soc0 - max(min_kwh, stop_floor))
             if surplus_dc + eps_step < min_next_dc:
                 continue
-        # Do not open an orphan after a skipped hour in the same selected run.
+        # Do not skip a richer hour because a cheaper middle hour has no claim.
         if claims and max(claims) < h - 1 and (h - 1) in selected:
-            continue
+            claimed_best = max(float(ratings.get(c, 0.0)) for c in claims)
+            if float(ratings.get(h, 0.0)) <= claimed_best + 1e-12:
+                continue
         claim = _plan_hour_battery_grid_export_claim(
             hour=h, role=roles.get(h, "single"), soc0=soc0,
             hold_soc_kwh=_hold_soc_for_later_battery_grid_export_claims(
                 draft, from_hour=h, eta_out=eta_out, ratings=ratings,
+                export_window_start_hour=export_window_start_hour,
             ),
             pv_q=pv_q, load_q=load_q, reserve_q=reserve_q, base_charge_q=charge_q,
             rce_q=rce_q, hour_end_floor_kwh=hour_end_floor,
@@ -950,6 +1081,7 @@ def plan_battery_grid_export(
                 hour=h, role=roles.get(h, "single"), soc0=soc0,
                 hold_soc_kwh=_hold_soc_for_later_battery_grid_export_claims(
                     claims, from_hour=h, eta_out=eta_out, ratings=ratings,
+                    export_window_start_hour=export_window_start_hour,
                 ),
                 pv_q=pv_q, load_q=load_q, reserve_q=reserve_q, base_charge_q=charge_q,
                 rce_q=rce_q, hour_end_floor_kwh=hour_end_floor,
@@ -2167,6 +2299,7 @@ def optimize_horizon(
     ]
 
     export_floor = grid_export_threshold_pln_kwh(cfg)
+    window_start = export_window_start_hour(cfg)
 
     for step in range(steps):
         pv = pv_series[step]
@@ -2299,6 +2432,7 @@ def optimize_horizon(
         reserves=reserves,
         export_floor=export_floor,
         min_hourly_kwh=min_hourly_transfer,
+        export_window_start_hour=window_start,
     )
 
     return enforce_min_hourly_battery_grid_limits(

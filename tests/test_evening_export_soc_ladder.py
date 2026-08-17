@@ -45,31 +45,32 @@ USER_RCE = {
     22: (0.897, 0.818, 0.795, 0.716),
 }
 
-# Timer Schedule expectations from offline replay (SOC 75→90 step 5).
+# Timer Schedule: contiguous dusk window from the RCE peak (H20), leftover
+# fills H21 then H22 as SOC allows.
 EXPECTED = {
     75: {
         19: "Dis 19:00-20:00 8.0kW cap35%",
         20: "Dis 20:00-21:00 8.0kW cap34%",
-        21: "",
-        22: "Dis 22:00-22:45 6.5kW cap30%",
+        21: "Dis 21:00-21:45 6.5kW cap33%",
+        22: "",
     },
     80: {
         19: "Dis 19:00-20:00 8.0kW cap35%",
         20: "Dis 20:00-21:00 8.0kW cap34%",
-        21: "",
-        22: "Dis 22:00-23:00 7.5kW cap30%",
+        21: "Dis 21:00-22:00 7.5kW cap32%",
+        22: "",
     },
     85: {
         19: "Dis 19:00-20:00 8.0kW cap35%",
         20: "Dis 20:00-21:00 8.0kW cap34%",
-        21: "",
-        22: "Dis 22:00-23:00 8.0kW cap30%",
+        21: "Dis 21:00-22:00 7.0kW cap32%",
+        22: "Dis 22:00-22:30 7.0kW cap31%",
     },
     90: {
         19: "Dis 19:00-20:00 8.0kW cap35%",
         20: "Dis 20:00-21:00 8.0kW cap34%",
-        21: "Dis 21:00-22:00 5.5kW cap32%",
-        22: "Dis 22:00-23:00 8.0kW cap30%",
+        21: "Dis 21:00-22:00 7.5kW cap32%",
+        22: "Dis 22:00-22:45 7.5kW cap30%",
     },
 }
 
@@ -125,12 +126,8 @@ def _rce_quarters() -> list[float | None]:
 
 
 @pytest.mark.parametrize("soc_pct", [75, 80, 85, 90])
-def test_evening_export_soc_ladder_skips_cheap_h21_for_h22(soc_pct: int):
-    """Richer H22 beats thin H21 until SOC is high enough to fill both.
-
-    Offline case: H19/H20 peak RCE, H21 barely above floor, H22 mid (~0.8).
-    At 75–85% plan gaps H21 and puts leftover on H22; at 90% both open.
-    """
+def test_evening_export_soc_ladder_fills_contiguous_from_peak(soc_pct: int):
+    """Contiguous window from peak H20: leftover fills H21 then H22 as SOC allows."""
     cfg = _cfg()
     params = get_simulation_params(cfg)
     plan = run_day_smart_q15_plan(

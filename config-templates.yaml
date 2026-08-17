@@ -44,6 +44,7 @@ templates:
     grid:
       feed_in_price_pln: 0.2
       grid_export_threshold_pln_kwh: 0.6229
+      export_window_start_hour: 16
       night_charge_start: "23:00"
       night_charge_end: "06:00"
       rce_peak_start: "17:00"

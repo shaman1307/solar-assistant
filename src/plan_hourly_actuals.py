@@ -80,11 +80,6 @@ def _row_from_hourly_actual(
     load = float(load_h) if load_h is not None else 0.0
     min_soc_pct = float(params["min_soc_pct"])
 
-    if soc_h is not None:
-        soc_pct = max(min_soc_pct, min(100.0, float(soc_h)))
-    else:
-        soc_pct = min_soc_pct
-
     if bat_in is not None or bat_out is not None:
         battery_delta = float(bat_in or 0.0) - float(bat_out or 0.0)
     else:
@@ -119,6 +114,12 @@ def _row_from_hourly_actual(
         bat_in_kwh=bat_in_kwh, bat_out_kwh=bat_out_kwh,
         grid_import=grid_import, grid_export=grid_export,
     )
+    if soc_h is not None:
+        soc_pct = _bound_soc_pct(float(soc_h))
+    elif q15:
+        soc_pct = float(q15[-1].get("soc") or 0.0)
+    else:
+        soc_pct = 0.0
 
     return {
         "hour": h,
@@ -162,7 +163,7 @@ def hour_start_soc_kwh(
     """
     if not hourly or not (0 <= hour < 24):
         return None
-    min_kwh = (float(min_soc_pct) / 100.0) * battery_cap
+    del min_soc_pct
     soc_series = hourly.get("soc") or [None] * 24
     if hour == 0:
         # Backtrack only when hour-0 SOC exists; otherwise return None.
@@ -173,16 +174,16 @@ def hour_start_soc_kwh(
 
     prev_pct = soc_series[hour - 1] if hour - 1 < len(soc_series) else None
     if prev_pct is not None:
-        pct = max(min_soc_pct, min(100.0, float(prev_pct)))
+        pct = _bound_soc_pct(float(prev_pct))
         return (pct / 100.0) * battery_cap
 
     end_pct = soc_series[hour] if hour < len(soc_series) else None
     if end_pct is None:
         return None
-    end_kwh = (max(min_soc_pct, min(100.0, float(end_pct))) / 100.0) * battery_cap
+    end_kwh = (_bound_soc_pct(float(end_pct)) / 100.0) * battery_cap
     bc = float((hourly.get("bat_charge") or [None] * 24)[hour] or 0.0)
     bd = float((hourly.get("bat_discharge") or [None] * 24)[hour] or 0.0)
-    return max(min_kwh, min(battery_cap, end_kwh - bc + bd))
+    return min(battery_cap, max(0.0, end_kwh - bc + bd))
 
 
 def last_available_soc_pct(
@@ -223,11 +224,11 @@ def resolve_day_start_soc_kwh(
 
     prev_pct = last_available_soc_pct(prev_day_hourly, prev_day_series_10min)
     if prev_pct is not None:
-        pct = max(float(min_soc_pct), min(100.0, prev_pct))
-        return max(min_kwh, min(cap, (pct / 100.0) * cap))
+        pct = _bound_soc_pct(prev_pct)
+        return min(cap, max(0.0, (pct / 100.0) * cap))
 
     if live_soc_kwh is not None:
-        return max(min_kwh, min(cap, float(live_soc_kwh)))
+        return min(cap, max(0.0, float(live_soc_kwh)))
 
     backtrack = hour_start_soc_kwh(today_hourly, 0, cap, float(min_soc_pct))
     if backtrack is not None:
@@ -286,11 +287,10 @@ def build_h0_carryover_row(
     if all(v is None for v in (bat_in, bat_out, grid_buy_h, grid_sell_h, soc_h)):
         return None
 
-    min_soc_pct = float(params["min_soc_pct"])
     if soc_h is not None:
-        soc_pct = max(min_soc_pct, min(100.0, float(soc_h)))
+        soc_pct = _bound_soc_pct(float(soc_h))
     else:
-        soc_pct = min_soc_pct
+        soc_pct = 0.0
 
     bat_in_kwh = float(bat_in or 0.0)
     bat_out_kwh = float(bat_out or 0.0)
@@ -827,7 +827,9 @@ def _soc_kwh_after_battery_delta(
     min_kwh: float,
     battery_cap: float,
 ) -> float:
-    return max(min_kwh, min(battery_cap, soc_kwh + battery_delta_kwh))
+    """Integrate meter battery ΔSOC. Do not lift below the plan min floor."""
+    del min_kwh
+    return min(float(battery_cap), max(0.0, float(soc_kwh) + float(battery_delta_kwh)))
 
 
 def simulate_blended_current_hour_q15(
@@ -883,16 +885,21 @@ def simulate_blended_current_hour_q15(
             soc_kwh = _soc_kwh_after_battery_delta(
                 soc_kwh, bat_delta, min_kwh=min_kwh, battery_cap=battery_cap,
             )
+            meter_pct = meter_soc_pct_for_q15(series_10min, hour, q)
             q15.append({
                 "quarter": q,
                 "production": round(pv, 4),
                 "consumption": round(load, 4),
-                "soc": _clamp_soc_pct((soc_kwh / battery_cap) * 100.0, min_soc_pct),
+                "soc": meter_pct if meter_pct is not None else _bound_soc_pct(
+                    (soc_kwh / battery_cap) * 100.0
+                ),
                 "battery": bat_delta,
                 "grid_import": grid_import,
                 "grid_export": grid_export,
                 "from_actual": True,
             })
+            if meter_pct is not None:
+                soc_kwh = (meter_pct / 100.0) * battery_cap
             continue
 
         if sa_timer_txt and (
@@ -1167,8 +1174,85 @@ def blend_current_hour_end(
     return round(sum(s[0] for s in slots), 3), round(sum(s[1] for s in slots), 3)
 
 
+def _bound_soc_pct(pct: float) -> float:
+    """Bound meter/display SOC to 0–100%. Do not lift to the plan min floor."""
+    return round(max(0.0, min(100.0, float(pct))), 1)
+
+
 def _clamp_soc_pct(pct: float, min_soc_pct: float) -> float:
-    return round(max(min_soc_pct, min(100.0, pct)), 1)
+    """Bound SOC to 0–100% for EA display and meter freeze.
+
+    *min_soc_pct* is unused — plan min is a discharge reserve, not an inverter
+    SOC floor. Meter readings below the plan min stay as reported.
+    """
+    del min_soc_pct
+    return _bound_soc_pct(pct)
+
+
+def meter_soc_pct_for_q15(
+    series_10min: dict[str, list[float | None]] | None,
+    hour: int,
+    quarter: int,
+    *,
+    today_hourly: dict[str, list[float | None]] | None = None,
+) -> float | None:
+    """Inverter SOC % at the end of a 15-min slot (10-min series, else hourly)."""
+    if not (0 <= int(hour) < 24 and 0 <= int(quarter) < Q15_PER_HOUR):
+        return None
+    arr = (series_10min or {}).get("soc") or []
+    end_min = (int(quarter) + 1) * 15
+    ten_idx = min(SLOTS_PER_HOUR_10M - 1, max(0, (end_min - 1) // 10))
+    idx = int(hour) * SLOTS_PER_HOUR_10M + ten_idx
+    if 0 <= idx < len(arr) and arr[idx] is not None:
+        return _bound_soc_pct(float(arr[idx]))
+    hourly = (today_hourly or {}).get("soc") or []
+    if int(quarter) == Q15_PER_HOUR - 1 and int(hour) < len(hourly) and hourly[hour] is not None:
+        return _bound_soc_pct(float(hourly[hour]))
+    return None
+
+
+def overlay_meter_soc_on_rows(
+    rows: list[dict[str, Any]] | None,
+    *,
+    today_str: str,
+    today_hourly: dict[str, list[float | None]] | None,
+    series_10min: dict[str, list[float | None]] | None,
+    current_hour: int | None = None,
+) -> None:
+    """Write Influx/inverter SOC onto EA rows. Timers and energy stay unchanged."""
+    if not rows:
+        return
+    for row in rows:
+        if str(row.get("plan_date") or "") != today_str:
+            continue
+        try:
+            hour = int(row.get("hour", -1))
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= hour < 24):
+            continue
+        q15 = row.get("q15") or []
+        history = bool(row.get("history_hour"))
+        last = None
+        for slot in q15:
+            try:
+                q = int(slot.get("quarter", 0))
+            except (TypeError, ValueError):
+                continue
+            if current_hour is not None and hour == current_hour and not history:
+                if not slot.get("from_actual"):
+                    continue
+            elif current_hour is not None and hour > current_hour:
+                continue
+            pct = meter_soc_pct_for_q15(
+                series_10min, hour, q, today_hourly=today_hourly,
+            )
+            if pct is None:
+                continue
+            slot["soc"] = pct
+            last = pct
+        if last is not None:
+            row["soc"] = last
 
 
 def _q15_hour_energy_slots(q15: list[float] | None, hour: int) -> list[float]:
@@ -1210,18 +1294,25 @@ def build_history_hour_q15(
     load_h = float(_hourly_slot(hourly, hour, "load") or 0.0)
     soc_end = _hourly_slot(hourly, hour, "soc")
     soc_end_pct = (
-        _clamp_soc_pct(float(soc_end), min_soc_pct)
+        _bound_soc_pct(float(soc_end))
         if soc_end is not None
-        else min_soc_pct
+        else None
     )
     if hour > 0:
         soc_prev = _hourly_slot(hourly, hour - 1, "soc")
         soc_start_pct = (
-            _clamp_soc_pct(float(soc_prev), min_soc_pct)
+            _bound_soc_pct(float(soc_prev))
             if soc_prev is not None
             else soc_end_pct
         )
     else:
+        soc_start_pct = soc_end_pct
+    if soc_end_pct is None and soc_start_pct is None:
+        soc_end_pct = 0.0
+        soc_start_pct = 0.0
+    elif soc_end_pct is None:
+        soc_end_pct = soc_start_pct
+    elif soc_start_pct is None:
         soc_start_pct = soc_end_pct
 
     battery_delta = bat_in_kwh - bat_out_kwh
@@ -1233,7 +1324,7 @@ def build_history_hour_q15(
             "quarter": q,
             "production": round(pv_h / Q15_PER_HOUR, 4),
             "consumption": round(load_h / Q15_PER_HOUR, 4),
-            "soc": _clamp_soc_pct(soc, min_soc_pct),
+            "soc": _bound_soc_pct(soc),
             "battery": round(battery_delta / Q15_PER_HOUR, 4),
             "grid_import": round(grid_import / Q15_PER_HOUR, 4),
             "grid_export": round(grid_export / Q15_PER_HOUR, 4),
@@ -1555,18 +1646,19 @@ def build_actual_hour_row(
     load = float(load_h) if load_h is not None else 0.0
 
     battery_cap = float(cfg["battery"]["capacity_kwh"])
-    min_soc_pct = float(params["min_soc_pct"])
     live_raw = live_metrics.get("battery_soc")
     if live_raw is not None:
-        live_soc_pct = max(min_soc_pct, min(100.0, float(live_raw)))
+        live_soc_pct = _bound_soc_pct(float(live_raw))
     else:
-        live_soc_pct = float(min_soc_pct)
-    soc_kwh = (live_soc_pct / 100.0) * battery_cap
+        live_soc_pct = None
+    soc_kwh = ((live_soc_pct if live_soc_pct is not None else 0.0) / 100.0) * battery_cap
 
     if soc_h is not None:
-        soc_pct = max(min_soc_pct, min(100.0, float(soc_h)))
-    else:
+        soc_pct = _bound_soc_pct(float(soc_h))
+    elif live_soc_pct is not None:
         soc_pct = live_soc_pct
+    else:
+        soc_pct = 0.0
 
     if bat_in is not None or bat_out is not None:
         battery_delta = float(bat_in or 0.0) - float(bat_out or 0.0)

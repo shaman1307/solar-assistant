@@ -37,7 +37,7 @@ from .simulation_config import (
 from .sqlite_store import load_plan_day_archive, read_plan, write_plan
 from .timer_plan import build_hourly_schedule
 from .plan_cost import compute_plan_totals
-from .plan_hourly_actuals import build_completed_history_rows
+from .plan_hourly_actuals import build_completed_history_rows, overlay_meter_soc_on_rows
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +49,49 @@ def _get_plan_lock() -> asyncio.Lock:
     if _plan_lock is None:
         _plan_lock = asyncio.Lock()
     return _plan_lock
+
+
+def _overlay_meter_soc_on_plan(
+    plan: dict[str, Any],
+    metrics: dict[str, Any] | None,
+    now,
+) -> None:
+    """Replace EA SOC with Influx/inverter readings (may be below plan min)."""
+    today_str = now.strftime("%Y-%m-%d")
+    hourly = (metrics or {}).get("today_hourly")
+    series = (metrics or {}).get("series_10min")
+    overlay_meter_soc_on_rows(
+        plan.get("history_rows"),
+        today_str=today_str,
+        today_hourly=hourly,
+        series_10min=series,
+        current_hour=now.hour,
+    )
+    overlay_meter_soc_on_rows(
+        plan.get("rows"),
+        today_str=today_str,
+        today_hourly=hourly,
+        series_10min=series,
+        current_hour=now.hour,
+    )
+
+
+async def _metrics_for_soc_overlay() -> dict[str, Any]:
+    """Influx day payload for SOC overlay on a cached plan GET."""
+    today_str = now_warsaw().strftime("%Y-%m-%d")
+    try:
+        day = await influxdb_mod.get_accruals_for_date(today_str)
+    except Exception:
+        log.warning("Meter SOC overlay — Influx fetch failed", exc_info=True)
+        return {}
+    if not isinstance(day, dict):
+        return {}
+    out: dict[str, Any] = {}
+    if day.get("hourly"):
+        out["today_hourly"] = day["hourly"]
+    if day.get("series_10min"):
+        out["series_10min"] = day["series_10min"]
+    return out
 
 
 def extract_plan_soc_hourly(plan: dict[str, Any] | None) -> dict[str, list[float | None]]:
@@ -400,7 +443,7 @@ async def build_plan_simulation(
         if result.get("rce"):
             rce_mod._refresh_current_price(result["rce"])
             result["rce_current"] = result["rce"].get("current_price_pln_kwh")
-        # Always re-clip actual SOC to "now" (future EA rows are plan, not fact).
+        _overlay_meter_soc_on_plan(result, await _metrics_for_soc_overlay(), now)
         result["actual_soc_q15"] = extract_actual_soc_q15(result, now=now)
         return result
 
@@ -411,6 +454,7 @@ async def build_plan_simulation(
             if result.get("rce"):
                 rce_mod._refresh_current_price(result["rce"])
                 result["rce_current"] = result["rce"].get("current_price_pln_kwh")
+            _overlay_meter_soc_on_plan(result, await _metrics_for_soc_overlay(), now)
             result["actual_soc_q15"] = extract_actual_soc_q15(result, now=now)
             return result
 
@@ -458,6 +502,7 @@ async def build_plan_simulation(
         result["plan_soc_day_locked"] = any(
             v is not None for v in (result["plan_soc_q15"].get("today") or [])
         )
+        _overlay_meter_soc_on_plan(result, metrics, now)
         result["actual_soc_q15"] = extract_actual_soc_q15(result, now=now)
         if store_cache:
             write_plan(result, now=now)
@@ -529,6 +574,7 @@ async def hourly_plan_refresh(
         result["plan_soc_day_locked"] = any(
             v is not None for v in (result["plan_soc_q15"].get("today") or [])
         )
+        _overlay_meter_soc_on_plan(result, metrics, now)
         result["actual_soc_q15"] = extract_actual_soc_q15(result, now=now)
 
         result["next_hour"] = (now.hour + 1) % 24

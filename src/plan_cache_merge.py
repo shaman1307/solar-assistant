@@ -13,11 +13,14 @@ from .plan_hourly_actuals import (
     Q15_PER_HOUR,
     _actual_q15_battery_grid,
     _actual_q15_slice_kwh,
+    _bound_soc_pct,
     _clamp_soc_pct,
     _soc_kwh_after_battery_delta,
     apply_open_pull_quarter_to_row,
     apply_q15_physics_to_row,
     hour_start_soc_kwh,
+    meter_soc_pct_for_q15,
+    overlay_meter_soc_on_rows,
     refresh_row_grid_cash,
 )
 from .simulation_config import plan_min_soc_kwh, plan_min_soc_pct
@@ -279,11 +282,15 @@ def _build_actual_q15_slot(
         min_kwh=min_kwh,
         battery_cap=battery_cap,
     )
+    meter_pct = meter_soc_pct_for_q15(series_10min, hour, quarter)
+    soc_pct = meter_pct if meter_pct is not None else _bound_soc_pct(
+        (soc_kwh / battery_cap) * 100.0
+    )
     return {
         "quarter": quarter,
         "production": round(pv, 4),
         "consumption": round(load, 4),
-        "soc": _clamp_soc_pct((soc_kwh / battery_cap) * 100.0, min_soc_pct),
+        "soc": soc_pct,
         "battery": bat_delta,
         "grid_import": grid_import,
         "grid_export": grid_export,
@@ -992,6 +999,20 @@ def merge_incremental_plan(
 
     merged["history_rows"] = history
     merged["rows"] = out_rows
+    overlay_meter_soc_on_rows(
+        merged["history_rows"],
+        today_str=today_str,
+        today_hourly=today_hourly,
+        series_10min=series_10min,
+        current_hour=current_hour,
+    )
+    overlay_meter_soc_on_rows(
+        merged["rows"],
+        today_str=today_str,
+        today_hourly=today_hourly,
+        series_10min=series_10min,
+        current_hour=current_hour,
+    )
     merged["has_history_rows"] = bool(history)
     merged["computed_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
     merged["today_date"] = today_str

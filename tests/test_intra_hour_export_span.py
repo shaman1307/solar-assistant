@@ -120,9 +120,9 @@ def test_middle_role_still_full_hour_only():
     assert claim.span == (0, 4)
 
 
-def test_plan_declining_morning_hour_not_late_only_dis():
-    """End-to-end: single morning hour with declining RCE + PV."""
-    hour = 9
+def test_plan_declining_evening_hour_not_late_only_dis():
+    """End-to-end: single evening hour with declining RCE."""
+    hour = 19
     offset = hour * 4
     steps = 4
     rce = [None] * offset + [0.78, 0.75, 0.63, 0.54]
@@ -130,7 +130,7 @@ def test_plan_declining_morning_hour_not_late_only_dis():
     controls = plan_battery_grid_export(
         base,
         steps=steps,
-        pv_series=[0.86] * steps,
+        pv_series=[0.0] * steps,
         load_series=[0.16] * steps,
         rce_series=rce,
         rce_step_offset=offset,

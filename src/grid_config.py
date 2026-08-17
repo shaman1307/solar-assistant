@@ -46,12 +46,27 @@ def merge_grid_defaults(cfg: dict[str, Any]) -> dict[str, Any]:
             float(grid["grid_export_threshold_pln_kwh"]), 4,
         )
 
+    if grid.get("export_window_start_hour") is None:
+        grid["export_window_start_hour"] = 16
+    else:
+        grid["export_window_start_hour"] = max(
+            0, min(23, int(grid["export_window_start_hour"])),
+        )
+
     return cfg
 
 
 def grid_export_threshold_pln_kwh(cfg: dict[str, Any]) -> float:
     merge_grid_defaults(cfg)
     return float(cfg["grid"]["grid_export_threshold_pln_kwh"])
+
+
+def export_window_start_hour(cfg: dict[str, Any] | None = None) -> int:
+    """Clock hour when the battery→grid sale window opens (default 16)."""
+    if cfg is None:
+        return 16
+    merge_grid_defaults(cfg)
+    return int(cfg["grid"]["export_window_start_hour"])
 
 
 def compute_service_fee_pln(total_import_kwh: float, cfg: dict[str, Any]) -> float:

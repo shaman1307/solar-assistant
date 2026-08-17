@@ -2778,6 +2778,10 @@
           <input name="grid.grid_export_threshold_pln_kwh" type="number" step="0.0001" required
             title="Minimum RCE (PLN/kWh brutto) to allow battery export in smart planning and simulations. PV spill export is not gated by this value."
             class="w-full bg-white border border-amber-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          <label class="text-xs text-gray-700 block font-medium pt-1" title="Clock hour when the battery→grid sale window opens. Window ends at next-day PV cover.">Export window start hour</label>
+          <input name="grid.export_window_start_hour" type="number" min="0" max="23" step="1" required
+            title="Clock hour when the battery→grid sale window opens. Window ends at next-day PV cover."
+            class="w-full bg-white border border-amber-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
         </div>
       </fieldset>
 
@@ -4177,8 +4181,8 @@ async function refreshSimView() {
   try {
     const date = document.getElementById('sim-date')?.value || DEBUG_TODAY;
     if (date === DEBUG_TODAY) {
-      // Always force a plan rebuild (not a cached GET).
-      await refreshQuarterCycle({ silent: false, syncSliders: false, force: true });
+      // Same path as a page load: stored plan + meter SOC overlay, no optimizer rebuild.
+      await refreshQuarterCycle({ silent: false, syncSliders: false, force: false });
       return;
     }
     await loadSimulationForDate(date, { force: true });
@@ -7776,9 +7780,6 @@ async function refreshQuarterCycle(options = {}) {
   }
   await loadForecast(true, { syncSliders });
   await preloadSimulation(force);
-  if (currentTab === 'simulation' && simData && simViewIsToday()) {
-    renderSimulationBundle(simData);
-  }
   if (currentTab === 'dashboard') {
     const dateStr = document.getElementById('accruals-date')?.value || DEBUG_TODAY;
     if (dateStr === DEBUG_TODAY) {

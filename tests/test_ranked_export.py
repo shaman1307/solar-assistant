@@ -15,6 +15,7 @@ from src.plan_optimizer import (
     optimize_horizon,
     pick_next_export_hour,
     rank_hours_by_avg_rce,
+    _evening_export_window_hours,
 )
 from src.simulation_config import (
     get_simulation_params,
@@ -85,32 +86,29 @@ def test_hour_rce_rating_rounds_to_hundredths():
     assert rank_hours_by_avg_rce([0, 1, 2], rce, 0.5) == [2, 0, 1]
 
 
-def test_pick_next_export_hour_prefers_proximity_on_tie():
-    ratings = {18: 1.0, 20: 1.0, 21: 1.0, 17: 0.8}
-    # First pick among top rating: earliest
-    assert pick_next_export_hour([18, 20, 21, 17], ratings, last_hour=None) == 18
-    # After 18: among remaining top (20,21) pick closer → 20
-    assert pick_next_export_hour([20, 21, 17], ratings, last_hour=18) == 20
-    # After 20: 21 still tops 17
-    assert pick_next_export_hour([21, 17], ratings, last_hour=20) == 21
-    assert pick_next_export_hour([17], ratings, last_hour=21) == 17
-    # After rich hour 21: equal 0.90 at 18 and 20 → prefer 20 (closer)
+def test_pick_next_export_hour_seeds_peak_then_grows_edges():
+    ratings = {18: 1.28, 19: 1.47, 20: 1.40, 21: 1.17}
+    remaining = [18, 19, 20, 21]
+    assert pick_next_export_hour(remaining, ratings, selected=set()) == 19
+    assert pick_next_export_hour([18, 20, 21], ratings, selected={19}) == 20
+    assert pick_next_export_hour([18, 21], ratings, selected={19, 20}) == 18
+    assert pick_next_export_hour([21], ratings, selected={18, 19, 20}) == 21
+    # Equal-rating edges: prefer the neighbour of the last assigned hour.
     ratings2 = {21: 1.0, 18: 0.9, 20: 0.9}
-    assert pick_next_export_hour([18, 20], ratings2, last_hour=21) == 20
+    assert pick_next_export_hour(
+        [18, 20], ratings2, selected={21}, last_hour=21,
+    ) == 20
 
 
 def test_equal_rating_after_rich_hour_prefers_neighbor():
-    """Allocator tries the nearer equal-rating hour before a distant one.
-
-    Static (-rating, hour) would try 16 before 20 after rich 19; proximity tries 20 first.
-    """
+    """Allocator grows the nearer equal-rating edge before a distant hour."""
     import src.plan_optimizer as po
 
     orig = po.pick_next_export_hour
     tried: list[int] = []
 
-    def _wrap(remaining, ratings, *, last_hour):
-        h = orig(remaining, ratings, last_hour=last_hour)
+    def _wrap(remaining, ratings, *, selected=(), last_hour=None):
+        h = orig(remaining, ratings, selected=selected, last_hour=last_hour)
         tried.append(h)
         return h
 
@@ -157,6 +155,258 @@ def test_equal_rating_after_rich_hour_prefers_neighbor():
 
     assert tried[0] == 19
     assert tried.index(20) < tried.index(16)
+
+
+def test_export_window_starts_at_16():
+    """Sale window is clock 16–23; 14–15 stay out even with no PV."""
+    offset = 14 * 4
+    steps = 32  # H14..H21
+    hours = list(range(14, 22))
+    window = _evening_export_window_hours(
+        hours,
+        pv_series=[0.0] * steps,
+        load_series=[0.5 / 4] * steps,
+        rce_step_offset=offset,
+        slots=4,
+        steps=steps,
+        eta_pv_load=1.0,
+        epsilon=0.01,
+    )
+    assert window == {16, 17, 18, 19, 20, 21}
+
+
+def test_export_window_respects_configured_start_hour():
+    """Start hour 18 keeps 16–17 out of the sale window."""
+    offset = 16 * 4
+    steps = 24
+    hours = list(range(16, 22))
+    window = _evening_export_window_hours(
+        hours,
+        pv_series=[0.0] * steps,
+        load_series=[0.5 / 4] * steps,
+        rce_step_offset=offset,
+        slots=4,
+        steps=steps,
+        eta_pv_load=1.0,
+        epsilon=0.01,
+        export_window_start_hour=18,
+    )
+    assert window == {18, 19, 20, 21}
+
+
+def test_export_window_includes_16_even_when_pv_covers():
+    """H16/H17 stay in the window when PV still covers load."""
+    offset = 16 * 4
+    steps = 24  # H16..H21
+    pv = (
+        [3.044 / 4] * 4
+        + [1.587 / 4] * 4
+        + [0.321 / 4] * 4
+        + [0.0] * 12
+    )
+    load = (
+        [0.531 / 4] * 4
+        + [0.645 / 4] * 4
+        + [0.695 / 4] * 4
+        + [0.887 / 4] * 4
+        + [1.035 / 4] * 4
+        + [1.117 / 4] * 4
+    )
+    hours = list(range(16, 22))
+    window = _evening_export_window_hours(
+        hours,
+        pv_series=pv,
+        load_series=load,
+        rce_step_offset=offset,
+        slots=4,
+        steps=steps,
+        eta_pv_load=1.0,
+        epsilon=0.01,
+    )
+    assert window == {16, 17, 18, 19, 20, 21}
+
+
+def test_peak_seeded_then_grows_back_through_16():
+    """Window from 16: seed H20, then H19 / H21 / H18 / H17 / H16 by rating."""
+    import src.plan_optimizer as po
+
+    orig = po.pick_next_export_hour
+    tried: list[int] = []
+
+    def _wrap(remaining, ratings, *, selected=(), last_hour=None):
+        h = orig(remaining, ratings, selected=selected, last_hour=last_hour)
+        tried.append(h)
+        return h
+
+    po.pick_next_export_hour = _wrap
+    try:
+        offset = 16 * 4
+        steps = 24
+        rce = (
+            [None] * offset
+            + [0.69] * 4  # 16
+            + [0.73] * 4  # 17
+            + [0.86] * 4  # 18 leftover PV
+            + [1.10] * 4  # 19
+            + [1.15] * 4  # 20 peak
+            + [1.10] * 4  # 21
+        )
+        pv = (
+            [3.044 / 4] * 4
+            + [1.587 / 4] * 4
+            + [0.321 / 4] * 4
+            + [0.0] * 12
+        )
+        load = [0.7 / 4] * steps
+        base = [HourControl(0.0, 0.0) for _ in range(steps)]
+        controls = plan_battery_grid_export(
+            base,
+            steps=steps,
+            pv_series=pv,
+            load_series=load,
+            rce_series=rce,
+            rce_step_offset=offset,
+            step_scale=0.25,
+            initial_soc_kwh=36.0,
+            battery_cap=40.0,
+            min_kwh=6.4,
+            discharge_dc_step=2.0,
+            inverter_ac_step=2.0,
+            eta_grid=1.0,
+            eta_out=1.0,
+            eta_pv_load=1.0,
+            eta_pv_grid=1.0,
+            eta_pv_battery=1.0,
+            eps_step=0.01,
+            reserves=[6.4] * steps,
+            export_floor=0.62,
+            min_hourly_kwh=0.5,
+        )
+    finally:
+        po.pick_next_export_hour = orig
+
+    def hour_export(clock: int) -> float:
+        return sum(
+            controls[step].battery_export_kwh
+            for step in range(steps)
+            if (offset + step) // 4 == clock
+        )
+
+    assert tried[:6] == [20, 19, 21, 18, 17, 16]
+    assert hour_export(20) > 0.5
+    assert hour_export(19) > 0.5
+
+
+def test_hold_keeps_peak_when_h18_has_no_claim():
+    """H17 must not dump SOC when H18 has PV cover and H20 is richer."""
+    offset = 16 * 4
+    steps = 24
+    rce = (
+        [None] * offset
+        + [0.69] * 4
+        + [0.73] * 4
+        + [0.86] * 4
+        + [1.10] * 4
+        + [1.15] * 4
+        + [1.10] * 4
+    )
+    pv = (
+        [3.044 / 4] * 4
+        + [1.587 / 4] * 4
+        + [1.104 / 4] * 4
+        + [0.0] * 12
+    )
+    load = [0.7 / 4] * steps
+    base = [HourControl(0.0, 0.0) for _ in range(steps)]
+    controls = plan_battery_grid_export(
+        base,
+        steps=steps,
+        pv_series=pv,
+        load_series=load,
+        rce_series=rce,
+        rce_step_offset=offset,
+        step_scale=0.25,
+        initial_soc_kwh=22.0,
+        battery_cap=40.0,
+        min_kwh=8.0,
+        discharge_dc_step=2.0,
+        inverter_ac_step=2.0,
+        eta_grid=1.0,
+        eta_out=1.0,
+        eta_pv_load=1.0,
+        eta_pv_grid=1.0,
+        eta_pv_battery=1.0,
+        eps_step=0.01,
+        reserves=[8.0] * steps,
+        export_floor=0.62,
+        min_hourly_kwh=2.0,
+    )
+
+    def hour_export(clock: int) -> float:
+        return sum(
+            controls[step].battery_export_kwh
+            for step in range(steps)
+            if (offset + step) // 4 == clock
+        )
+
+    assert hour_export(20) >= 2.0
+    assert hour_export(17) <= hour_export(20)
+
+
+def test_hold_keeps_peak_when_h18_has_no_claim():
+    """H17 must not dump SOC when H18 has PV cover and H20 is richer."""
+    offset = 16 * 4
+    steps = 24
+    rce = (
+        [None] * offset
+        + [0.69] * 4
+        + [0.73] * 4
+        + [0.86] * 4
+        + [1.10] * 4
+        + [1.15] * 4
+        + [1.10] * 4
+    )
+    pv = (
+        [3.044 / 4] * 4
+        + [1.587 / 4] * 4
+        + [1.104 / 4] * 4
+        + [0.0] * 12
+    )
+    load = [0.7 / 4] * steps
+    base = [HourControl(0.0, 0.0) for _ in range(steps)]
+    controls = plan_battery_grid_export(
+        base,
+        steps=steps,
+        pv_series=pv,
+        load_series=load,
+        rce_series=rce,
+        rce_step_offset=offset,
+        step_scale=0.25,
+        initial_soc_kwh=22.0,
+        battery_cap=40.0,
+        min_kwh=8.0,
+        discharge_dc_step=2.0,
+        inverter_ac_step=2.0,
+        eta_grid=1.0,
+        eta_out=1.0,
+        eta_pv_load=1.0,
+        eta_pv_grid=1.0,
+        eta_pv_battery=1.0,
+        eps_step=0.01,
+        reserves=[8.0] * steps,
+        export_floor=0.62,
+        min_hourly_kwh=2.0,
+    )
+
+    def hour_export(clock: int) -> float:
+        return sum(
+            controls[step].battery_export_kwh
+            for step in range(steps)
+            if (offset + step) // 4 == clock
+        )
+
+    assert hour_export(20) >= 2.0
+    assert hour_export(17) <= hour_export(20)
 
 
 def test_export_window_roles_and_spans():
@@ -443,19 +693,17 @@ def test_plan_rows_never_show_orphan_export_without_dis_timer():
 
 def test_middle_hour_is_full_four_quarters():
     base = [HourControl(0.0, 0.0) for _ in range(12)]
-    selected = {10, 11, 12}
+    selected = {19, 20, 21}
     roles = export_window_roles(selected)
-    assert roles[11] == "middle"
-    spans = {10: (0, 4), 11: (0, 4), 12: (0, 4)}
-    # Direct span check via candidates
-    assert export_span_candidates(roles[11]) == [(0, 4)]
-    offset = 10 * 4
+    assert roles[20] == "middle"
+    assert export_span_candidates(roles[20]) == [(0, 4)]
+    offset = 19 * 4
     controls = plan_battery_grid_export(
         base,
         steps=12,
         pv_series=[0.0] * 12,
         load_series=[0.1] * 12,
-        rce_series=[0.9] * (13 * 4),
+        rce_series=[0.9] * (22 * 4),
         rce_step_offset=offset,
         step_scale=0.25,
         initial_soc_kwh=35.0,
