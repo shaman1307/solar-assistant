@@ -35,6 +35,13 @@ def test_meter_soc_pct_for_q15_uses_10min_bucket():
     assert meter_soc_pct_for_q15(series, 5, 3) == 16.2
 
 
+def test_meter_soc_q1_prefers_half_hour_sample():
+    series = {"soc": [None] * 144}
+    series["soc"][12 * 6 + 2] = 50.0  # 12:20
+    series["soc"][12 * 6 + 3] = 48.0  # 12:30
+    assert meter_soc_pct_for_q15(series, 12, 1) == 48.0
+
+
 def test_overlay_replaces_clamped_history_soc():
     rows = [{
         "plan_date": "2026-08-17",

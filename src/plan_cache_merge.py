@@ -169,13 +169,12 @@ def last_completed_quarter_tick(now: datetime) -> tuple[int, int]:
 
 
 def freeze_ready_quarter_tick(now: datetime) -> tuple[int, int]:
-    """Return (hour_offset, quarter) ready to freeze from Influx (one-tick lag).
+    """Return (hour_offset, quarter) ready to freeze from Influx.
 
-    At a clock boundary Influx typically has finished 10-min buckets only through
-    the *previous* q15. Example at :30: series has :00-:10 and :10-:20, enough
-    for :00-:15 (q0), not yet a full :15-:30 (q1).
+    The :30 plan job starts at :31 so the :20-:30 10-min bucket is present;
+    freeze through current q1. Other ticks still wait one q15 for GROUP BY.
 
-      :30 → (0, 0)  current q0 (:00-:15)
+      :30/:31 → (0, 1) current q1 (:15-:30)
       :45 → (0, 1)  current q1 (:15-:30)
       :00 → (-1, 2) previous q2 (:30-:45)
       :15 → (-1, 3) previous q3 (:45-:00)
@@ -188,6 +187,8 @@ def freeze_ready_quarter_tick(now: datetime) -> tuple[int, int]:
         return -1, 2
     if hour_offset == 0 and tick_q == 0:
         return -1, 3
+    if hour_offset == 0 and tick_q == 1:
+        return 0, 1
     if hour_offset == 0 and tick_q >= 1:
         return 0, tick_q - 1
     return 0, -1
@@ -220,7 +221,8 @@ def quarter_tick_now(now: datetime) -> datetime:
 
     Long Open-Meteo / sim work can push wall-clock past the minute; merge must
     still treat the scheduled quarter boundary as the tick (so :00 still
-    finalizes previous-hour q3 after a delayed start).
+    finalizes previous-hour q3 after a delayed start). The :31 cron floors to
+    :30.
     """
     minute = (int(now.minute) // 15) * 15
     return now.replace(minute=minute, second=0, microsecond=0)
@@ -411,8 +413,7 @@ def _finalize_history_actual_quarters(
 ) -> int:
     """Fill Influx-ready unfrozen q15 on today's past history hours.
 
-    Respects one-tick lag (e.g. previous-hour q3 only from :15). Does not
-    rewrite already-frozen slots.
+    Previous-hour q3 freezes from :15. Does not rewrite already-frozen slots.
     """
     fixed = 0
     for row in history:
@@ -463,13 +464,13 @@ def datafix_completed_quarters_from_live(
 ) -> bool:
     """Update Influx-ready completed quarters; rechain later slots.
 
-    One-tick lag: at :30 freeze only q0 (:00-:15). Earlier frozen slots stay.
+    At :30 freeze q0–q1 (:00-:30). Earlier frozen slots stay.
     Before :30 in the current hour, nothing is freeze-ready here.
     """
     del live_soc_kwh  # mid-hour meter; never treat as hour-start for EOH display
     min_soc_pct = plan_min_soc_pct(cfg)
     min_kwh = plan_min_soc_kwh(cfg)
-    # One-tick lag: freeze only the quarter whose Influx 10-min windows are ready.
+    # Freeze quarters whose Influx 10-min windows are ready at this tick.
     fo, fq = freeze_ready_quarter_tick(now)
     freeze_through = fq if (fo == 0 and fq >= 0) else -1
     if freeze_through < 0:
@@ -1254,7 +1255,7 @@ def _merge_current_hour_future_quarters(
 ) -> dict[str, Any]:
     """Keep Influx-frozen quarters; open / lagging quarters from incoming.
 
-    At :30 only q0 is freeze-ready (:00-:15); q1+ take the incoming plan until
+    At :30 q0–q1 are freeze-ready (:00-:30); q2+ take the incoming plan until
     later ticks when their Influx 10-min windows have settled.
     """
     fo, fq = freeze_ready_quarter_tick(now)

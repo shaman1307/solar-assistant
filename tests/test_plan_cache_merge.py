@@ -74,13 +74,14 @@ def test_last_completed_quarter_tick():
     assert last_completed_quarter_tick(datetime(2026, 7, 7, 8, 45, tzinfo=tz)) == (0, 2)
 
 
-def test_freeze_ready_quarter_tick_lags_one_tick():
-    """Influx-ready freeze is the previous completed q15, not the just-ended one."""
+def test_freeze_ready_quarter_tick_at_30_includes_q1():
+    """:30/:31 freeze through current q1; other ticks still lag one q15."""
     tz = ZoneInfo("Europe/Warsaw")
     assert freeze_ready_quarter_tick(datetime(2026, 7, 7, 8, 0, tzinfo=tz)) == (-1, 2)
     assert freeze_ready_quarter_tick(datetime(2026, 7, 7, 8, 5, tzinfo=tz)) == (0, -1)
     assert freeze_ready_quarter_tick(datetime(2026, 7, 7, 8, 15, tzinfo=tz)) == (-1, 3)
-    assert freeze_ready_quarter_tick(datetime(2026, 7, 7, 8, 30, tzinfo=tz)) == (0, 0)
+    assert freeze_ready_quarter_tick(datetime(2026, 7, 7, 8, 30, tzinfo=tz)) == (0, 1)
+    assert freeze_ready_quarter_tick(datetime(2026, 7, 7, 8, 31, tzinfo=tz)) == (0, 1)
     assert freeze_ready_quarter_tick(datetime(2026, 7, 7, 8, 45, tzinfo=tz)) == (0, 1)
 
 
@@ -694,13 +695,11 @@ def _fresh_q15_row(hour: int, *, soc: float = 55.0) -> dict:
 
 
 def test_merge_q15_keeps_actual_and_takes_fresh_for_future():
-    """At :30: q0 freeze-ready stays; q1+ from fresh (q1 Influx not ready yet)."""
+    """At :30: q0–q1 freeze-ready stay; q2+ from fresh."""
     cfg = _cfg()
     now = datetime(2026, 7, 7, 8, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
 
     existing = _row(8)
-    # q0 was written at previous :30? or wait - at :30 we freeze q0 first time.
-    # Pre-seed as already frozen from an earlier apply.
     existing["q15"][0] = {
         "quarter": 0, "production": 0.5, "consumption": 0.2, "soc": 50.0,
         "battery": 0.0, "grid_import": 0.0, "grid_export": 0.0, "from_actual": True,
@@ -719,13 +718,9 @@ def test_merge_q15_keeps_actual_and_takes_fresh_for_future():
     )
 
     q15 = existing["q15"]
-    # q0 — unchanged actual
     assert q15[0]["from_actual"] is True
     assert q15[0]["production"] == 0.5
-    # q1 — still plan (freeze at :45)
-    assert q15[1]["from_actual"] is False
-    assert q15[1]["production"] == 0.3
-    # q2, q3 — from fresh optimizer
+    assert q15[1]["from_actual"] is True
     assert q15[2]["from_actual"] is False
     assert q15[2]["production"] == 0.3
     assert q15[3]["from_actual"] is False
@@ -758,7 +753,7 @@ def test_merge_q15_at_hour_start_no_actuals():
 # ---------------------------------------------------------------------------
 
 def test_merge_incremental_at_30_quarter_pattern():
-    """At :30: freeze q0 (:00-:15) only; q1 still open (Influx :15-:30 incomplete)."""
+    """At :30: freeze q0–q1 (:00-:30); q2+ from fresh optimizer."""
     cfg = _cfg()
     now = datetime(2026, 7, 7, 8, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
 
@@ -798,9 +793,8 @@ def test_merge_incremental_at_30_quarter_pattern():
     # q0 — freeze-ready at :30
     assert cur["q15"][0]["from_actual"] is True
     assert cur["q15"][0]["production"] == 0.5
-    # q1 — not frozen yet (Influx lag); still from fresh plan
-    assert cur["q15"][1]["from_actual"] is False
-    assert cur["q15"][1]["production"] == 0.3
+    # q1 — freeze-ready at :30/:31
+    assert cur["q15"][1]["from_actual"] is True
     # q2, q3 — from fresh optimizer
     assert cur["q15"][2]["from_actual"] is False
     assert cur["q15"][2]["production"] == 0.3
@@ -899,6 +893,7 @@ def test_quarter_tick_now_floors_to_boundary():
     tz = ZoneInfo("Europe/Warsaw")
     assert quarter_tick_now(datetime(2026, 8, 1, 20, 0, 40, tzinfo=tz)).minute == 0
     assert quarter_tick_now(datetime(2026, 8, 1, 20, 16, 5, tzinfo=tz)).minute == 15
+    assert quarter_tick_now(datetime(2026, 8, 1, 20, 31, 2, tzinfo=tz)).minute == 30
     assert quarter_tick_now(datetime(2026, 8, 1, 20, 47, tzinfo=tz)).minute == 45
 
 
@@ -964,7 +959,7 @@ def test_late_promote_finalizes_q3_from_influx():
 
 
 def test_datafix_does_not_rewrite_frozen_earlier_quarter():
-    """At :30, freeze-ready is q0 only — do not touch q1 yet."""
+    """At :30, already-frozen q0 stays; q1 freezes from Influx."""
     tz = ZoneInfo("Europe/Warsaw")
     now = datetime(2026, 7, 7, 8, 30, tzinfo=tz)
     cfg = _cfg()
@@ -982,7 +977,7 @@ def test_datafix_does_not_rewrite_frozen_earlier_quarter():
     )
     assert row["q15"][0]["from_actual"] is True
     assert row["q15"][0]["grid_import"] == 1.23
-    assert row["q15"][1]["from_actual"] is False
+    assert row["q15"][1]["from_actual"] is True
 
 
 def test_write_guard_absorbs_newly_frozen_q3():

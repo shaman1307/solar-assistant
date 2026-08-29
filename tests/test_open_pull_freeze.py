@@ -66,8 +66,9 @@ def test_pull_and_freeze_indexes_split_by_tick():
         (10, -1, -1),
         (15, 0, -1),
         (29, 0, -1),
-        (30, 1, 0),
-        (44, 1, 0),
+        (30, 1, 1),
+        (31, 1, 1),
+        (44, 1, 1),
         (45, 2, 1),
         (59, 2, 1),
     ]
@@ -203,11 +204,11 @@ def test_simulate_blended_at_15_open_pull_not_frozen():
 # ---------------------------------------------------------------------------
 
 
-def test_datafix_at_30_freezes_only_q0_not_open_q1():
+def test_datafix_at_30_freezes_q0_and_q1():
     cfg = _cfg()
     hour = 8
     now = datetime(2026, 8, 9, 8, 30)
-    series = _series(hour, 2.0, n_slots=2)
+    series = _series(hour, 2.0, n_slots=3)
     row = {
         "hour": hour,
         "q15": [
@@ -239,7 +240,7 @@ def test_datafix_at_30_freezes_only_q0_not_open_q1():
     )
     assert changed is True
     assert row["q15"][0]["from_actual"] is True
-    assert row["q15"][1]["from_actual"] is False
+    assert row["q15"][1]["from_actual"] is True
     assert row["q15"][2]["from_actual"] is False
 
 

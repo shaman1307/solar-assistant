@@ -3,8 +3,8 @@ Balance automation scheduler.
 
   - Nightly at 23:59 Europe/Warsaw: build Load+PV day cache for tomorrow and day-after,
     then refresh charge-rate estimate in config (Δ).
-  - Every :00/:15/:30/:45: refresh Open-Meteo PV (remaining today + tomorrow), then Plan Simulation.
-  - SA Timer Schedule at :00; Work mode On-grid at :00, Limit home at :00/:15/:30/:45.
+  - Every :00/:15/:31/:45: refresh Open-Meteo PV (remaining today + tomorrow), then Plan Simulation.
+  - SA Timer Schedule at :00; Work mode On-grid at :00, Limit home at :00/:15/:31/:45.
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ async def run_nightly_forecast_cache() -> dict[str, Any]:
 
 
 async def run_quarter_plan_refresh(*, sync_sa: bool | None = None) -> dict[str, Any]:
-    """:00/:15/:30/:45 — refresh SQLite plan; SA sync when smart mode enabled."""
+    """:00/:15/:31/:45 — refresh SQLite plan; SA sync when smart mode enabled."""
     del sync_sa
     global _last_hourly_sync
 
@@ -112,8 +112,9 @@ async def run_quarter_plan_refresh(*, sync_sa: bool | None = None) -> dict[str, 
 
     try:
         cfg = load_config()
-        # Floor to the scheduled :00/:15/:30/:45 before long OM/sim work so
+        # Floor to the scheduled :00/:15/:30/:45 tick before long OM/sim work so
         # merge still finalizes the just-completed tick (esp. previous-hour q3).
+        # The :31 cron floors to :30.
         tick_now = quarter_tick_now(now)
         next_hour = (tick_now.hour + 1) % 24
         status["smart_mode_enabled"] = _smart_mode_enabled(cfg)
@@ -208,13 +209,13 @@ def create_scheduler(cfg: dict) -> AsyncIOScheduler:
     register_hour_boundary_jobs(scheduler)
     scheduler.add_job(
         run_quarter_plan_refresh,
-        trigger=CronTrigger(minute="0,15,30,45", timezone="Europe/Warsaw"),
+        trigger=CronTrigger(minute="0,15,31,45", timezone="Europe/Warsaw"),
         id="quarter_plan_refresh",
         replace_existing=True,
         misfire_grace_time=120,
     )
     log.info(
         "Scheduler: month_history at 00:05; forecast cache + balance Δ at 23:59; plan refresh + SA sync at "
-        ":00/:15/:30/:45 — Europe/Warsaw.",
+        ":00/:15/:31/:45 — Europe/Warsaw.",
     )
     return scheduler

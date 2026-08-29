@@ -578,7 +578,7 @@ def _refresh_slot_index(now: datetime, hour: int) -> int:
     """Open/pull q15 index for this hour (-1 = none yet).
 
     Pulls the just-ended quarter every tick (Influx partial + forecast fill).
-    Freezing uses `_freeze_through_index` (one-tick lag), not this index.
+    Freezing uses `_freeze_through_index`, not this index.
     """
     if now.hour != hour:
         return -1
@@ -594,15 +594,13 @@ def _refresh_slot_index(now: datetime, hour: int) -> int:
 def _freeze_through_index(now: datetime, hour: int) -> int:
     """Highest q15 index frozen for this hour (-1 = none).
 
-    One-tick lag: at :30 only q0; at :45 q0–q1. Previous-hour q2/q3 are
-    handled by merge via `freeze_ready_quarter_tick`, not here.
+    At :30-:44 freeze q0–q1 (:00-:30). At :45 freeze q0–q1; q2 stays open.
+    Previous-hour q2/q3 are handled by merge via `freeze_ready_quarter_tick`.
     """
     if now.hour != hour:
         return -1
     if now.minute < 30:
         return -1
-    if now.minute < 45:
-        return 0
     return 1
 
 
@@ -1201,10 +1199,17 @@ def meter_soc_pct_for_q15(
         return None
     arr = (series_10min or {}).get("soc") or []
     end_min = (int(quarter) + 1) * 15
-    ten_idx = min(SLOTS_PER_HOUR_10M - 1, max(0, (end_min - 1) // 10))
-    idx = int(hour) * SLOTS_PER_HOUR_10M + ten_idx
-    if 0 <= idx < len(arr) and arr[idx] is not None:
-        return _bound_soc_pct(float(arr[idx]))
+    # Prefer the sample at the quarter end when the 10-min grid lands on it (:30).
+    if end_min % 10 == 0:
+        preferred = end_min // 10
+    else:
+        preferred = (end_min - 1) // 10
+    fallback = (end_min - 1) // 10
+    for ten_idx in (preferred, fallback):
+        ten_idx = min(SLOTS_PER_HOUR_10M - 1, max(0, ten_idx))
+        idx = int(hour) * SLOTS_PER_HOUR_10M + ten_idx
+        if 0 <= idx < len(arr) and arr[idx] is not None:
+            return _bound_soc_pct(float(arr[idx]))
     hourly = (today_hourly or {}).get("soc") or []
     if int(quarter) == Q15_PER_HOUR - 1 and int(hour) < len(hourly) and hourly[hour] is not None:
         return _bound_soc_pct(float(hourly[hour]))

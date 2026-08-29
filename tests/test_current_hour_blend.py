@@ -92,17 +92,17 @@ def test_at_15_open_pull_q0_not_frozen():
     assert slots[1][0] == 0.1
 
 
-def test_at_30_freezes_q0_open_pulls_q1():
-    """At :30 freeze q0; open-pull q1 = fact :15-:20 + forecast×(10/15)."""
+def test_at_30_freezes_q0_and_q1():
+    """At :30 freeze q0–q1 from Influx through :30 (job runs at :31)."""
     now = datetime(2026, 6, 26, 18, 30)
     hour = 18
     kw = 3.0
-    series = _series_through_slots(hour, kw, n_slots=2)  # through :20
+    series = _series_through_slots(hour, kw, n_slots=3)
     per_q = 0.15
     pv_q = _q15_hour(hour, per_q)
 
     frozen_q0 = kw * TEN_MIN_KWH_PER_KW + 0.5 * kw * TEN_MIN_KWH_PER_KW
-    open_q1 = 0.5 * kw * TEN_MIN_KWH_PER_KW + per_q * (10.0 / 15.0)
+    frozen_q1 = 0.5 * kw * TEN_MIN_KWH_PER_KW + kw * TEN_MIN_KWH_PER_KW
     forecast_tail = per_q * 2
     pv, _ = blend_current_hour_end(
         hour,
@@ -113,7 +113,7 @@ def test_at_30_freezes_q0_open_pulls_q1():
         forecast_load_hourly=0.0,
         series_10min=series,
     )
-    assert pv == round(frozen_q0 + open_q1 + forecast_tail, 3)
+    assert pv == round(frozen_q0 + frozen_q1 + forecast_tail, 3)
 
     slots = blended_q15_pv_load_slots(
         hour, now,
@@ -122,7 +122,7 @@ def test_at_30_freezes_q0_open_pulls_q1():
         series_10min=series,
     )
     assert slots[0][0] == round(frozen_q0, 4)
-    assert slots[1][0] == round(open_q1, 4)
+    assert slots[1][0] == round(frozen_q1, 4)
     assert slots[2][0] == 0.15
     assert slots[3][0] == 0.15
 
@@ -164,14 +164,14 @@ def test_at_45_freezes_q0_q1_open_pulls_q2():
 
 
 def test_at_30_blended_battery_db_on_frozen_open_on_pull():
-    """At :30 q0 from_actual; q1 open pull (not frozen); q2–q3 sim."""
+    """At :30 q0–q1 from_actual; q2–q3 sim."""
     from src.plan_hourly_actuals import simulate_blended_current_hour_q15
 
     cfg = _minimal_cfg()
     hour = 18
     now = datetime(2026, 6, 26, 18, 30)
     kw = 2.0
-    series = _series_through_slots(hour, kw, n_slots=2)
+    series = _series_through_slots(hour, kw, n_slots=3)
     for key in ("bat_charge", "bat_discharge", "grid_buy", "grid_sell"):
         series[key] = [None] * 144
     base = hour * 6
@@ -188,7 +188,7 @@ def test_at_30_blended_battery_db_on_frozen_open_on_pull():
     )
 
     assert q15[0]["from_actual"] is True
-    assert q15[1]["from_actual"] is False
+    assert q15[1]["from_actual"] is True
     assert q15[2]["from_actual"] is False
     assert q15[3]["from_actual"] is False
     assert q15[0]["battery"] > 0

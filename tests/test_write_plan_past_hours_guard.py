@@ -101,9 +101,9 @@ def test_guard_keeps_history_and_rewrites_future_hours():
     for h, row in enumerate(guarded["history_rows"]):
         assert row["action"] == f"LOCKED-{h}"
     cur = next(r for r in guarded["rows"] if int(r["hour"]) == 14)
-    # :30 → only q0 freeze-ready; q1–q3 from incoming
+    # :30 → q0–q1 freeze-ready; q2–q3 from incoming
     assert cur["q15"][0]["production"] == 1.0
-    assert cur["q15"][1]["production"] == 2.0
+    assert cur["q15"][1]["production"] == 1.0
     assert cur["q15"][2]["production"] == 2.0
     assert cur["q15"][3]["production"] == 2.0
     assert cur["action"] == "LIVE-14"  # locked labels kept
@@ -143,6 +143,7 @@ def test_write_plan_blocks_past_hour_overwrite():
     assert hist10["action"] == "ORIGINAL-10"
     cur = next(r for r in stored["rows"] if int(r["hour"]) == 14)
     assert cur["q15"][0]["production"] == 1.0
+    assert cur["q15"][1]["production"] == 1.0
     assert cur["q15"][2]["production"] == 9.0
     assert cur["action"] == "CUR"
 
@@ -150,7 +151,7 @@ def test_write_plan_blocks_past_hour_overwrite():
 def test_write_plan_does_not_overwrite_past_quarters():
     """write_plan must not rewrite freeze-ready q15 slots in SQLite.
 
-    At 14:30 only q0 is freeze-ready (:00-:15); q1–q3 may take the incoming plan.
+    At 14:30 q0–q1 are freeze-ready (:00-:30); q2–q3 may take the incoming plan.
     from_actual slots stay immutable even if incoming tries to mutate them.
     """
     now = _now(14, 30)
@@ -213,8 +214,9 @@ def test_write_plan_does_not_overwrite_past_quarters():
     # Freeze-ready q0 stays as seeded.
     assert cur["q15"][0]["production"] == 1.1
     assert cur["q15"][0]["from_actual"] is True
-    # Open / lagging quarters 1–3 may come from the incoming write.
-    assert cur["q15"][1]["production"] == 9.2
+    # q1 is freeze-ready at :30 even without from_actual.
+    assert cur["q15"][1]["production"] == 1.2
+    # Open quarters 2–3 may come from the incoming write.
     assert cur["q15"][2]["production"] == 9.3
     assert cur["q15"][3]["production"] == 9.4
 
