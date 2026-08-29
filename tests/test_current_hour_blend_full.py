@@ -89,12 +89,13 @@ def test_blended_q15_returns_four_slots_with_sim_chain():
     assert sum(s["production"] for s in q15) == 2.0
 
 
-def test_blended_q15_soc_chain_not_influx():
+def test_blended_q15_frozen_slot_uses_meter_soc_then_sim_chain():
+    """At :30 q0 is frozen (meter SOC); later quarters chain from sim, not later Influx points."""
     hour = 12
     now = datetime(2026, 6, 28, 12, 30, tzinfo=WARSAW)
     soc_series: list[float | None] = [None] * 100
-    soc_series[73] = 61.0
-    soc_series[75] = 58.0
+    soc_series[73] = 61.0  # 12:10 bucket — end of frozen q0
+    soc_series[75] = 58.0  # 12:30 — not a frozen q1 meter point
 
     q15 = build_blended_current_hour_q15(
         hour, now,
@@ -106,7 +107,9 @@ def test_blended_q15_soc_chain_not_influx():
         cfg=dict(_CFG),
     )
 
-    assert q15[0]["soc"] != 61.0
+    assert q15[0]["from_actual"] is True
+    assert q15[0]["soc"] == 61.0
+    assert q15[1]["from_actual"] is False
     assert q15[1]["soc"] != 58.0
 
 
