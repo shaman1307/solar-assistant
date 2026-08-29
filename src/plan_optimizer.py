@@ -302,6 +302,41 @@ def pick_next_export_hour(
     return min(tied)
 
 
+def _export_seed_jumps_rated_gap(
+    hour: int,
+    selected: set[int],
+    ratings: dict[int, float],
+) -> bool:
+    """True when *hour* would skip a still-eligible hour next to the run."""
+    if not selected:
+        return False
+    lo, hi = min(selected), max(selected)
+    h = int(hour)
+    if h > hi + 1:
+        return any(x in ratings for x in range(hi + 1, h))
+    if h < lo - 1:
+        return any(x in ratings for x in range(h + 1, lo))
+    return False
+
+
+def _trim_remaining_after_failed_export_edge(
+    remaining: list[int],
+    *,
+    selected: set[int],
+    failed_hour: int,
+) -> list[int]:
+    """Drop hours beyond a failed ≥-threshold edge so a weaker island cannot seed."""
+    if not selected:
+        return remaining
+    lo, hi = min(selected), max(selected)
+    failed = int(failed_hour)
+    if failed > hi:
+        return [x for x in remaining if x < failed]
+    if failed < lo:
+        return [x for x in remaining if x > failed]
+    return remaining
+
+
 def export_window_roles(selected_hours: set[int] | list[int]) -> dict[int, str]:
     """Classify each selected hour as single|first|middle|last in its run."""
     hours = sorted({int(h) for h in selected_hours})
@@ -850,10 +885,10 @@ def plan_battery_grid_export(
 
     Eligible hours are clock start–23 plus overnight until PV covers again, with
     hourly avg-RCE rating ≥ *export_floor*. Seed the richest hour, then grow
-    both edges by descending rating. SOC is claimed chronologically inside each
-    contiguous run using the same per-step survive reserve in claim planning
-    and final replay. A later hour opens only when leftover SOC still exceeds
-    the next-hour reserve by at least one min-hourly transfer.
+    both edges by descending rating. A failed ≥-threshold edge closes that
+    side (do not seed a weaker island past it). Chrono fill sells leftover
+    down to survive-after-that-hour, so the right edge opens when the
+    window end moves.
     """
     if steps <= 0:
         return list(base_controls)
@@ -948,7 +983,7 @@ def plan_battery_grid_export(
         eps_step=eps_step, min_hourly_kwh=min_hourly_kwh,
     )
 
-    # Pass 1: seed the richest eligible hour, then grow both edges by rating.
+    # Seed the richest eligible hour, then grow both edges by rating.
     selected: set[int] = set()
     draft: dict[int, _BatteryGridExportHourClaim] = {}
     remaining = list(ratings.keys())
@@ -957,12 +992,18 @@ def plan_battery_grid_export(
         h = pick_next_export_hour(
             remaining, ratings, selected=selected, last_hour=last_assigned,
         )
+        if _export_seed_jumps_rated_gap(h, selected, ratings):
+            remaining = [x for x in remaining if x != h]
+            continue
         remaining = [x for x in remaining if x != h]
         trial = selected | {h}
         roles = export_window_roles(trial)
         _, soc_starts = _apply_battery_grid_export_claims_chrono(base_controls, draft, **common)
         inputs = _hour_inputs(h, soc_starts)
         if inputs is None:
+            remaining = _trim_remaining_after_failed_export_edge(
+                remaining, selected=selected, failed_hour=h,
+            )
             continue
         soc0, pv_q, load_q, reserve_q, charge_q, rce_q, hour_end_floor = inputs
         hold = _hold_soc_for_later_battery_grid_export_claims(
@@ -976,6 +1017,9 @@ def plan_battery_grid_export(
             **claim_kw,
         )
         if claim is None or claim.export_ac_kwh <= eps_step:
+            remaining = _trim_remaining_after_failed_export_edge(
+                remaining, selected=selected, failed_hour=h,
+            )
             continue
         draft[h] = claim
         selected = trial
@@ -986,101 +1030,24 @@ def plan_battery_grid_export(
             HourControl(c.grid_charge_kw, 0.0, c.load_from_grid) for c in base_controls
         ]
 
-    # Pass 2: claim SOC chronologically. Open the next hour in a run only when
-    # SOC still exceeds survive-if-stopped-after-(h-1) by at least one min-hourly
-    # transfer — sell leftover down to post_dis(h), do not leave a fat morning
-    # buffer, and do not open a razor-thin orphan Dis.
-    roles = export_window_roles(selected)
-    claims: dict[int, _BatteryGridExportHourClaim] = {}
-    min_next_dc = 0.0
-    if min_hourly_kwh > eps_step and eta_out > 0:
-        min_next_dc = float(min_hourly_kwh) / float(eta_out)
-
-    for h in sorted(selected):
-        _, soc_starts = _apply_battery_grid_export_claims_chrono(base_controls, claims, **common)
-        inputs = _hour_inputs(h, soc_starts)
-        if inputs is None:
-            continue
-        soc0, pv_q, load_q, reserve_q, charge_q, rce_q, hour_end_floor = inputs
-        if (h - 1) in claims:
-            stop_floor = min_kwh
-            cur_idxs = _hour_steps_in_horizon(
-                hour=h, steps=steps, rce_step_offset=rce_step_offset,
-                slots_per_hour=slots,
+    def _chrono_fill(
+        hours: set[int],
+        hold_from: dict[int, _BatteryGridExportHourClaim],
+    ) -> dict[int, _BatteryGridExportHourClaim]:
+        roles = export_window_roles(hours)
+        filled: dict[int, _BatteryGridExportHourClaim] = {}
+        for hour in sorted(hours):
+            _, soc_starts = _apply_battery_grid_export_claims_chrono(
+                base_controls, filled, **common,
             )
-            if cur_idxs:
-                stop_floor = float(reserves[cur_idxs[0]])
-            surplus_dc = max(0.0, soc0 - max(min_kwh, stop_floor))
-            if surplus_dc + eps_step < min_next_dc:
-                continue
-        # Do not skip a richer hour because a cheaper middle hour has no claim.
-        if claims and max(claims) < h - 1 and (h - 1) in selected:
-            claimed_best = max(float(ratings.get(c, 0.0)) for c in claims)
-            if float(ratings.get(h, 0.0)) <= claimed_best + 1e-12:
-                continue
-        claim = _plan_hour_battery_grid_export_claim(
-            hour=h, role=roles.get(h, "single"), soc0=soc0,
-            hold_soc_kwh=_hold_soc_for_later_battery_grid_export_claims(
-                draft, from_hour=h, eta_out=eta_out, ratings=ratings,
-                export_window_start_hour=export_window_start_hour,
-            ),
-            pv_q=pv_q, load_q=load_q, reserve_q=reserve_q, base_charge_q=charge_q,
-            rce_q=rce_q, hour_end_floor_kwh=hour_end_floor,
-            **claim_kw,
-        )
-        if claim is not None and claim.export_ac_kwh > eps_step:
-            claims[h] = claim
-
-    # After a power-limited last Dis, open the next rated hour if leftover
-    # above post_dis(last) still covers min_hourly — sell down toward morning min.
-    while claims:
-        last_h = max(claims)
-        nxt = last_h + 1
-        if nxt not in ratings or nxt in claims:
-            break
-        idxs = _hour_steps_in_horizon(
-            hour=nxt, steps=steps, rce_step_offset=rce_step_offset,
-            slots_per_hour=slots,
-        )
-        if not idxs:
-            break
-        _, soc_starts = _apply_battery_grid_export_claims_chrono(base_controls, claims, **common)
-        inputs = _hour_inputs(nxt, soc_starts)
-        if inputs is None:
-            break
-        soc0, pv_q, load_q, reserve_q, charge_q, rce_q, hour_end_floor = inputs
-        stop_floor = min_kwh
-        if idxs:
-            stop_floor = float(reserves[idxs[0]])
-        surplus_dc = max(0.0, soc0 - max(min_kwh, stop_floor))
-        if surplus_dc + eps_step < min_next_dc:
-            break
-        trial_roles = export_window_roles(set(claims) | {nxt})
-        claim = _plan_hour_battery_grid_export_claim(
-            hour=nxt, role=trial_roles.get(nxt, "last"), soc0=soc0, hold_soc_kwh=0.0,
-            pv_q=pv_q, load_q=load_q, reserve_q=reserve_q, base_charge_q=charge_q,
-            rce_q=rce_q, hour_end_floor_kwh=hour_end_floor,
-            **claim_kw,
-        )
-        if claim is None or claim.export_ac_kwh <= eps_step:
-            break
-        claims[nxt] = claim
-        draft[nxt] = claim
-
-    # Recompute roles for the hours that actually received a claim.
-    if claims:
-        roles = export_window_roles(set(claims))
-        final: dict[int, _BatteryGridExportHourClaim] = {}
-        for h in sorted(claims):
-            _, soc_starts = _apply_battery_grid_export_claims_chrono(base_controls, final, **common)
-            inputs = _hour_inputs(h, soc_starts)
+            inputs = _hour_inputs(hour, soc_starts)
             if inputs is None:
                 continue
             soc0, pv_q, load_q, reserve_q, charge_q, rce_q, hour_end_floor = inputs
             claim = _plan_hour_battery_grid_export_claim(
-                hour=h, role=roles.get(h, "single"), soc0=soc0,
+                hour=hour, role=roles.get(hour, "single"), soc0=soc0,
                 hold_soc_kwh=_hold_soc_for_later_battery_grid_export_claims(
-                    claims, from_hour=h, eta_out=eta_out, ratings=ratings,
+                    hold_from, from_hour=hour, eta_out=eta_out, ratings=ratings,
                     export_window_start_hour=export_window_start_hour,
                 ),
                 pv_q=pv_q, load_q=load_q, reserve_q=reserve_q, base_charge_q=charge_q,
@@ -1088,8 +1055,13 @@ def plan_battery_grid_export(
                 **claim_kw,
             )
             if claim is not None and claim.export_ac_kwh > eps_step:
-                final[h] = claim
-        claims = final
+                filled[hour] = claim
+        return filled
+
+    # Chrono fill: each hour dumps down to survive-after-that-hour.
+    claims = _chrono_fill(selected, draft)
+    if claims:
+        claims = _chrono_fill(set(claims), claims)
 
     controls, _ = _apply_battery_grid_export_claims_chrono(base_controls, claims, **common)
     return controls
