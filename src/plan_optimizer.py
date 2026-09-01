@@ -12,6 +12,7 @@ import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -243,11 +244,45 @@ def hour_rce_rating(
     *,
     slots_per_hour: int = 4,
 ) -> float | None:
-    """Hour rating for export ranking: avg RCE rounded to 0.01 (same avg → same rating)."""
+    """Hour avg RCE rounded to 0.01 — eligibility vs export floor and hold-SOC."""
     avg = hourly_avg_rce(rce_series, hour, slots_per_hour=slots_per_hour)
     if avg is None:
         return None
     return round(float(avg), 2)
+
+
+def round_rce_5_groszy(value: float) -> float:
+    """Round PLN/kWh to 5 groszy, half up."""
+    steps = Decimal(str(value)) / Decimal("0.05")
+    n = steps.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return float(n * Decimal("0.05"))
+
+
+def hour_rce_rating_5_groszy(
+    rce_series: list[float | None],
+    hour: int,
+    *,
+    slots_per_hour: int = 4,
+) -> float | None:
+    """Grow-from-peak ranking: hour avg RCE rounded to 5 groszy."""
+    avg = hourly_avg_rce(rce_series, hour, slots_per_hour=slots_per_hour)
+    if avg is None:
+        return None
+    return round_rce_5_groszy(avg)
+
+
+def _distance_to_hour_run(hour: int, selected: set[int] | list[int]) -> int:
+    """Gap from *hour* to the [min, max] selected run (0 if inside)."""
+    sel = {int(h) for h in selected}
+    if not sel:
+        return 0
+    lo, hi = min(sel), max(sel)
+    h = int(hour)
+    if h < lo:
+        return lo - h
+    if h > hi:
+        return h - hi
+    return 0
 
 
 def rank_hours_by_avg_rce(
@@ -261,7 +296,8 @@ def rank_hours_by_avg_rce(
     """Hours with rating ≥ floor, richest first (ties: earlier hour).
 
     Rating is avg RCE rounded to hundredths. Allocation uses
-    ``pick_next_export_hour``: seed the peak, then grow both edges.
+    ``pick_next_export_hour``: seed the unrounded peak, then grow by
+    5-groszy rating.
     """
     scored: list[tuple[float, int]] = []
     for h in hours:
@@ -278,44 +314,72 @@ def pick_next_export_hour(
     *,
     selected: set[int] | list[int] = (),
     last_hour: int | None = None,
+    seed_ratings: dict[int, float] | None = None,
+    gap_ratings: dict[int, float] | None = None,
+    export_window_start_hour: int = 16,
 ) -> int:
-    """Next hour: grow the current run from the richer edge, else seed the peak.
+    """Next hour: seed the unrounded peak, then grow by 5-groszy rating.
 
-    Adjacent means absolute hour ± 1 (23 then 24 = next-day H00). Ties on an
-    edge prefer the neighbour of *last_hour*, else the earlier hour. A new
-    window seeds the richest remaining hour (ties: earliest).
+    After the seed, *ratings* are 5-groszy avgs among hours that do not jump
+    a still-eligible gap. Same rating: closer to the selected window, then
+    neighbour of *last_hour*, then earlier hour.
     """
     if not remaining:
         raise ValueError("remaining hours empty")
     sel = {int(h) for h in selected}
-    if sel:
-        lo, hi = min(sel), max(sel)
-        adj = [h for h in remaining if int(h) == lo - 1 or int(h) == hi + 1]
-        if adj:
-            best = max(float(ratings[h]) for h in adj)
-            tied = [h for h in adj if float(ratings[h]) == best]
-            if last_hour is None:
-                return min(tied)
-            return min(tied, key=lambda h: (abs(int(h) - int(last_hour)), int(h)))
-    best = max(float(ratings[h]) for h in remaining)
-    tied = [h for h in remaining if float(ratings[h]) == best]
-    return min(tied)
+    start = int(export_window_start_hour)
+    if not sel:
+        rank_src = seed_ratings if seed_ratings is not None else ratings
+        pool = list(remaining)
+        best = max(float(rank_src[h]) for h in pool)
+        tied = [h for h in pool if abs(float(rank_src[h]) - best) <= 1e-12]
+        return min(tied)
+
+    eligible = gap_ratings if gap_ratings is not None else ratings
+    no_gap = [
+        h for h in remaining
+        if not _export_seed_jumps_rated_gap(
+            int(h), sel, eligible, export_window_start_hour=start,
+        )
+    ]
+    pool = no_gap or list(remaining)
+    best = max(float(ratings[h]) for h in pool)
+    tied = [h for h in pool if abs(float(ratings[h]) - best) <= 1e-12]
+    return min(
+        tied,
+        key=lambda h: (
+            _distance_to_hour_run(h, sel),
+            abs(int(h) - int(last_hour)) if last_hour is not None else 0,
+            int(h),
+        ),
+    )
 
 
 def _export_seed_jumps_rated_gap(
     hour: int,
     selected: set[int],
     ratings: dict[int, float],
+    *,
+    export_window_start_hour: int = 16,
 ) -> bool:
     """True when *hour* would skip a still-eligible hour next to the run."""
     if not selected:
         return False
+    start = int(export_window_start_hour)
+    if not _same_sale_window(hour, min(selected), export_window_start_hour=start):
+        return False
     lo, hi = min(selected), max(selected)
     h = int(hour)
     if h > hi + 1:
-        return any(x in ratings for x in range(hi + 1, h))
+        return any(
+            x in ratings and _same_sale_window(x, h, export_window_start_hour=start)
+            for x in range(hi + 1, h)
+        )
     if h < lo - 1:
-        return any(x in ratings for x in range(h + 1, lo))
+        return any(
+            x in ratings and _same_sale_window(x, h, export_window_start_hour=start)
+            for x in range(h + 1, lo)
+        )
     return False
 
 
@@ -324,16 +388,22 @@ def _trim_remaining_after_failed_export_edge(
     *,
     selected: set[int],
     failed_hour: int,
+    export_window_start_hour: int = 16,
 ) -> list[int]:
-    """Drop hours beyond a failed ≥-threshold edge so a weaker island cannot seed."""
+    """Drop same-window hours beyond a failed ≥-threshold edge so a weaker island cannot seed."""
     if not selected:
         return remaining
     lo, hi = min(selected), max(selected)
     failed = int(failed_hour)
+    start = int(export_window_start_hour)
+
+    def _other_window(h: int) -> bool:
+        return not _same_sale_window(h, failed, export_window_start_hour=start)
+
     if failed > hi:
-        return [x for x in remaining if x < failed]
+        return [x for x in remaining if x < failed or _other_window(x)]
     if failed < lo:
-        return [x for x in remaining if x > failed]
+        return [x for x in remaining if x > failed or _other_window(x)]
     return remaining
 
 
@@ -526,6 +596,28 @@ def _export_hours_same_run(
         ):
             out.add(int(h))
     return out
+
+
+def _sale_windows(
+    hours: list[int] | set[int],
+    *,
+    export_window_start_hour: int = 16,
+) -> list[list[int]]:
+    """Partition hours into chronological start-hour→morning sale windows."""
+    ordered = sorted({int(h) for h in hours})
+    if not ordered:
+        return []
+    start = int(export_window_start_hour)
+    windows: list[list[int]] = []
+    run = [ordered[0]]
+    for h in ordered[1:]:
+        if _same_sale_window(run[-1], h, export_window_start_hour=start):
+            run.append(h)
+        else:
+            windows.append(run)
+            run = [h]
+    windows.append(run)
+    return windows
 
 
 def _hold_soc_for_later_battery_grid_export_claims(
@@ -880,15 +972,17 @@ def plan_battery_grid_export(
     export_floor: float,
     min_hourly_kwh: float,
     export_window_start_hour: int = 16,
+    skip_export_hours: set[int] | None = None,
 ) -> list[HourControl]:
     """Plan battery→grid export from the config start hour until morning PV cover.
 
     Eligible hours are clock start–23 plus overnight until PV covers again, with
-    hourly avg-RCE rating ≥ *export_floor*. Seed the richest hour, then grow
-    both edges by descending rating. A failed ≥-threshold edge closes that
-    side (do not seed a weaker island past it). Chrono fill sells leftover
-    down to survive-after-that-hour, so the right edge opens when the
-    window end moves.
+    hourly avg-RCE (0.01) ≥ *export_floor*. Each start-hour→morning window is
+    filled in clock order so a richer next evening cannot skip tonight. Seed
+    the richest unrounded avg, then grow by 5-groszy rating (ties: closer to
+    the run). A failed ≥-threshold edge closes that side (do not seed a weaker
+    island past it). Chrono fill sells leftover down to survive-after-that-hour,
+    so the right edge opens when the window end moves.
     """
     if steps <= 0:
         return list(base_controls)
@@ -908,12 +1002,23 @@ def plan_battery_grid_export(
         export_window_start_hour=export_window_start_hour,
     )
     ratings: dict[int, float] = {}
+    raw_avgs: dict[int, float] = {}
+    grow_ratings: dict[int, float] = {}
+    skip_export = {int(h) for h in (skip_export_hours or ())}
     for h in hours:
         if int(h) not in window:
             continue
+        if int(h) in skip_export:
+            continue
+        avg = hourly_avg_rce(rce_series, h, slots_per_hour=slots)
+        if avg is None:
+            continue
         rating = hour_rce_rating(rce_series, h, slots_per_hour=slots)
-        if rating is not None and rating + eps_step >= export_floor:
-            ratings[int(h)] = float(rating)
+        if rating is None or rating + eps_step < export_floor:
+            continue
+        raw_avgs[int(h)] = float(avg)
+        ratings[int(h)] = float(rating)
+        grow_ratings[int(h)] = round_rce_5_groszy(avg)
     if not ratings:
         return [
             HourControl(c.grid_charge_kw, 0.0, c.load_from_grid) for c in base_controls
@@ -983,47 +1088,67 @@ def plan_battery_grid_export(
         eps_step=eps_step, min_hourly_kwh=min_hourly_kwh,
     )
 
-    # Seed the richest eligible hour, then grow both edges by rating.
+    # Fill each start-hour→morning window in clock order. Seed the richest
+    # unrounded avg, then grow by 5-groszy rating.
     selected: set[int] = set()
     draft: dict[int, _BatteryGridExportHourClaim] = {}
-    remaining = list(ratings.keys())
-    last_assigned: int | None = None
-    while remaining:
-        h = pick_next_export_hour(
-            remaining, ratings, selected=selected, last_hour=last_assigned,
-        )
-        if _export_seed_jumps_rated_gap(h, selected, ratings):
+    for window_hours in _sale_windows(
+        list(ratings.keys()),
+        export_window_start_hour=export_window_start_hour,
+    ):
+        remaining = list(window_hours)
+        last_assigned: int | None = None
+        window_selected: set[int] = set()
+        while remaining:
+            h = pick_next_export_hour(
+                remaining,
+                grow_ratings,
+                selected=window_selected,
+                last_hour=last_assigned,
+                seed_ratings=raw_avgs,
+                gap_ratings=ratings,
+                export_window_start_hour=export_window_start_hour,
+            )
+            if _export_seed_jumps_rated_gap(
+                h, window_selected, ratings,
+                export_window_start_hour=export_window_start_hour,
+            ):
+                remaining = [x for x in remaining if x != h]
+                continue
             remaining = [x for x in remaining if x != h]
-            continue
-        remaining = [x for x in remaining if x != h]
-        trial = selected | {h}
-        roles = export_window_roles(trial)
-        _, soc_starts = _apply_battery_grid_export_claims_chrono(base_controls, draft, **common)
-        inputs = _hour_inputs(h, soc_starts)
-        if inputs is None:
-            remaining = _trim_remaining_after_failed_export_edge(
-                remaining, selected=selected, failed_hour=h,
+            trial = window_selected | {h}
+            roles = export_window_roles(trial)
+            _, soc_starts = _apply_battery_grid_export_claims_chrono(
+                base_controls, draft, **common,
             )
-            continue
-        soc0, pv_q, load_q, reserve_q, charge_q, rce_q, hour_end_floor = inputs
-        hold = _hold_soc_for_later_battery_grid_export_claims(
-            draft, from_hour=h, eta_out=eta_out, ratings=ratings,
-            export_window_start_hour=export_window_start_hour,
-        )
-        claim = _plan_hour_battery_grid_export_claim(
-            hour=h, role=roles[h], soc0=soc0, hold_soc_kwh=hold,
-            pv_q=pv_q, load_q=load_q, reserve_q=reserve_q, base_charge_q=charge_q,
-            rce_q=rce_q, hour_end_floor_kwh=hour_end_floor,
-            **claim_kw,
-        )
-        if claim is None or claim.export_ac_kwh <= eps_step:
-            remaining = _trim_remaining_after_failed_export_edge(
-                remaining, selected=selected, failed_hour=h,
+            inputs = _hour_inputs(h, soc_starts)
+            if inputs is None:
+                remaining = _trim_remaining_after_failed_export_edge(
+                    remaining, selected=window_selected, failed_hour=h,
+                    export_window_start_hour=export_window_start_hour,
+                )
+                continue
+            soc0, pv_q, load_q, reserve_q, charge_q, rce_q, hour_end_floor = inputs
+            hold = _hold_soc_for_later_battery_grid_export_claims(
+                draft, from_hour=h, eta_out=eta_out, ratings=ratings,
+                export_window_start_hour=export_window_start_hour,
             )
-            continue
-        draft[h] = claim
-        selected = trial
-        last_assigned = h
+            claim = _plan_hour_battery_grid_export_claim(
+                hour=h, role=roles[h], soc0=soc0, hold_soc_kwh=hold,
+                pv_q=pv_q, load_q=load_q, reserve_q=reserve_q, base_charge_q=charge_q,
+                rce_q=rce_q, hour_end_floor_kwh=hour_end_floor,
+                **claim_kw,
+            )
+            if claim is None or claim.export_ac_kwh <= eps_step:
+                remaining = _trim_remaining_after_failed_export_edge(
+                    remaining, selected=window_selected, failed_hour=h,
+                    export_window_start_hour=export_window_start_hour,
+                )
+                continue
+            draft[h] = claim
+            window_selected = trial
+            selected = selected | trial
+            last_assigned = h
 
     if not selected:
         return [
@@ -2180,6 +2305,7 @@ def optimize_horizon(
     step_scale: float = 1.0,
     rce_step_offset: int = 0,
     front_load_skip_leading_slots: int | None = None,
+    skip_export_hours: set[int] | None = None,
 ) -> list[HourControl]:
     from .plan_cost import hour_grid_cash_pln
 
@@ -2405,6 +2531,7 @@ def optimize_horizon(
         export_floor=export_floor,
         min_hourly_kwh=min_hourly_transfer,
         export_window_start_hour=window_start,
+        skip_export_hours=skip_export_hours,
     )
 
     return enforce_min_hourly_battery_grid_limits(

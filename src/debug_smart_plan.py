@@ -283,6 +283,7 @@ def run_day_smart_q15_plan(
     initial_soc_kwh: float,
     from_hour: int = 0,
     front_load_skip_leading_slots: int | None = None,
+    skip_export_hours: set[int] | None = None,
 ) -> dict[str, Any] | None:
     """15-min optimizer replay from *from_hour* through end of day (shared by debug and PROD).
 
@@ -365,6 +366,7 @@ def run_day_smart_q15_plan(
         step_scale=STEP_SCALE,
         rce_step_offset=start_step,
         front_load_skip_leading_slots=front_load_skip_leading_slots,
+        skip_export_hours=skip_export_hours,
     )
 
     from .plan_optimizer import build_extended_buy_for_reserve, build_extended_pv_load_for_reserve
@@ -452,6 +454,7 @@ def run_rolling_smart_q15_plan(
     from_hour: int = 0,
     horizon_hours: int = 24,
     front_load_skip_leading_slots: int | None = None,
+    skip_export_hours: set[int] | None = None,
 ) -> dict[str, Any] | None:
     """One continuous optimize across midnight for the rolling plan window.
 
@@ -498,6 +501,7 @@ def run_rolling_smart_q15_plan(
                 initial_soc_kwh=initial_soc_kwh,
                 from_hour=from_hour,
                 front_load_skip_leading_slots=front_load_skip_leading_slots,
+                skip_export_hours=skip_export_hours,
             ),
             "tomorrow": None,
         }
@@ -577,6 +581,7 @@ def run_rolling_smart_q15_plan(
         step_scale=STEP_SCALE,
         rce_step_offset=start_step,
         front_load_skip_leading_slots=front_load_skip_leading_slots,
+        skip_export_hours=skip_export_hours,
     )
 
     from .plan_optimizer import (
@@ -853,6 +858,7 @@ def run_today_smart_q15_plan(
     plan_from_hour: int,
     day_start_soc_kwh: float,
     live_soc_kwh: float,
+    skip_export_hours: set[int] | None = None,
 ) -> dict[str, Any] | None:
     """Live EA plan from *plan_from_hour* (timers / rows). Chart SOC plan is separate."""
     del day_start_soc_kwh  # unused here; callers may still pass it
@@ -867,6 +873,7 @@ def run_today_smart_q15_plan(
         rce_quarters=rce_quarters,
         initial_soc_kwh=live_soc_kwh,
         from_hour=plan_from_hour,
+        skip_export_hours=skip_export_hours,
     )
 
 

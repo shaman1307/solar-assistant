@@ -244,16 +244,11 @@ def _plan_row_end_soc_kwh(row: dict[str, Any], battery_cap: float) -> float | No
     return None
 
 
-def _committed_current_hour_row(
+def _sqlite_current_hour_row(
     today_str: str,
     plan_from_hour: int,
 ) -> dict[str, Any] | None:
-    """SQLite current-hour row with a non-empty Timer Schedule (must not be rewritten).
-
-    When H01 was planned as future Chg and the clock hits 01:00, that row is already
-    the committed current hour — optimizer must keep it and seed later hours from
-    its end-of-hour SOC.
-    """
+    """SQLite row for today's *plan_from_hour*, idle or with a timer."""
     try:
         from .sqlite_store import read_plan
         stored = read_plan()
@@ -272,9 +267,25 @@ def _committed_current_hour_row(
             continue
         if hour != plan_from_hour:
             continue
-        if str(row.get("timer_schedule") or "").strip():
-            return row
+        return row
+    return None
+
+
+def _committed_current_hour_row(
+    today_str: str,
+    plan_from_hour: int,
+) -> dict[str, Any] | None:
+    """SQLite current-hour row with a non-empty Timer Schedule (must not be rewritten).
+
+    When H01 was planned as future Chg and the clock hits 01:00, that row is already
+    the committed current hour — optimizer must keep it and seed later hours from
+    its end-of-hour SOC.
+    """
+    row = _sqlite_current_hour_row(today_str, plan_from_hour)
+    if row is None:
         return None
+    if str(row.get("timer_schedule") or "").strip():
+        return row
     return None
 
 
@@ -331,34 +342,16 @@ def _plan_start_soc_kwh(
     return live_soc_kwh
 
 
-def _locked_chg_is_below_min_hourly(
-    existing_row: dict[str, Any],
-    cfg: dict | None,
-) -> bool:
-    """True when a locked Chg still has Bat Charge below min_hourly_transfer."""
-    timer = str(existing_row.get("timer_schedule") or "").strip().lower()
-    if not timer.startswith("chg"):
-        return False
-    min_hourly = float(
-        ((cfg or {}).get("timer_schedule") or {}).get("min_hourly_transfer_kwh") or 0
-    )
-    if min_hourly <= 0:
-        return False
-    return float(existing_row.get("bat_charge") or 0) + 1e-6 < min_hourly
-
-
 def apply_locked_hour_labels_from_plan(
     result: dict[str, Any],
     existing: dict[str, Any] | None,
     now: datetime,
     cfg: dict | None = None,
 ) -> None:
-    """After any rebuild: keep locked timer/action for current hour from SQLite.
+    """After any rebuild: keep the SQLite timer for the current hour.
 
-    At :00: if SQLite already has a non-empty Timer for this hour, keep that
-    timer/action and the row energy/SOC; otherwise lock fresh labels.
-    Mid-hour: keep locked labels from SQLite.
-    Thin illegal Chg (Bat Charge below min_hourly_transfer) is not restored.
+    At :00 lock whatever SQLite already has for this hour (empty, Chg, or Dis).
+    Do not adopt a fresh optimizer timer. Mid-hour: keep locked SQLite labels.
     """
     today_str = now.strftime("%Y-%m-%d")
     hour = now.hour
@@ -384,22 +377,12 @@ def apply_locked_hour_labels_from_plan(
             if row.get("timer_schedule_manual"):
                 row["hour_labels_locked"] = True
                 break
-            existing_timer = (
-                str(existing_row.get("timer_schedule") or "").strip()
-                if existing_row is not None
-                else ""
-            )
-            if (
-                existing_row is not None
-                and existing_timer
-                and not _locked_chg_is_below_min_hourly(existing_row, cfg)
-            ):
-                # Commit the already-planned current hour from SQLite.
+            if existing_row is not None:
                 for key, val in existing_row.items():
                     row[key] = copy.deepcopy(val)
-                row["hour_labels_locked"] = True
             else:
-                row["hour_labels_locked"] = True
+                row["timer_schedule"] = ""
+            row["hour_labels_locked"] = True
             break
         return
 
@@ -412,7 +395,6 @@ def apply_locked_hour_labels_from_plan(
             existing_row is not None
             and existing_row.get("hour_labels_locked")
             and not row.get("timer_schedule_manual")
-            and not _locked_chg_is_below_min_hourly(existing_row, cfg)
         ):
             row["timer_schedule"] = existing_row.get("timer_schedule", "")
             row["action"] = existing_row.get("action", "")
@@ -516,24 +498,23 @@ def build_energy_arbitrage_plan(
 
     rce_today = quarters_by_date.get(today_str) or []
     committed_hour = _committed_current_hour_row(today_str, plan_from_hour)
-    # Keep a locked Chg that already meets min_hourly (full block in progress).
-    # Only drop an illegal thin top-up (Bat Charge below min_hourly_transfer) so
-    # a valid dense Chg hour is not re-opened and split by a later replan.
-    if committed_hour is not None:
-        t = str(committed_hour.get("timer_schedule") or "").strip().lower()
-        min_hourly = float(
-            (cfg.get("timer_schedule") or {}).get("min_hourly_transfer_kwh") or 0
-        )
-        bat_chg = float(committed_hour.get("bat_charge") or 0)
-        if t.startswith("chg") and min_hourly > epsilon and bat_chg + epsilon < min_hourly:
-            committed_hour = None
+    # Current-hour timer is frozen (empty, Chg, or Dis). Plan from H+1.
+    if committed_hour is None:
+        committed_hour = _sqlite_current_hour_row(today_str, plan_from_hour)
+        if committed_hour is None and battery_cap > 0:
+            committed_hour = {
+                "hour": plan_from_hour,
+                "timer_schedule": "",
+                "action": "Discharging to Load",
+                "soc": round((float(soc_kwh) / battery_cap) * 100.0, 1),
+            }
     committed_end_soc = (
         _plan_row_end_soc_kwh(committed_hour, battery_cap)
         if committed_hour is not None
         else None
     )
-    # Current hour already has a Timer (e.g. Chg planned while it was future):
-    # do not re-optimize that hour — seed the rest of the window from its end SOC.
+    if committed_hour is not None and committed_end_soc is None:
+        committed_end_soc = float(soc_kwh)
     smart_today: dict[str, Any] | None = None
     smart_tomorrow: dict[str, Any] | None = None
     hours_today_in_plan = max(0, 24 - plan_from_hour)
@@ -756,10 +737,11 @@ def build_energy_arbitrage_plan(
                     row["hour_labels_locked"] = True
                     # Committed Chg/Dis: seed H+1 from planned EOH (may still be
                     # mid-charge while live blend lags). Idle current hour uses
-                    # display blend below so the table stays continuous.
+                    # display blend so the table stays continuous.
+                    has_timer = bool(str(committed_hour.get("timer_schedule") or "").strip())
                     blended_anchor_kwh = (
                         committed_end_soc
-                        if committed_end_soc is not None
+                        if has_timer and committed_end_soc is not None
                         else (soc_blend / 100.0) * battery_cap
                     )
                     blended_row_idx = len(all_rows)

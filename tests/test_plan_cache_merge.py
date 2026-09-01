@@ -137,8 +137,8 @@ def test_merge_at_hour_start_preserves_existing_chg_timer():
     assert h1["hour_labels_locked"] is True
 
 
-def test_merge_at_hour_start_takes_fresh_when_existing_timer_empty():
-    """If current hour had no timer yet, :00 may adopt fresh labels (incl. new Chg)."""
+def test_merge_at_hour_start_keeps_empty_timer():
+    """Empty current-hour timer stays empty at :00; fresh Chg/Dis does not land."""
     tz = ZoneInfo("Europe/Warsaw")
     now = datetime(2026, 7, 21, 1, 0, tzinfo=tz)
     existing = {
@@ -167,7 +167,7 @@ def test_merge_at_hour_start_takes_fresh_when_existing_timer_empty():
 
     merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
     h1 = next(r for r in merged["rows"] if int(r["hour"]) == 1)
-    assert "Chg 01:00-01:45" in h1["timer_schedule"]
+    assert not str(h1.get("timer_schedule") or "").strip()
     assert h1["hour_labels_locked"] is True
 
 

@@ -11,10 +11,12 @@ from src.plan_optimizer import (
     export_span_candidates,
     export_window_roles,
     hour_rce_rating,
+    hour_rce_rating_5_groszy,
     hourly_avg_rce,
     optimize_horizon,
     pick_next_export_hour,
     rank_hours_by_avg_rce,
+    round_rce_5_groszy,
     _evening_export_window_hours,
 )
 from src.simulation_config import (
@@ -86,6 +88,22 @@ def test_hour_rce_rating_rounds_to_hundredths():
     assert rank_hours_by_avg_rce([0, 1, 2], rce, 0.5) == [2, 0, 1]
 
 
+def test_round_rce_5_groszy_half_up():
+    assert round_rce_5_groszy(1.12) == 1.10
+    assert round_rce_5_groszy(1.14) == 1.15
+    assert round_rce_5_groszy(1.125) == 1.15
+    assert round_rce_5_groszy(1.15) == 1.15
+    assert round_rce_5_groszy(0.025) == 0.05
+    assert round_rce_5_groszy(1.06) == 1.05
+
+
+def test_hour_rce_rating_5_groszy_from_avg():
+    rce = [1.14] * 4 + [1.12] * 4 + [1.16] * 4
+    assert hour_rce_rating_5_groszy(rce, 0) == 1.15
+    assert hour_rce_rating_5_groszy(rce, 1) == 1.10
+    assert hour_rce_rating_5_groszy(rce, 2) == 1.15
+
+
 def test_pick_next_export_hour_seeds_peak_then_grows_edges():
     ratings = {18: 1.28, 19: 1.47, 20: 1.40, 21: 1.17}
     remaining = [18, 19, 20, 21]
@@ -98,6 +116,15 @@ def test_pick_next_export_hour_seeds_peak_then_grows_edges():
     assert pick_next_export_hour(
         [18, 20], ratings2, selected={21}, last_hour=21,
     ) == 20
+    # Same 5-groszy rating: closer to the selected window, then earlier edge.
+    grow = {18: 1.15, 19: 1.15, 20: 1.20, 21: 1.15}
+    assert pick_next_export_hour(
+        [19, 21], grow, selected={20}, last_hour=20,
+    ) == 19
+    assert pick_next_export_hour(
+        [19, 22], grow | {22: 1.15}, selected={20}, last_hour=20,
+        gap_ratings={19: 1.06, 20: 1.14, 22: 1.14},
+    ) == 19
 
 
 def test_equal_rating_after_rich_hour_prefers_neighbor():
@@ -107,8 +134,8 @@ def test_equal_rating_after_rich_hour_prefers_neighbor():
     orig = po.pick_next_export_hour
     tried: list[int] = []
 
-    def _wrap(remaining, ratings, *, selected=(), last_hour=None):
-        h = orig(remaining, ratings, selected=selected, last_hour=last_hour)
+    def _wrap(remaining, ratings, **kwargs):
+        h = orig(remaining, ratings, **kwargs)
         tried.append(h)
         return h
 
@@ -155,6 +182,65 @@ def test_equal_rating_after_rich_hour_prefers_neighbor():
 
     assert tried[0] == 19
     assert tried.index(20) < tried.index(16)
+
+
+def test_seed_uses_unrounded_avg_then_5_groszy_grows_closer_edge():
+    """Seed max raw avg; next hours round to 5 groszy; ties go to the nearer edge."""
+    import src.plan_optimizer as po
+
+    orig = po.pick_next_export_hour
+    tried: list[int] = []
+
+    def _wrap(remaining, ratings, **kwargs):
+        h = orig(remaining, ratings, **kwargs)
+        tried.append(h)
+        return h
+
+    po.pick_next_export_hour = _wrap
+    try:
+        offset = 16 * 4
+        steps = 24
+        # H19=1.139 and H20=1.141 both 1.14 at 0.01; seed must be H20.
+        # H19=1.139 and H21=1.14 both 1.15 at 5 groszy; grow prefers H19.
+        rce = (
+            [None] * offset
+            + [0.70] * 4  # 16
+            + [0.70] * 4  # 17
+            + [0.80] * 4  # 18
+            + [1.139] * 4  # 19
+            + [1.141] * 4  # 20 peak unrounded
+            + [1.14] * 4  # 21
+        )
+        base = [HourControl(0.0, 0.0) for _ in range(steps)]
+        plan_battery_grid_export(
+            base,
+            steps=steps,
+            pv_series=[0.0] * steps,
+            load_series=[0.05] * steps,
+            rce_series=rce,
+            rce_step_offset=offset,
+            step_scale=0.25,
+            initial_soc_kwh=28.0,
+            battery_cap=40.0,
+            min_kwh=6.4,
+            discharge_dc_step=8.0,
+            inverter_ac_step=8.0,
+            eta_grid=1.0,
+            eta_out=1.0,
+            eta_pv_load=1.0,
+            eta_pv_grid=1.0,
+            eta_pv_battery=1.0,
+            eps_step=0.01,
+            reserves=[6.4] * steps,
+            export_floor=0.5,
+            min_hourly_kwh=0.5,
+        )
+    finally:
+        po.pick_next_export_hour = orig
+
+    assert tried[0] == 20
+    assert tried[1] == 19
+    assert tried[2] == 21
 
 
 def test_export_window_starts_at_16():
@@ -233,8 +319,8 @@ def test_peak_seeded_then_grows_back_through_16():
     orig = po.pick_next_export_hour
     tried: list[int] = []
 
-    def _wrap(remaining, ratings, *, selected=(), last_hour=None):
-        h = orig(remaining, ratings, selected=selected, last_hour=last_hour)
+    def _wrap(remaining, ratings, **kwargs):
+        h = orig(remaining, ratings, **kwargs)
         tried.append(h)
         return h
 

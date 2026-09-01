@@ -624,20 +624,9 @@ def _merge_current_hour_q15(
 
 
 def _lock_hour_labels(row: dict[str, Any], fresh_row: dict[str, Any]) -> None:
-    """At :00 lock Timer Schedule / Action for the current hour.
-
-    Keep a non-empty SQLite timer already planned for this hour; do not replace
-    it with an empty fresh timer.
-    """
-    if row.get("timer_schedule_manual"):
-        row["hour_labels_locked"] = True
-        return
-    if not row.get("hour_labels_locked"):
-        existing_timer = str(row.get("timer_schedule") or "").strip()
-        if not existing_timer:
-            row["timer_schedule"] = fresh_row.get("timer_schedule", "")
-            row["action"] = fresh_row.get("action", "")
-        row["hour_labels_locked"] = True
+    """Lock the current-hour Timer Schedule as stored (empty, Chg, or Dis)."""
+    del fresh_row
+    row["hour_labels_locked"] = True
 
 
 def _copy_future_row(dst: dict[str, Any], src: dict[str, Any]) -> None:
@@ -1192,39 +1181,19 @@ def _merge_hour_from_quarter(
 
     Meter actuals: prefer *incoming* when it also marks ``from_actual`` (Influx
     refresh / datafix). Otherwise keep existing actuals (I7). Locked
-    timer/action stay once a Chg/Dis window exists; an empty locked timer may
-    still take incoming labels so an early offpeak Chg is kept when the current
-    hour was seeded empty.
-
-    Do not resurrect a thin/invalid Chg that the incremental merge already
-    released (incoming empty + unlocked) or whose Bat Charge is still below
-    min_hourly_transfer after physics.
+    timer/action stay as stored (empty, Chg, or Dis).
     """
     merged = copy.deepcopy(incoming_row)
     existing_timer = str(existing_row.get("timer_schedule") or "")
-    incoming_timer = str(incoming_row.get("timer_schedule") or "").strip()
-    has_actual = any(
-        _q15_slot_actual(s) for s in (existing_row.get("q15") or [])
-    )
     if existing_row.get("timer_schedule_manual"):
         merged["timer_schedule"] = existing_timer
         merged["action"] = existing_row.get("action", "")
         merged["hour_labels_locked"] = True
         merged["timer_schedule_manual"] = True
     elif existing_row.get("hour_labels_locked"):
-        # Merge already cleared an illegal thin Chg — keep the empty timer.
-        released_thin_chg = (
-            _timer_has_chg(existing_timer)
-            and not incoming_timer
-            and not incoming_row.get("hour_labels_locked")
-        )
-        if released_thin_chg:
-            merged["hour_labels_locked"] = False
-        else:
-            if existing_timer.strip() or has_actual:
-                merged["timer_schedule"] = existing_timer
-                merged["action"] = existing_row.get("action", "")
-            merged["hour_labels_locked"] = True
+        merged["timer_schedule"] = existing_timer
+        merged["action"] = existing_row.get("action", "")
+        merged["hour_labels_locked"] = True
 
     eq = _ensure_q15_length(list(existing_row.get("q15") or []))
     iq = _ensure_q15_length(list(incoming_row.get("q15") or []))

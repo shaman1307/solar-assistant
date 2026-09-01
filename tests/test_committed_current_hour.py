@@ -217,6 +217,37 @@ def test_apply_locked_at_hour_start_keeps_existing_chg():
     assert float(row["soc"]) == 25.0
 
 
+def test_apply_locked_at_hour_start_keeps_empty_timer():
+    """At :00 an empty SQLite current hour stays empty; fresh Dis does not land."""
+    now = datetime(2026, 7, 21, 20, 0)
+    existing = {
+        "rows": [{
+            "plan_date": "2026-07-21",
+            "hour": 20,
+            "start": "21-07-2026 21:00",
+            "timer_schedule": "",
+            "action": "Discharging to Load",
+            "soc": 45.0,
+            "hour_labels_locked": False,
+        }],
+    }
+    result = {
+        "rows": [{
+            "plan_date": "2026-07-21",
+            "hour": 20,
+            "start": "21-07-2026 21:00",
+            "timer_schedule": "Dis 20:00-20:30 7.5kW cap30%",
+            "action": "Discharging to Grid and Load",
+            "soc": 40.0,
+            "hour_labels_locked": False,
+        }],
+    }
+    apply_locked_hour_labels_from_plan(result, existing, now)
+    row = result["rows"][0]
+    assert not str(row.get("timer_schedule") or "").strip()
+    assert row["hour_labels_locked"] is True
+
+
 def test_run_day_from_next_hour_with_skip_zero_uses_seed_soc():
     """Replan from hour+1 with committed end SOC — first control hour may charge."""
     cfg = _cfg()
@@ -615,3 +646,99 @@ def test_idle_current_hour_forward_soc_chains_from_display_blend():
         # Even without a big charge, forward start is the display EOH — H01 end
         # stays within ~1pp of H00 after ordinary house load.
         assert abs(h1_soc - 23.7) < 2.5, f"H01 soc={h1_soc} drifted from display EOH"
+
+
+def test_empty_current_hour_never_exports_at_hour_start():
+    """Empty current-hour timer is frozen for export at :00, same as the UI."""
+    from zoneinfo import ZoneInfo
+
+    from src.simulation import build_energy_arbitrage_plan
+
+    cfg = _cfg()
+    tz = ZoneInfo("Europe/Warsaw")
+    now = datetime(2026, 9, 1, 22, 0, tzinfo=tz)
+    today = "2026-09-01"
+    tomorrow = "2026-09-02"
+
+    idle = {
+        "plan_date": today,
+        "hour": 22,
+        "start": "01-09-2026 23:00",
+        "timer_schedule": "",
+        "action": "Discharging to Load",
+        "soc": 50.0,
+        "hour_labels_locked": False,
+        "production": 0.0,
+        "consumption": 0.8,
+        "battery": -0.8,
+        "bat_charge": 0.0,
+        "bat_discharge": 0.8,
+        "grid_import": 0.0,
+        "grid_export": 0.0,
+        "q15": [
+            {"quarter": q, "soc": 50.0 - q, "production": 0.0,
+             "consumption": 0.2, "battery": -0.2, "grid_import": 0.0,
+             "grid_export": 0.0}
+            for q in range(4)
+        ],
+    }
+    stored = {"today_date": today, "plan_from_hour": 22, "rows": [idle], "history_rows": []}
+
+    pv = [0.0] * 24
+    load = [0.5] * 24
+    forecast = {
+        "today": {
+            "pv": pv, "load": load, "pv_forecast": pv, "load_forecast": load,
+            "pv_total": 0.0, "load_total": 12.0,
+        },
+        "tomorrow": {
+            "pv": [0.0] * 6 + [0.5] * 12 + [0.0] * 6,
+            "load": [0.5] * 24,
+            "pv_total": 6.0, "load_total": 12.0,
+        },
+        "meta": {},
+    }
+    metrics = {
+        "battery_soc": 50.0,
+        "today_hourly": {
+            "pv": [0.0] * 24,
+            "load": [0.5] * 24,
+            "soc": [50.0] * 24,
+            "bat_charge": [0.0] * 24,
+            "bat_discharge": [0.0] * 24,
+            "grid_buy": [0.0] * 24,
+            "grid_sell": [0.0] * 24,
+        },
+        "series_10min": None,
+    }
+
+    rce_today = [0.40] * 96
+    for q in range(4):
+        rce_today[22 * 4 + q] = 1.80
+    rce_tom = [0.40] * 96
+    for q in range(4):
+        rce_tom[6 * 4 + q] = 1.00
+
+    with (
+        patch("src.simulation._now_warsaw", return_value=now),
+        patch("src.sqlite_store.read_plan", return_value=stored),
+        patch(
+            "src.simulation.quarter_rce_for_dates",
+            return_value={today: rce_today, tomorrow: rce_tom},
+        ),
+    ):
+        plan = build_energy_arbitrage_plan(forecast, metrics, {}, cfg)
+
+    by_key = {
+        (str(r.get("plan_date")), int(r["hour"])): r
+        for r in plan["rows"]
+        if r.get("start") != "TOTAL" and r.get("hour") is not None
+    }
+    h22 = by_key[(today, 22)]
+    assert not str(h22.get("timer_schedule") or "").strip()
+    assert not h22.get("export_planned")
+    today_export = [
+        h for (d, h), r in by_key.items()
+        if d == today and (r.get("export_planned") or str(r.get("timer_schedule") or "").lower().startswith("dis"))
+    ]
+    assert 22 not in today_export
